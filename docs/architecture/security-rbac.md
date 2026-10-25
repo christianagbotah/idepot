@@ -37,7 +37,7 @@ Short-lived access tokens (JWT, 10-15 min) + rotating refresh (httpOnly secure c
 
 ## 4. Data protection
 
-- Tenant isolation: tenant_id on every row + repository-level guard; RLS considered for defense-in-depth on hot tables.
+- Tenant isolation: tenant_id on every row + repository-level guard; RLS as defense-in-depth on tenant-owned tables (topology LOCKED — [target-architecture.md](target-architecture.md) §6); authorization tests must prove cross-tenant access impossible.
 - PII minimization (customers are phone-first, email optional — matches Ghana practice); masking in logs; no production PII in test fixtures (synthetic factories only).
 - Local device stores encrypted (SQLCipher/OS); secure keystore for tokens; remote wipe via device revocation.
 - Backups: encrypted, tested restores, retention policy; DR runbook with RPO/RTO targets.

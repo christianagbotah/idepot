@@ -39,7 +39,7 @@ docs/         this documentation tree
 | Money | `numeric(18,4)` amounts + integer pesewas where needed; **no float anywhere** | Legacy `double` drift is defect D5 |
 | IDs | UUIDv7 (ordered, index-friendly) + human document numbers from sequences | Sync-safe client-generated IDs, printable codes |
 | ORM | Prisma or TypeORM with explicit SQL for ledger paths | Ledger writes need precise control; repository layer abstracts |
-| Background jobs | BullMQ (Redis) — relay for **non-financial outbox consumers only**: notifications (SMS/email/push), reporting/read-model refresh, search indexing, analytics, AI jobs, external webhooks | Financial posting never waits on a worker; see §4 |
+| Background jobs | BullMQ (Redis) — relay for outbox consumers: notifications (SMS/email/push), reporting/read-model refresh, device sync feed, search indexing, analytics, AI jobs, external webhooks | Consumers **project committed facts** (which may be financial, e.g. `InvoicePosted`); they never perform financially authoritative posting — financial posting never waits on a worker (§4) |
 | AI service | FastAPI + scikit-learn/Prophet-or-statsmodels tier, OCR (document intelligence), embedding store optional (pgvector) | Versioned models, auditable runs, tenant isolation |
 | Desktop | Tauri 2 + Rust | Small binaries, native hardware access, safe IPC |
 | Mobile | React Native + Expo (dev clients for native modules) | Code sharing with web UI layer, OTA updates |
@@ -63,7 +63,7 @@ Pinned versions live in each package manifest; upgrade policy documented in `doc
 | `parties` | customers, suppliers, credit terms, segments | — |
 | `payments` | receipts, payments, tenders, allocations, deposits/credits, refunds | parties, banking |
 | `banking` | accounts, transfers, reconciliations | accounting |
-| `accounting` | CoA, journal entries, posting engine, periods, statements | invoked synchronously by the Posting Coordinator inside posting transactions; async events feed only non-financial read models |
+| `accounting` | CoA, journal entries, posting engine, periods, statements | invoked synchronously by the Posting Coordinator inside posting transactions; never an asynchronous outbox consumer |
 | `returns` | return orders, credit notes, store credits | sales, inventory, payments, accounting |
 | `reporting` | read models, KPI snapshots, exports | read-only replicas of all |
 | `notifications` | templates, providers (SMS/email/push), preferences | event-driven |
@@ -71,10 +71,10 @@ Pinned versions live in each package manifest; upgrade policy documented in `doc
 | `audit` | append-only audit events | all (write-only via interceptor) |
 | `migration` | legacy_raw staging, import pipelines, run registry, legacy-ID mapping, validators/quarantine, reconciliation reports | isolated schema |
 
-**Financially coupled consequences are synchronous; only non-financial consequences are asynchronous.**
+**Financially authoritative consequences are synchronous; asynchronous consumers only project committed facts.**
 
 - **Synchronous — Posting Coordinator / Unit of Work:** when a financial document posts, the coordinating domain service invokes every financially authoritative consequence **in the same PostgreSQL transaction** — the accounting posting engine (journal entry + tax lines), inventory stock/COGS movements, payment tender/allocation writes, customer/supplier subledger impacts, the append-only audit event, and the outbox rows. If any participant fails, the whole transaction rolls back: no posted invoice can exist without its GL entry, stock movement or allocation.
-- **Asynchronous — transactional outbox:** the outbox carries only events whose consumers do **not** determine the financial correctness of the committed transaction — notifications (SMS/email/push), reporting/read-model refresh, search indexing, analytics, AI jobs, external webhooks. The source aggregate and its outbox rows still commit in one transaction (transactional outbox pattern); the relay then hands them to BullMQ workers.
+- **Asynchronous — transactional outbox:** the outbox MAY and SHOULD contain events describing **already-committed financial facts** — `InvoicePosted`, `PaymentReceived`, `CreditNotePosted`, `StockMoved`, `PurchaseReceived`, `RefundPosted` — alongside non-financial events. **The rule: an outbox event may *represent* a committed financial fact, but no asynchronous outbox consumer may perform any financially authoritative posting required to make that source transaction correct.** `InvoicePosted` may asynchronously update reporting projections, another device's sync feed, analytics, AI, notifications, search and external webhooks — but it must NEVER be responsible for creating the required GL, COGS, stock, tax or subledger posting; those already committed synchronously before the outbox event became visible to any consumer. The source aggregate and its outbox rows commit in one transaction (transactional outbox pattern); the relay then hands events to BullMQ workers.
 
 The Posting Coordinator is an in-process orchestrator — module services registered as participants of a Unit of Work — not a queue and not a distributed transaction: one PostgreSQL transaction, one commit, coordinated by application code (§4).
 
@@ -109,9 +109,9 @@ For a POSTED financial transaction, the following consequences — where applica
 
 No subset may commit alone. The Posting Coordinator enforces **static participant registration per document type** (e.g. a cash sale registers 1–10; a supplier opening balance registers a reduced set) and a repository-layer guard rejects any financially authoritative write attempted outside a coordinator transaction.
 
-### 4.3 What is asynchronous (outbox consumers — never financially authoritative)
+### 4.3 What is asynchronous (outbox consumers — projection only, never authoritative posting)
 
-Notifications (SMS/email/push) · reporting/read-model refresh · search indexing · analytics · AI · external webhooks.
+Outbox events may represent committed financial facts (`InvoicePosted`, `PaymentReceived`, `CreditNotePosted`, `StockMoved`, `PurchaseReceived`, `RefundPosted`). Their asynchronous consumers — notifications (SMS/email/push), reporting/read-model refresh, another device's sync feed, search indexing, analytics, AI, external webhooks — **project** those facts; none of them may perform any financially authoritative posting required by the source transaction (GL, COGS, stock, tax, subledger). Those consequences already committed synchronously inside the posting transaction before the outbox event became visible to any consumer.
 
 **Hard rule:** a posted invoice must never exist successfully while its required GL or inventory posting is merely waiting for a background worker. If the posting engine cannot produce a balanced journal entry — or the ledger cannot record the movement — the command fails and nothing is persisted; the user retries with correct data. Retry/compensation semantics belong to the command, never to a worker.
 
@@ -129,7 +129,28 @@ Notifications (SMS/email/push) · reporting/read-model refresh · search indexin
 | No transactions | D4 | Posting Coordinator unit of work — atomic posting set (§4.2) |
 | Second-resolution codes | D2 | sequences + UUIDv7 |
 
-## 6. Repository working rules (from master prompt §21)
+## 6. Tenancy topology (LOCKED)
+
+**Primary — cloud/SaaS:**
+
+- Shared PostgreSQL cluster/database architecture.
+- `tenant_id` on every tenant-owned business record.
+- Tenant isolation enforced in application repositories/services.
+- PostgreSQL Row Level Security as defense-in-depth on tenant-owned tables.
+- Branch/depot/warehouse scopes beneath tenant.
+- All unique constraints that are tenant-specific include `tenant_id`.
+- Every audit, outbox, sync, migration and AI record carries tenant identity.
+- Authorization tests must prove cross-tenant access is impossible.
+
+**Dedicated / on-premise:**
+
+- Same application and same logical schema.
+- May run as an isolated database/deployment for a single customer.
+- No separate domain model and no separate migration format.
+
+This allows large/dedicated customers to be physically isolated without creating two versions of iDepot. **The topology decision is locked**; implementation details (RLS session-context mechanics, connection/transaction management, repository guard + RLS interplay, per-deployment configuration) require an ADR in Phase 1 — see the ADR gate in [ROADMAP.md](../ROADMAP.md).
+
+## 7. Repository working rules (from master prompt §21)
 
 1. Long-lived feature branches per phase; `main` always buildable; PRs with tests.
 2. No `node_modules`, secrets, or client PII committed. Secret scanning + dependency scanning in CI.

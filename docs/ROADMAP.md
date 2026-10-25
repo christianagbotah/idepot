@@ -4,7 +4,7 @@ Phase 0 (this branch) is complete. Phases follow master prompt §20 with entry/e
 
 Two continuous workstreams run through every phase:
 
-1. **Atomic financial posting.** Every financially coupled operation commits in ONE PostgreSQL transaction through the Posting Coordinator / Unit of Work ([target-architecture.md](architecture/target-architecture.md) §4): business document, stock/COGS movements, tender, allocation, subledger impact, tax lines, GL journal entry, audit event and outbox rows succeed or fail together. Asynchronous consumers (outbox) handle only consequences that do not determine financial correctness — notifications, reporting/read-model refresh, search indexing, analytics, AI, webhooks. Every phase's new documents must register their posting participants with the coordinator; PR review checklist item.
+1. **Atomic financial posting.** Every financially coupled operation commits in ONE PostgreSQL transaction through the Posting Coordinator / Unit of Work ([target-architecture.md](architecture/target-architecture.md) §4): business document, stock/COGS movements, tender, allocation, subledger impact, tax lines, GL journal entry, audit event and outbox rows succeed or fail together. Outbox events may **represent committed financial facts** (`InvoicePosted`, `PaymentReceived`, `CreditNotePosted`, `StockMoved`, `PurchaseReceived`, `RefundPosted`), but asynchronous consumers only **project** them — reporting/read-model refresh, device sync feeds, notifications, search indexing, analytics, AI, webhooks — and never perform any financially authoritative posting required by the source transaction. Every phase's new documents must register their posting participants with the coordinator; PR review checklist item.
 2. **Migration engineering (Phase 1 → 8, continuous).** Existing customers must move from the production legacy system without losing balances, documents, stock, payments, history or auditability — so migration cannot be postponed until the end. The `migration` module, `legacy_raw` schema and reconciliation framework are built in Phase 1 and grow in lockstep with each product phase, so every new domain model is tested against migration reality while it is designed — instead of discovering incompatibilities at the end. Reconciliation is **correction-aware**: legacy parity is not the goal, canonical truth is ([migration-reconciliation-strategy.md](migration/migration-reconciliation-strategy.md) §3a).
 
 ## Phase 0 — Forensic audit & architecture ✅ (this PR)
@@ -13,7 +13,7 @@ Delivered: 20 legacy-audit documents, 8 architecture documents, 2 migration docu
 
 ## Phase 1 — Monorepo foundation + migration engineering foundation
 
-**Product scope:** scaffold `apps/`+`packages/`+`infra/`; CI (lint/typecheck/test/build); PostgreSQL + migrations framework; NestJS skeleton with module boundaries; auth (Argon2id, tokens, device registry); tenancy model (tenant/branch/warehouse); RBAC (permissions, roles, scopes) + authorization matrix test harness; audit-event interceptor; Next.js shell + design system baseline; versioned API contracts (OpenAPI); outbox/change-feed primitives (non-financial consumers only); **Posting Coordinator / Unit-of-Work framework** (participant registration, single-transaction guard, rollback-on-failure semantics) with a reference implementation and atomicity test on a sample document; Docker dev stack.
+**Product scope:** scaffold `apps/`+`packages/`+`infra/`; CI (lint/typecheck/test/build); PostgreSQL + migrations framework; NestJS skeleton with module boundaries; auth (Argon2id, tokens, device registry); tenancy model (tenant/branch/warehouse) per the **LOCKED shared-schema topology** ([target-architecture.md](architecture/target-architecture.md) §6)); RBAC (permissions, roles, scopes) + authorization matrix test harness including cross-tenant access impossibility tests; audit-event interceptor; Next.js shell + design system baseline; versioned API contracts (OpenAPI); outbox/change-feed primitives (events represent committed facts; consumers project only — never authoritative posting); **Posting Coordinator / Unit-of-Work framework** (participant registration, single-transaction guard, rollback-on-failure semantics) with a reference implementation and atomicity test on a sample document; Docker dev stack.
 
 **Migration workstream (built now, evolved every phase):**
 
@@ -30,7 +30,15 @@ Delivered: 20 legacy-audit documents, 8 architecture documents, 2 migration docu
 - CI migration smoke test (fixture dump → import → reconcile on every pipeline change);
 - repeatable/idempotent importer harness.
 
-**Exit criteria:** auth+RBAC enforced on a sample CRUD resource with matrix tests green; CI green; posting-coordinator reference test proves all-or-nothing rollback; migration smoke test runs a fixture dump end-to-end and emits `reconciliation.json` in CI; ADRs for stack choices.
+**ADR gate — required before the relevant production code:**
+
+- **ADR-0001 — Posting Coordinator / Unit-of-Work enforcement mechanics.** Preferred direction: **application transaction context + repository-layer enforcement**. A NestJS HTTP interceptor alone is insufficient: CLI migration runs, sync workers and internal service-to-service calls must carry the same single-transaction guarantees as HTTP commands. The chosen mechanics must cover all entry points.
+- **ADR-0002 — Database access / ORM choice.** Candidates benchmarked against: explicit transaction propagation across modules; PostgreSQL `numeric` handling; raw/typed SQL for ledger paths; migrations; bulk migration performance (10⁵–10⁶ rows per client); RLS / session context; testability. **Not chosen on CRUD convenience.**
+- **ADR-0003 — Multi-tenancy / RLS implementation** for the locked topology ([target-architecture.md](architecture/target-architecture.md) §6): session-context management, repository guard + RLS interplay, tenant-scoped unique constraints, and the on-premise single-tenant deployment mode of the same schema.
+
+Cost-basis policy, offline history retention, booklet lease size and loyalty remain controlled decisions for later phases. Cost basis must be **effective-dated/configurable and signed off during migration** — never a silent change to historical accounting.
+
+**Exit criteria:** auth+RBAC enforced on a sample CRUD resource with matrix tests green (including cross-tenant access impossibility); CI green; posting-coordinator reference test proves all-or-nothing rollback; migration smoke test runs a fixture dump end-to-end and emits `reconciliation.json` in CI; ADR-0001..0003 approved before their dependent production code.
 
 ## Phase 2 — Master data & inventory (+ migration: master data & stock)
 

@@ -4,7 +4,7 @@ Implements master prompt §9. Offline-first is a hard requirement: Ghana depots 
 
 ## 1. Principle
 
-A cashier must be able to **complete, print and locally commit** a sale with zero network. Correctness of money/stock is guaranteed locally by the same domain code (`packages/domain`) that the server runs; the server remains authoritative once synced.
+A cashier must be able to **complete, print and locally commit** a sale with zero network. Correctness of money/stock math is guaranteed locally by the same domain code (`packages/domain`) that the server runs; the server remains authoritative once synced. A local commit is **locally** correct and complete (§5a); **global/authoritative correctness** — stock availability, credit limits, period state — can only be established at synchronization (§5b).
 
 ## 2. Local stores
 
@@ -40,13 +40,40 @@ Only data the signed-in user is authorized to hold is cached (tenant + branch sc
 
 | Entity class | Policy |
 |---|---|
-| Sales orders / invoices (created offline) | **Append-only create** — no conflict possible; duplicate protection by idempotency key |
+| Sales orders / invoices (created offline) | **Append-only create** — duplicate *identity* is impossible (UUIDv7 + idempotency key), but disconnected devices can still create **business conflicts** (stock, credit limits, reference-data state, period close, leases, scopes) → explicit policies in §5b |
 | Payments / allocations | Append-only create; allocation re-validation server-side; if invoice was settled meanwhile → allocation conflict → goes to **allocation review queue** (accountant resolves; no auto-rewrite) |
 | Stock movements | Append-only; on-hand conflicts resolved by ledger arithmetic (movements always apply); negative-result guard flags for policy check |
 | Fulfillments / waybills | Append-only; waybill lease conflicts surface as exceptions |
 | Document edits / voids | Offline-initiated voids are requests; server validates state transition; rejection → user task list |
 | Reference data (products, prices, customers) | Server-wins for field updates; offline-created customers sync as creates with dedupe (phone-based suggestion) |
 | Cashier shifts | Append-only events (open, cash-in/out, close, count); variance approval online |
+
+### 5a. Local correctness vs global correctness
+
+**A. Local correctness — what the offline device guarantees for every locally committed document:**
+
+- correct math (totals, tax, change — computed by the shared server-grade domain code);
+- a balanced local financial representation;
+- valid units/conversions;
+- a complete local atomic document (header + lines + tender + allocation committed in one SQLite transaction);
+- valid local permissions according to the device's **signed authorization snapshot** (valid as of the last sync);
+- idempotent identity (UUIDv7 + idempotency key — duplicate identity collisions impossible).
+
+**B. Global/authoritative correctness — can only be established at synchronization**, against current server state. UUID/idempotency keys prevent duplicate *identity*; they do not prevent *business* conflicts, e.g.:
+
+- two terminals sell the last available stock while both are offline;
+- a customer's credit limit is consumed by another terminal;
+- a price or product is disabled while another device is offline;
+- an accounting period is closed before the device reconnects;
+- a document-number lease or an authorization scope changes while the device is offline.
+
+### 5b. Sync policies for business conflicts
+
+- **Stock — concurrent offline oversell:** the server **never silently rewrites the sale**. A configurable policy determines the outcome:
+  1. *Allow as negative/backorder* — the synced sale posts, on-hand goes negative (or a backorder document is created), and a **prominent exception + reconciliation task** is raised; or
+  2. *Exception state* — the synced transaction enters an **explicit review/exception state** for supervisor resolution before it becomes financially effective.
+- **Hard stock limits (optional):** businesses requiring strict availability may issue **stock/quantity leases (offline allocation quotas) to devices while connected**. Documented limitation: fully disconnected operation cannot mathematically guarantee global on-hand availability across multiple terminals without previously leased capacity.
+- **Customer credit-limit conflicts, period-close conflicts, revoked permissions, changed scopes/leases:** surfaced on sync as **explicit review/rejection workflows** with full context — never silently resolved, never silently applied with stale authorization.
 
 **Rule:** financial conflicts are never silently resolved; they create explicit review tasks with full context (master prompt §9).
 
@@ -62,7 +89,7 @@ Persistent indicator: **Online / Syncing k pending / Offline (n queued since hh:
 
 ## 8. Server-side change feed
 
-- Transactional outbox table → relay worker → `change_feed` (assigns tenant-scoped monotonic seq). The outbox carries **only non-financial consequences** (notifications, reporting/read-model refresh, search indexing, analytics, AI, webhooks) — financially authoritative consequences are committed synchronously inside the posting transaction ([target-architecture.md](target-architecture.md) §4.2). Reporting/AI jobs consume the same non-financial outbox.
+- Transactional outbox table → relay worker → `change_feed` (assigns tenant-scoped monotonic seq). The outbox carries events **describing committed facts** — financial (`InvoicePosted`, `PaymentReceived`, `CreditNotePosted`, `StockMoved`, `PurchaseReceived`, `RefundPosted`) and non-financial alike. Consumers (notifications, reporting/read-model refresh, search indexing, analytics, AI, webhooks, and the device sync feed via `change_feed`) only **project** those facts; no consumer performs financially authoritative posting — those consequences committed synchronously inside the posting transaction before the event became visible ([target-architecture.md](target-architecture.md) §4.2–4.3).
 - Compaction: change_feed rows older than N days and below all device cursors are archived (tombstones retained longer for deletable master data).
 
 ## 9. Offline POS UX requirements (from audit of legacy behaviour to preserve)
@@ -79,9 +106,9 @@ Persistent indicator: **Online / Syncing k pending / Offline (n queued since hh:
 
 - Property tests: N clients × M events random ordering → convergence, zero duplication, ledger invariants hold.
 - Chaos: kill mid-push, duplicate delivery, clock skew, lease exhaustion, reconnect storms.
-- E2E: offline sale → reconnect → idempotent sync; concurrent offline sale + online payment on same invoice → conflict queue.
+- E2E: offline sale → reconnect → idempotent sync; concurrent offline sale + online payment on same invoice → conflict queue; **two offline terminals oversell the last stock → policy-driven outcome (backorder + exception task, or review/exception state)**; offline sale exceeding credit limit / into a since-closed period / with since-revoked permission → explicit review or rejection, never silent application.
 - Load: 50 terminals × 8h shifts × bursts (the legacy `stock_manager` at 842k rows shows the write volume scale to design for).
 
 ## 11. Redis/queues note
 
-Redis is used only server-side for **non-financial** outbox consumers (notifications, AI jobs, report/read-model refresh, search, webhooks) and is **not** required for a POS sale to commit — either online (direct PG transaction via the Posting Coordinator) or offline (local commit). Financial posting requires only PostgreSQL. On-premise deployments can run without Redis by using PG-based polling for the relay.
+Redis is used only server-side for outbox consumers (notifications, AI jobs, report/read-model refresh, search, webhooks — all **projection-only**, never financially authoritative posting) and is **not** required for a POS sale to commit — either online (direct PG transaction via the Posting Coordinator) or offline (local commit). Financial posting requires only PostgreSQL. On-premise deployments can run without Redis by using PG-based polling for the relay.
