@@ -1,14 +1,12 @@
 # Legacy artifact handoff
 
-The original uploaded `idepot.zip` is **not safe to publish** in this public repository. The audit found hard-coded legacy credentials/keys and real staff/supplier/session data in the source/database material.
+The original deployed `idepot.zip` and legacy SQL dumps are **not safe to publish** in this public repository because they contain production-style configuration and client/staff data.
 
-A sanitized legacy source bundle and a further-sanitized first-10-row database sample were prepared for the modernization audit. Before z.ai begins full source tracing, place them at these exact paths:
+The repository now contains the sanitized legacy evidence directly:
 
-- `legacy/idepot_legacy_reference_sanitized.tar.xz`
-- `legacy/depot1_db_public_sanitized_first10.sql`
+- `legacy/source/` — 416 retained source files from the deployed iDepot application, including controllers, models, helpers, libraries, active nested depot/business views, navigation and selected custom UI assets. Secret-bearing production config, uploads, dependency noise and the old top-level school-management view collection are excluded.
+- `legacy/schema/legacy_mysql_schema.sql` — schema-only DDL extracted from the deployed legacy SQL dump. No INSERT/data rows are included. The dump may still contain obsolete school-management tables; z.ai must classify tables by active iDepot code usage.
+- `legacy/legacy-view-inventory.md` — guidance for distinguishing depot/business views from school-era leftovers.
+- `/ZAI_IDEPOT_MODERNIZATION_MASTER_PROMPT.md` — the implementation brief for the rebuild.
 
-The source bundle preserves the active depot controllers/models/business page tree/navigation while excluding `node_modules`, most vendor noise, obvious school-management top-level views and identified secrets. The SQL sample keeps legacy IDs/document codes/dates/quantities/financial figures needed for reconciliation analysis while anonymizing customers, staff/admins, suppliers, sessions, visitor data and integration-identifying settings.
-
-Do not substitute the original unsanitized archive in this public repository. Rotate any legacy credentials that were present in the uploaded source before continuing production use.
-
-The modernization instructions are in `/ZAI_IDEPOT_MODERNIZATION_MASTER_PROMPT.md`, and the classification guidance is in `/legacy/legacy-view-inventory.md`.
+Do not substitute the unsanitized archive or full production database dumps in this public repository.

@@ -1,0 +1,2 @@
+<button type="button" class="btn btn-success btn-lg" id="goods"><?php echo get_phrase('GOODS'); ?></button>
+                    <button type="button" class="btn btn-info btn-lg" data-dismiss="modal" id="cash"><?php echo get_phrase('CASH'); ?></button>

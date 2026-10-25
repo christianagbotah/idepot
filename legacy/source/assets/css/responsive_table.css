@@ -1,0 +1,86 @@
+/* 
+Generic Styling, for Desktops/Laptops 
+*/
+table, table-responsive { 
+  width: 100% !important; 
+  border-collapse: collapse !important; 
+}
+/* Zebra striping */
+tr:nth-of-type(odd) { 
+  padding-right: 5px !important;
+  padding-left: 5px !important;
+}
+th { 
+  font-weight: bold; 
+}
+
+
+
+/* 
+Max width before this PARTICULAR table gets nasty
+This query will take effect for any screen smaller than 760px
+and also iPads specifically.
+*/
+@media 
+only screen and (max-width: 1050px),
+  {
+
+  	.row {
+  		overflow-x: scroll !important;
+  	}
+
+  }
+@media 
+only screen and (max-width: 567px),
+  {
+
+  	.row {
+  		overflow: scroll !important;
+  	}
+
+	.panel-body {
+		padding: 10px 0px !important;
+	}
+
+
+	th { 
+		font-size: 10px;
+	}
+	
+	td, label, td input[type="text"] { 
+		font-size: 10px;
+	}
+
+	.col-md-12, .col-lg-12, .col-sm-12 {
+		padding-left: 5px !important;
+		padding-right: 5px !important;
+	}
+	
+}
+
+@media 
+only screen and (max-width: 461px),
+  {
+
+  	.row {
+  		overflow-x: scroll !important;
+  	}
+
+	th { 
+		font-size: 10px;
+
+	}
+
+	td, label, td input[type="text"]{ 
+		font-size: 10px;
+		word-break: break-all;
+	}
+
+	.panel-body {
+		padding: 10px 0px !important;
+	}
+
+	.col-md-12, .col-lg-12, .col-sm-12 {
+		padding-left: 5px !important;
+		padding-right: 5px !important;
+	}

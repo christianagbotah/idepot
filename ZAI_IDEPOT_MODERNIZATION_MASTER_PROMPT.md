@@ -10,8 +10,8 @@ Work in the GitHub repository `christianagbotah/idepot`.
 
 The repository contains or will contain these legacy reference artifacts:
 
-- `legacy/idepot_legacy_reference_sanitized.tar.gz` — curated, sanitized legacy application source. It intentionally keeps the active depot/business controllers, models, business views, navigation, helpers, and key layout/config files while excluding most obvious school-management leftovers and dependency noise.
-- `legacy/depot1_db_public_sanitized_first10.sql` — public-safe first-10-row legacy database sample. It preserves table structures, document codes, IDs, dates, quantities and financial figures where useful for migration/reconciliation analysis while anonymizing personal and credential data.
+- `legacy/source/` — curated, sanitized legacy application source copied from the deployed iDepot VPS. It keeps the active depot/business controllers, models, business views, navigation, helpers, libraries and key layout files while excluding secret-bearing production config, uploads, dependency noise and the old top-level school-management view collection.
+- `legacy/schema/legacy_mysql_schema.sql` — schema-only MySQL reference extracted from the deployed legacy SQL dump. It intentionally contains no client data rows. Some obsolete school-management tables may remain and must be classified by active code usage.
 - `legacy/SECURITY-NOTE.md` — explains why the legacy reference must never be deployed directly.
 - `legacy/legacy-view-inventory.md` — inventory of active nested depot views and obvious school-management leftovers found in the original starter system.
 
@@ -786,8 +786,8 @@ Your first implementation cycle must do the following in this order:
 
 1. Clone/open `christianagbotah/idepot` and inspect the repository.
 2. Read this prompt and `legacy/SECURITY-NOTE.md`.
-3. Extract `legacy/idepot_legacy_reference_sanitized.tar.gz` into a temporary analysis directory, not into the new application source tree.
-4. Import or parse `legacy/depot1_db_public_sanitized_first10.sql` only in an isolated local test database/parser.
+3. Audit `legacy/source/` in place as read-only forensic evidence; do not treat it as new application source code.
+4. Parse `legacy/schema/legacy_mysql_schema.sql` as the legacy schema reference. Do not assume every table belongs to iDepot; prove relevance through controllers, models, routes and retained business views.
 5. Inspect all retained business views, controller methods, models and schema tables.
 6. Cross-reference routes -> views -> controller methods -> model/database operations.
 7. Produce the Phase 0 audit documents and identify the exact business modules that exist today.
