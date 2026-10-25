@@ -39,7 +39,7 @@ docs/         this documentation tree
 | Money | `numeric(18,4)` amounts + integer pesewas where needed; **no float anywhere** | Legacy `double` drift is defect D5 |
 | IDs | UUIDv7 (ordered, index-friendly) + human document numbers from sequences | Sync-safe client-generated IDs, printable codes |
 | ORM | Prisma or TypeORM with explicit SQL for ledger paths | Ledger writes need precise control; repository layer abstracts |
-| Background jobs | BullMQ (Redis) — outbox relay, notifications, report generation, AI jobs | Not required for POS commit (asynchronous only) |
+| Background jobs | BullMQ (Redis) — relay for **non-financial outbox consumers only**: notifications (SMS/email/push), reporting/read-model refresh, search indexing, analytics, AI jobs, external webhooks | Financial posting never waits on a worker; see §4 |
 | AI service | FastAPI + scikit-learn/Prophet-or-statsmodels tier, OCR (document intelligence), embedding store optional (pgvector) | Versioned models, auditable runs, tenant isolation |
 | Desktop | Tauri 2 + Rust | Small binaries, native hardware access, safe IPC |
 | Mobile | React Native + Expo (dev clients for native modules) | Code sharing with web UI layer, OTA updates |
@@ -58,30 +58,62 @@ Pinned versions live in each package manifest; upgrade policy documented in `doc
 | `tenancy` | tenants, branches, warehouses, shops, assignments | — |
 | `catalog` | products, categories, units & conversions, barcodes, price lists | — |
 | `inventory` | stock ledger, movements, counts, adjustments, transfers, locations | catalog, tenancy |
-| `sales` | quotations, sales orders, fulfillments (waybills), invoices | catalog, inventory, parties, payments (via events) |
+| `sales` | quotations, sales orders, fulfillments (waybills), invoices | catalog, inventory, parties, payments (synchronous, in-transaction) |
 | `purchasing` | POs, GRNs, supplier invoices, debit notes | catalog, inventory, parties, payments |
 | `parties` | customers, suppliers, credit terms, segments | — |
 | `payments` | receipts, payments, tenders, allocations, deposits/credits, refunds | parties, banking |
 | `banking` | accounts, transfers, reconciliations | accounting |
-| `accounting` | CoA, journal entries, posting engine, periods, statements | (subscribed by all via events) |
+| `accounting` | CoA, journal entries, posting engine, periods, statements | invoked synchronously by the Posting Coordinator inside posting transactions; async events feed only non-financial read models |
 | `returns` | return orders, credit notes, store credits | sales, inventory, payments, accounting |
 | `reporting` | read models, KPI snapshots, exports | read-only replicas of all |
 | `notifications` | templates, providers (SMS/email/push), preferences | event-driven |
 | `sync` | change feed, outbox/inbox endpoints, device cursors | all (read) |
 | `audit` | append-only audit events | all (write-only via interceptor) |
-| `migration` | legacy_raw staging, import pipelines, reconciliation reports | isolated schema |
+| `migration` | legacy_raw staging, import pipelines, run registry, legacy-ID mapping, validators/quarantine, reconciliation reports | isolated schema |
 
-Cross-module consequences run through the **outbox** (domain events) — e.g. `InvoicePosted` → accounting posts GL, notifications queue SMS, reporting refreshes, AI jobs enqueue. The posting of the *source* aggregate and its outbox row commit in one transaction (transactional outbox).
+**Financially coupled consequences are synchronous; only non-financial consequences are asynchronous.**
+
+- **Synchronous — Posting Coordinator / Unit of Work:** when a financial document posts, the coordinating domain service invokes every financially authoritative consequence **in the same PostgreSQL transaction** — the accounting posting engine (journal entry + tax lines), inventory stock/COGS movements, payment tender/allocation writes, customer/supplier subledger impacts, the append-only audit event, and the outbox rows. If any participant fails, the whole transaction rolls back: no posted invoice can exist without its GL entry, stock movement or allocation.
+- **Asynchronous — transactional outbox:** the outbox carries only events whose consumers do **not** determine the financial correctness of the committed transaction — notifications (SMS/email/push), reporting/read-model refresh, search indexing, analytics, AI jobs, external webhooks. The source aggregate and its outbox rows still commit in one transaction (transactional outbox pattern); the relay then hands them to BullMQ workers.
+
+The Posting Coordinator is an in-process orchestrator — module services registered as participants of a Unit of Work — not a queue and not a distributed transaction: one PostgreSQL transaction, one commit, coordinated by application code (§4).
 
 ## 4. The financial core pattern (the anti-Admin.php)
+
+### 4.1 Command flow
 
 Every money operation:
 1. Command DTO validated (zod contract) + idempotency key required.
 2. Domain service in `packages/domain` computes derived values (totals, allocations, statuses) — pure functions, property-tested against [calculation-register.md](../legacy-audit/calculation-register.md) invariants.
-3. Repository persists aggregate + ledger lines + outbox events in ONE PG transaction.
+3. The **Posting Coordinator** opens one PostgreSQL transaction and invokes each required module participant (owning document module, inventory, payments, parties, accounting, audit); every participant writes through that single transaction. Commit is all-or-nothing.
 4. Ledger lines are append-only; corrections are reversal documents.
-5. Audit interceptor records who/when/what (before/after JSONB).
-6. Read models/current balances are caches rebuilt from ledgers (reconciliation job proves equality nightly).
+5. The audit event for a posted financial transaction is written **inside the posting transaction** (not by a post-commit interceptor) — it is a member of the atomic set in §4.2.
+6. Read models/current balances are caches rebuilt from ledgers (nightly reconciliation job proves equality). They are advisory; the ledgers are authoritative.
+
+### 4.2 The atomic posting set
+
+For a POSTED financial transaction, the following consequences — where applicable to the document type — must succeed or fail together in the same PostgreSQL transaction:
+
+| # | Consequence | Owner module |
+|---|---|---|
+| 1 | Business document header + lines (SO, invoice, PO, GRN, return, credit note) | owning module |
+| 2 | Fulfillment / stock ledger movement | inventory |
+| 3 | COGS movement (cost layer at sale) | inventory |
+| 4 | Payment / tender rows | payments |
+| 5 | Payment / payable allocation rows | payments |
+| 6 | Customer / supplier subledger impact (open balances, aging basis) | parties |
+| 7 | Tax lines | accounting |
+| 8 | General-ledger journal entry (Σ debit = Σ credit) | accounting |
+| 9 | Audit event | audit |
+| 10 | Transactional outbox event(s) | sync |
+
+No subset may commit alone. The Posting Coordinator enforces **static participant registration per document type** (e.g. a cash sale registers 1–10; a supplier opening balance registers a reduced set) and a repository-layer guard rejects any financially authoritative write attempted outside a coordinator transaction.
+
+### 4.3 What is asynchronous (outbox consumers — never financially authoritative)
+
+Notifications (SMS/email/push) · reporting/read-model refresh · search indexing · analytics · AI · external webhooks.
+
+**Hard rule:** a posted invoice must never exist successfully while its required GL or inventory posting is merely waiting for a background worker. If the posting engine cannot produce a balanced journal entry — or the ledger cannot record the movement — the command fails and nothing is persisted; the user retries with correct data. Retry/compensation semantics belong to the command, never to a worker.
 
 ## 5. Why the legacy architecture is not ported (evidence-linked)
 
@@ -94,7 +126,7 @@ Every money operation:
 | In-place edits/deletes of posted financials | D11, R9 | void/reversal documents |
 | Free-text statuses | inconsistent ladders | enums + state machines with guarded transitions |
 | Account-name string keys in GL | D8 orphaned TB rows | FK'd chart of accounts |
-| No transactions | D4 | single-transaction posting |
+| No transactions | D4 | Posting Coordinator unit of work — atomic posting set (§4.2) |
 | Second-resolution codes | D2 | sequences + UUIDv7 |
 
 ## 6. Repository working rules (from master prompt §21)

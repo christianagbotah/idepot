@@ -28,7 +28,7 @@ Only data the signed-in user is authorized to hold is cached (tenant + branch sc
 1. Every local mutation writes an **outbox event** in the same SQLite transaction as the data (transactional outbox on-device).
 2. Events carry: `event_id (UUIDv7)`, `idempotency_key`, `device_id`, `entity`, `op`, payload, `base_version` (of every referenced aggregate), `occurred_at`.
 3. Push is dependency-ordered per document (customer → order → lines → payment → allocation), batched, retried with exponential backoff + jitter.
-4. Server applies each event **idempotently** (dedupe by `event_id`/`idempotency_key`) inside one PG transaction per event (or per declared atomic group).
+4. Server applies each event **idempotently** (dedupe by `event_id`/`idempotency_key`) inside one PG transaction per event (or per declared atomic group). The apply path is the **same Posting Coordinator** used by online commands ([target-architecture.md](target-architecture.md) §4): journal entry, stock/COGS movements, allocations, subledger impacts, tax lines and the audit event commit in that same transaction. **Synchronization never bypasses or defers financial posting** — a synced document that cannot post completely (e.g. unbalanced journal) is rejected as a whole and returned to the device for correction; it is never partially applied and never parked for a background worker.
 5. Server responds per event: `applied` (with new server version), `conflict` (policy below), or `rejected` (validation).
 
 ### Pull (inbox / change feed)
@@ -62,7 +62,7 @@ Persistent indicator: **Online / Syncing k pending / Offline (n queued since hh:
 
 ## 8. Server-side change feed
 
-- Transactional outbox table → relay worker → `change_feed` (assigns tenant-scoped monotonic seq). Reporting/AI jobs consume the same outbox.
+- Transactional outbox table → relay worker → `change_feed` (assigns tenant-scoped monotonic seq). The outbox carries **only non-financial consequences** (notifications, reporting/read-model refresh, search indexing, analytics, AI, webhooks) — financially authoritative consequences are committed synchronously inside the posting transaction ([target-architecture.md](target-architecture.md) §4.2). Reporting/AI jobs consume the same non-financial outbox.
 - Compaction: change_feed rows older than N days and below all device cursors are archived (tombstones retained longer for deletable master data).
 
 ## 9. Offline POS UX requirements (from audit of legacy behaviour to preserve)
@@ -84,4 +84,4 @@ Persistent indicator: **Online / Syncing k pending / Offline (n queued since hh:
 
 ## 11. Redis/queues note
 
-Redis is used only server-side (outbox relay, notifications, AI jobs, report generation) and is **not** required for a POS sale to commit — either online (direct PG transaction) or offline (local commit). On-premise deployments can run without Redis by using PG-based polling for the relay.
+Redis is used only server-side for **non-financial** outbox consumers (notifications, AI jobs, report/read-model refresh, search, webhooks) and is **not** required for a POS sale to commit — either online (direct PG transaction via the Posting Coordinator) or offline (local commit). Financial posting requires only PostgreSQL. On-premise deployments can run without Redis by using PG-based polling for the relay.

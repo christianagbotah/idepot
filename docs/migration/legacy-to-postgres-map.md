@@ -1,6 +1,6 @@
 # Legacy MySQL → PostgreSQL Mapping
 
-Column-level mapping for the migration toolchain. Direction: legacy table → staging (`legacy_raw`) → target entity. Rules: master data before transactions; `legacy_table` + `legacy_id` preserved on every row (in `migration_map` and/or on the entity); original document codes preserved verbatim; no destructive normalization without a reconciliation diff.
+Column-level mapping for the migration toolchain. Direction: legacy table → staging (`legacy_raw`) → target entity. Rules: master data before transactions; `legacy_table` + `legacy_id` preserved on every row (in `legacy_id_map` and/or on the entity); original document codes preserved verbatim; no destructive normalization without a reconciliation diff. **Correction policy — no silent repairs:** where the audit proves stored legacy values are wrong (D1, D3, D7, R8, R14, D9, I1), the importer derives a canonical reconstructed value from the most trustworthy evidence and emits a correction-aware reconciliation record (legacy_stored_value / legacy_reconstructed_value / new_system_value / correction_delta / correction_reason / evidence / severity / requires_manual_approval / approved_by / approved_at) requiring sign-off — see [migration-reconciliation-strategy.md](migration-reconciliation-strategy.md) §3a. Known-bad figures are never copied verbatim to force zero reconciliation difference.
 
 ## 1. Master data
 
@@ -25,7 +25,7 @@ Column-level mapping for the migration toolchain. Direction: legacy table → st
 | Legacy | Target | Mapping notes |
 |---|---|---|
 | `sales_order` + `payment_with_goods` (per so_code) | `sales_order` header (one per so_code; header fields from any row — verify all rows equal per R14 and diff otherwise) + `sales_order_line` per row | `quantity`→ordered qty (transacted unit), `quantity_picked`→fulfilled; `order_item_has_unit_sales` → unit binding; `bundle_quantity/price` → unit qty/price for bundle unit; `cost_price` → cost_at_sale; `item_balance` dropped (ledger rebuilds); `vat_*` columns are always 0/unused → recorded in migration report, no tax lines synthesized |
-| `invoice` (type sales) | `invoice` + lines (rebuilt from SO rows) | `amount`/`amount_paid`/`amount_due` recomputed from allocations; legacy values compared → diff report; `status` normalized to enum incl. 'Over Paid'→paid+credit |
+| `invoice` (type sales) | `invoice` + lines (rebuilt from SO rows) | `amount`/`amount_paid`/`amount_due` recomputed from allocations; D1-affected `amount_paid` rebuilt from payment rows as canonical evidence; every deviation from stored values emitted as a §3a reconciliation record (legacy_stored vs legacy_reconstructed vs new_system + correction_reason/evidence/sign-off) — never silently overwritten; `status` normalized to enum incl. 'Over Paid'→paid+credit |
 | `invoice` (`invoice_code='Opening-balance'`) | `customer_opening_balance` (cash) | sign preserved |
 | `invoice` (`invoice_code LIKE 'Deposit-%'`) | `customer_credit` (deposit) + applications | |
 | `invoice` (LPAY negative rows) | `customer_credit` (manual credit) or `customer_opening_balance` (negative) per flow | |
@@ -51,18 +51,18 @@ Column-level mapping for the migration toolchain. Direction: legacy table → st
 
 ## 4. Opening balances (the critical rules)
 
-1. **Customer AR opening** = `Σ invoice.amount_due > 0` per customer (legacy derivation, [ar-ap-lifecycle.md](../legacy-audit/ar-ap-lifecycle.md) §3) — imported as one `customer_opening_balance` document per customer with the invoice-level breakdown attached (legacy invoice rows kept as subledagement reference).
+1. **Customer AR opening** = `Σ invoice.amount_due > 0` per customer (legacy derivation, [ar-ap-lifecycle.md](../legacy-audit/ar-ap-lifecycle.md) §3) — imported as one `customer_opening_balance` document per customer with the invoice-level breakdown attached (legacy invoice rows kept as subledger reference; `amount_due` is D1-safe, `amount_paid` is not — corrections per strategy doc §3a).
 2. **Customer credit (cash creditor)** = `abs(Σ invoice.amount_due < 0)` → `customer_credit` documents.
 3. **Goods owed to customers** (paid, undelivered) = per open SO, `Σ price × quantity_due` → open `sales_order` with remaining fulfillment (orders imported as `confirmed/partially_fulfilled` with pick state = `quantity_picked`).
 4. **Supplier AP opening** = `Σ accounts_payable.amount_due > 0` per supplier → `supplier_opening_balance` (+ supplier credit for negatives).
-5. **Stock opening** = physical count at cutover reconciled against `items.quantity`/`items.unit_quantity` (see strategy doc §freeze); differences → adjustment documents with reasons (not silent overrides).
+5. **Stock opening** = physical count at cutover (preferred authority) reconciled against `items.quantity`/`items.unit_quantity` (see strategy doc §4); differences → adjustment documents with reasons (not silent overrides). Importing legacy quantities **without** a physical count is an explicitly flagged accepted migration risk (`accepted_migration_risk = true`) requiring owner + accountant sign-off.
 6. **GL opening** = trial balance built from 1-5 + cash/bank account reconciled balances + inventory value; equity plug documented as "opening equity" (legacy had no capital accounts — client accountant confirms distribution during pilot).
 
 ## 5. Type & normalization rules
 
 | Legacy type | PostgreSQL type | Rule |
 |---|---|---|
-| `double` money | `numeric(18,4)` | round-half-even at 4dp; every changed value logged in rounding report |
+| `double` money | `numeric(18,4)` | round-half-even at 4dp; every changed value emitted as a reconciliation record (`correction_reason = 'rounding normalization'`) — logged, never silent |
 | `longtext` dates (d-m-Y strings) | `date` | parse strictly; unparsable → quarantine (report shows raw) |
 | `longtext` timestamps (unix strings) | `timestamptz` (UTC) | epoch seconds → UTC; **legacy stored Africa/Accra wall-clock epochs — verify offsets on sampled rows** |
 | `float` quantities | `numeric(18,6)` | |
@@ -81,7 +81,7 @@ Legacy mixes `utf8mb3`/`utf8mb4`/`latin1` tables (schema header). Pipeline: load
 - Orphan detection: payment.invoice_id without invoice; invoice.customer_id without customer; SO.item_id without item (items were deleted historically — `delete_item` left orphan docs, [stock-movement-map.md](../legacy-audit/stock-movement-map.md) §7) → quarantine + report (never auto-drop).
 - Dual-table consistency: per so_code, `sales_order` row-set vs `payment_with_goods` row-set (they are written together — mismatches indicate crashed writes, D4) → diff report.
 - Header-field consistency: per so_code/po_code all rows must agree on grand_total/amount_paid/amount_due/status (R14) → first-row-wins + diff report.
-- D1 detection: receipts with >1 distinct account where `invoice.amount_paid > Σ payment.amount` → corrected import uses payment rows as truth.
+- D1 detection: receipts with >1 distinct account where `invoice.amount_paid > Σ payment.amount` → corrected import uses payment rows as truth; each affected invoice emits a §3a reconciliation record (stored vs reconstructed vs new) requiring sign-off — never a silent overwrite.
 
 ## 8. Entity the migration must NOT invent
 

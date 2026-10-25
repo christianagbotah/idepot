@@ -57,7 +57,7 @@ Conceptual model derived from the legacy audit (not a 1:1 rename). Naming is sna
 
 - `account` (CoA, FK-safe renames via id, `account_type` enum, effective-dated), `accounting_period` (open/closed/locked).
 - `journal_entry` (header: date, period, source doc, posted_by, status posted/voided; **CHECK Σ debit = Σ credit** enforced by trigger/constraint on `journal_line`) + `journal_line` (account FK, debit, credit numeric).
-- Posting engine maps domain events → entries: sale (Dr AR / Cr Revenue + tax lines), receipt (Dr cash-account / Cr AR), GRN (Dr Inventory or Purchases / Cr AP), supplier invoice, refund reversals, COGS (Dr COGS / Cr Inventory at sale), deposits (Dr cash / Cr customer credit liability), expense (Dr expense / Cr cash), transfer, return (inverse postings per disposition).
+- Posting engine — invoked **synchronously inside the posting transaction** by the Posting Coordinator (never via asynchronous consumers; see [target-architecture.md](target-architecture.md) §4) — maps documents → entries: sale (Dr AR / Cr Revenue + tax lines), receipt (Dr cash-account / Cr AR), GRN (Dr Inventory or Purchases / Cr AP), supplier invoice, refund reversals, COGS (Dr COGS / Cr Inventory at sale), deposits (Dr cash / Cr customer credit liability), expense (Dr expense / Cr cash), transfer, return (inverse postings per disposition). The journal entry, tax lines and the audit event commit in the same transaction as the source document (atomic posting set); outbox rows carry only non-financial events.
 - Derived statements: trial balance, balance sheet (with real equity accounts + period close), P&L (accrual, COGS from stock ledger), cash flow (direct) — all computed from documents/ledger, property-tested.
 
 ## 10. Tax
@@ -70,9 +70,9 @@ Conceptual model derived from the legacy audit (not a 1:1 rename). Naming is sna
 
 ## 12. Audit, sync, migration, AI
 
-- `audit_event` (append-only; actor, action, entity, before/after JSONB, request id, device) — revives the dead `audit_log` design.
+- `audit_event` (append-only; actor, action, entity, before/after JSONB, request id, device) — revives the dead `audit_log` design. For posted financial transactions the audit event is written **inside the posting transaction** (member of the atomic posting set, [target-architecture.md](target-architecture.md) §4.2); post-commit interceptors handle non-financial writes only.
 - `outbox` / `inbox`, `change_feed` (entity, seq, tenant/branch scope), `sync_cursor` per device, `idempotency_key` registry — see [offline-sync.md](offline-sync.md).
-- `legacy_raw.*` staging schema + `migration_map` (legacy_table, legacy_id → entity) + `reconciliation_run`/`reconciliation_diff` — see migration docs.
+- `legacy_raw.*` staging schema (verbatim, quarantined — no mutation), `migration_run` (run registry: dump fingerprint, per-table row counts/checksums, stage status), `legacy_id_map` (legacy_table, legacy_id → target entity; idempotent re-runs), validator + quarantine tables, and `reconciliation_run`/`reconciliation_diff` with correction-aware fields (legacy_stored_value, legacy_reconstructed_value, new_system_value, correction_delta, correction_reason, evidence, severity, requires_manual_approval, approved_by/approved_at) — see migration docs. Engineered from **Phase 1** and evolved per phase (see [ROADMAP.md](../ROADMAP.md)).
 - `ai_model_run`, `ai_prediction`, `ai_alert`, `ai_feedback` (tenant-isolated, versioned) — see [ai-opportunity-map.md](ai-opportunity-map.md).
 
 ## 13. ER summary (textual)
@@ -89,7 +89,7 @@ sales_order ──< line ──< fulfillment_line ; invoice ──< line/tax_lin
 purchase_order ──< goods_receipt ──< supplier_invoice (3-way match)
 payment ──< payment_tender ; payment ──< payment_allocation >── invoice/credit_note
 journal_entry ──< journal_line >── account (ΣD=ΣC enforced)
-document_sequence ; audit_event ; change_feed/outbox ; legacy_raw + migration_map
+document_sequence ; audit_event (in-transaction for postings) ; change_feed/outbox (non-financial events only) ; legacy_raw + migration_run + legacy_id_map
 ```
 
 ## 14. Mapping to legacy tables
