@@ -179,7 +179,11 @@ export class RawPgCandidate implements BenchCandidate {
     const start = performance.now();
     try {
       await client.query('BEGIN');
-      const stream = client.query(
+      const copyQuery = client.query as unknown as (s: unknown) => NodeJS.WritableStream & {
+        end(cb?: () => void): void;
+        on(ev: string, cb: () => void): void;
+      };
+      const stream = copyQuery(
         pgCopyStreams.from(
           `COPY bench_ledger (tenant_id, entry_date, direction, amount) FROM STDIN WITH (FORMAT text)`,
         ),

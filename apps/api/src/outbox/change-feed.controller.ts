@@ -5,6 +5,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { parseBody } from '../parse-body.js';
 import { RequirePermissions } from '../rbac/permissions.decorator.js';
 import { RbacGuard } from '../rbac/rbac.guard.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { ChangeFeedService } from './change-feed.service.js';
 
 const AckSchema = z.object({ ids: z.array(z.string().uuid()).min(1).max(500) });

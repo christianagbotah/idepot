@@ -141,7 +141,7 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
 
   it('writes reconciliation.json + human report artifacts', () => {
     expect(first.artifactPath).toBeTruthy();
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+     
     const artifact = require(first.artifactPath!) as {
       runId: string;
       reconciliation: { summary: { records: number } };

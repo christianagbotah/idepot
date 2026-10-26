@@ -1,6 +1,6 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { Inject } from '@nestjs/common';
-import { Pool } from 'pg';
+import type { Pool } from 'pg';
 import {
   verifyPassword,
   signAccessToken,
@@ -15,7 +15,9 @@ import type {
   DeviceRegisterRequest,
 } from '@idepot/contracts';
 import { UnauthorizedError } from '@idepot/domain';
-import { PG_ADMIN_POOL, UnitOfWork } from '../db/unit-of-work.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { UnitOfWork } from '../db/unit-of-work.js';
+import { PG_ADMIN_POOL } from '../db/unit-of-work.js';
 
 interface UserRow {
   id: string;
@@ -71,7 +73,6 @@ export class AuthService {
       return u;
     });
 
-    const roles = user.roles.filter(isRole);
     await this.uow.run({ tenantId: tenant.id, userId: user.id }, async (ctx) => {
       await ctx.audit.record({
         tenantId: tenant.id,

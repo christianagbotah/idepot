@@ -1,0 +1,38 @@
+# iDepot Phase 1 local dev stack: primary datastore + isolated legacy staging.
+# Usage: docker compose -f infra/docker-compose.dev.yml up -d
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: idepot
+      POSTGRES_PASSWORD: idepot_dev
+      POSTGRES_DB: idepot
+    ports: ['5432:5432']
+    volumes: ['idepot_pg:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U idepot']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Isolated, DISPOSABLE staging MySQL for migration runs.
+  # NEVER points at a production legacy source.
+  legacy-staging-mysql:
+    image: mysql:8
+    command: ['--lower_case_table_names=1']
+    environment:
+      MYSQL_ROOT_PASSWORD: root_dev
+      MYSQL_DATABASE: idepot_legacy_staging
+      MYSQL_USER: idepot_migration
+      MYSQL_PASSWORD: idepot_migration_dev
+    ports: ['3306:3306']
+    volumes: ['idepot_mysql:/var/lib/mysql']
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1', '-uroot', '-proot_dev']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  idepot_pg:
+  idepot_mysql:

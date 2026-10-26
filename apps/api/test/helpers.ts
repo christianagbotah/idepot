@@ -6,7 +6,7 @@ import { Client } from 'pg';
 import { getTestPostgres, type TestPostgres } from '@idepot/testing';
 import { runMigrations } from '../../../infra/migrations/runner.js';
 import { hashPassword } from '@idepot/auth';
-import { Pool } from 'pg';
+import type { Pool } from 'pg';
 import { AppModule } from '../src/app.module.js';
 import { PG_POOL, PG_ADMIN_POOL } from '../src/db/unit-of-work.js';
 
@@ -118,7 +118,7 @@ export async function createApiFixture(): Promise<ApiFixture> {
   app.setGlobalPrefix('api');
   await app.init();
 
-  for (const [role, u] of Object.entries(tenantA.users)) {
+  for (const u of Object.values(tenantA.users)) {
     u.token = await login(app, 'tenant-a', u.email, u.password);
   }
   tenantB.users.owner!.token = await login(

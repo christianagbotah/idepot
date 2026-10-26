@@ -3,7 +3,8 @@
  * mapping). Idempotent via legacy_id_map: (legacy_table, legacy_id) maps to
  * the SAME target forever; re-runs reuse mapped targets and never duplicate.
  */
-import { PoolClient, type Client } from 'pg';
+import type { PoolClient} from 'pg';
+import { type Client } from 'pg';
 import type { LegacyCell, LegacyRow } from './types.js';
 
 export interface TransformOptions {

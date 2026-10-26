@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { PostSampleDocument } from '@idepot/contracts';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork } from '../db/unit-of-work.js';
 
 /** Reference subject for the Posting Coordinator (ADR-0001). Real financial

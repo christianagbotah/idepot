@@ -10,7 +10,6 @@
 import { createMySqlStagingSource } from './source-mysql.js';
 import { createParsedDumpSource } from './dump-parser.js';
 import { runMigration } from './engine.js';
-import { randomUUID } from 'node:crypto';
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);

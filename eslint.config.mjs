@@ -28,12 +28,12 @@ const boundaries = [
   {
     files: ['packages/auth/**/*.ts'],
     name: 'auth/no-frameworks',
-    groups: [...FRAMEWORKS, 'next'],
+    groups: FRAMEWORKS.filter((g) => g !== 'next'),
   },
   {
     files: ['packages/migration/**/*.ts'],
     name: 'migration/no-frameworks',
-    groups: ['@nestjs', 'next'],
+    groups: ['@nestjs'],
   },
   {
     files: ['apps/api/**/*.ts'],

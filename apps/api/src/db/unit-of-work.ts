@@ -15,7 +15,7 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Injectable, Inject } from '@nestjs/common';
-import { Pool, PoolClient, QueryResult } from 'pg';
+import type { Pool, PoolClient, QueryResult } from 'pg';
 import type { AuditEventProps } from '@idepot/domain';
 import { ConflictError } from '@idepot/domain';
 

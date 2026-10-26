@@ -7,7 +7,8 @@
  * stager ASSUMES they exist — it never issues CREATE SCHEMA / CREATE TABLE and
  * fails fast with a precise error when the DDL layer has not run.
  */
-import { PoolClient, type Client } from 'pg';
+import type { PoolClient} from 'pg';
+import { type Client } from 'pg';
 import * as pgCopyStreams from 'pg-copy-streams';
 import type { LegacyCell, LegacyRow, TableSpec } from './types.js';
 

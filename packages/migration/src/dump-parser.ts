@@ -62,16 +62,13 @@ export function parseMysqlDump(sql: string): ParsedDump {
       });
       rows.push(row);
       j = close + 1;
-      while (j < n && /[\s;]/.test(sql[j]!)) {
-        if (sql[j] === ';') {
-          j++;
-          break;
-        }
-        j++;
-      }
-      // continue if next non-space char is '(' (another tuple) else statement done
+      // find next non-space char; ',' = another tuple follows, ';' or anything else = done
       let k = j;
-      while (k < n && /\s/.test(sql[k]!)) k++;
+      while (k < n && /[\s;]/.test(sql[k]!)) k++;
+      if (sql[k] === ',') {
+        j = k + 1;
+        continue;
+      }
       if (sql[k] !== '(') break;
       j = k;
     }

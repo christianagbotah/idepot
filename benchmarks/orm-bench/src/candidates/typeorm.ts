@@ -29,7 +29,7 @@ const BenchAEntity = new EntitySchema<BenchA>({
   name: 'BenchA',
   tableName: 'bench_a',
   columns: {
-    id: { type: 'bigint', generated: 'identity', primary: true },
+    id: { type: 'bigint', generated: 'increment', primary: true },
     tenant_id: { type: 'text' },
     code: { type: 'text' },
     amount: { type: 'numeric', precision: 18, scale: 4 },
@@ -39,7 +39,7 @@ const BenchLedgerEntity = new EntitySchema<BenchLedger>({
   name: 'BenchLedger',
   tableName: 'bench_ledger',
   columns: {
-    id: { type: 'bigint', generated: 'identity', primary: true },
+    id: { type: 'bigint', generated: 'increment', primary: true },
     tenant_id: { type: 'text' },
     entry_date: { type: 'date' },
     direction: { type: 'text' },
@@ -50,7 +50,7 @@ const BenchRlsEntity = new EntitySchema<BenchRls>({
   name: 'BenchRls',
   tableName: 'bench_rls',
   columns: {
-    id: { type: 'bigint', generated: 'identity', primary: true },
+    id: { type: 'bigint', generated: 'increment', primary: true },
     tenant_id: { type: 'text' },
     payload: { type: 'text' },
   },
@@ -143,7 +143,7 @@ export class TypeOrmCandidate implements BenchCandidate {
         throw err;
       }
     }
-    const n = await this.ds.query<{ n: string }>('SELECT count(*)::text n FROM bench_a');
+    const n = (await this.ds.query('SELECT count(*)::text n FROM bench_a')) as { n: string }[];
     const ms = performance.now() - start;
     const pass = Number(n[0]!.n) === 0;
     out.push({
@@ -171,10 +171,10 @@ export class TypeOrmCandidate implements BenchCandidate {
       }
       await repo.insert(rows);
     });
-    const sum = await this.ds.query<{ s: string }>(
+    const sum = (await this.ds.query(
       'SELECT sum(amount)::text s FROM bench_a WHERE tenant_id = $1',
       [TENANT_B],
-    );
+    )) as { s: string }[];
     const ms = performance.now() - start;
     const pass = sum[0]!.s === '750.0000';
     out.push({

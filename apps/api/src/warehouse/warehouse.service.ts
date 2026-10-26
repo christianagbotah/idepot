@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import type { CreateWarehouse, UpdateWarehouse, WarehouseDto } from '@idepot/contracts';
 import { NotFoundError } from '@idepot/domain';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork } from '../db/unit-of-work.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { WarehouseRepository } from './warehouse.repository.js';
 
 @Injectable()

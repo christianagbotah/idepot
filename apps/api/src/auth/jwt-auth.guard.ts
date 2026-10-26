@@ -1,9 +1,11 @@
-import {
+import type {
   CanActivate,
-  ExecutionContext,
+  ExecutionContext} from '@nestjs/common';
+import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { verifyAccessToken } from '@idepot/auth';

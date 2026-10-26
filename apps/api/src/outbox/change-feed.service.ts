@@ -1,4 +1,5 @@
-import { Injectable, ValidationError as NestValidationError } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork } from '../db/unit-of-work.js';
 import type { Principal } from '../auth/jwt-auth.guard.js';
 
@@ -20,7 +21,7 @@ export class ChangeFeedService {
       let sql = `SELECT id, type, payload, occurred_at, status FROM outbox_event`;
       if (after) {
         if (!/^[0-9a-f-]{36}$/i.test(after)) {
-          throw new NestValidationError('after must be a uuid');
+          throw new BadRequestException('after must be a uuid');
         }
         sql += ` WHERE (occurred_at, id) > (SELECT occurred_at, id FROM outbox_event WHERE id = $2)`;
         params.push(after);
