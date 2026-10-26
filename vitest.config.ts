@@ -1,9 +1,15 @@
 import { defineConfig } from 'vitest/config';
 import { resolve } from 'node:path';
+import swc from 'unplugin-swc';
 
 const srcAlias = (pkg: string) => resolve(__dirname, `packages/${pkg}/src/index.ts`);
 
 export default defineConfig({
+  plugins: [
+    // NestJS relies on emitDecoratorMetadata; vitest's esbuild transform cannot
+    // emit it, so TS is transformed through SWC (legacy decorators + metadata).
+    swc.vite({ module: { type: 'es6' } }) as never,
+  ],
   resolve: {
     alias: {
       '@idepot/testing': srcAlias('testing'),
