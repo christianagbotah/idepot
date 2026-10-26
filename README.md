@@ -21,3 +21,14 @@ Planned target architecture:
 - SQLite/IndexedDB offline-first clients with deterministic synchronization
 
 The repository must never contain production client PII or secrets.
+
+## Phase 0 — forensic audit (complete)
+
+The verified business-rule map and migration baseline live under [`docs/`](./docs/):
+
+- [`docs/legacy-audit/`](./docs/legacy-audit/) — 20 evidence-cited documents: module inventory, view classification, controller/model/table cross-references, lifecycle maps (sales/POS, purchasing, stock, payments, AR/AP, returns, units, numbering), business-rules catalogue, calculation register with corrected rules, defects & risks, dead/school-code register.
+- [`docs/architecture/`](./docs/architecture/) — target system context, monorepo architecture, domain model, offline-sync design, POS hardware abstraction, mobile apps, AI opportunity map, security & RBAC design.
+- [`docs/migration/`](./docs/migration/) — legacy MySQL → PostgreSQL mapping and the client migration & reconciliation strategy.
+- [`docs/ROADMAP.md`](./docs/ROADMAP.md) and [`docs/STATUS.md`](./docs/STATUS.md) — phased implementation plan and living status board.
+
+Start with [`docs/legacy-audit/README.md`](./docs/legacy-audit/README.md) for the audit's headline findings.
