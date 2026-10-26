@@ -16,16 +16,21 @@ if (!url) {
   process.exit(2);
 }
 
-try {
-  const applied = await runMigrations({
-    adminUrl: url,
-    appRolePassword: arg('app-role-password') ?? process.env.IDEPOT_APP_ROLE_PASSWORD,
-  });
-  for (const m of applied) {
-    console.log(`  ${m.action === 'applied' ? 'APPLY ' : 'SKIP  '} ${m.name} (${m.checksum.slice(0, 12)})`);
+async function main(): Promise<number> {
+  try {
+    const applied = await runMigrations({
+      adminUrl: url!,
+      appRolePassword: arg('app-role-password') ?? process.env.IDEPOT_APP_ROLE_PASSWORD,
+    });
+    for (const m of applied) {
+      console.log(`  ${m.action === 'applied' ? 'APPLY ' : 'SKIP  '} ${m.name} (${m.checksum.slice(0, 12)})`);
+    }
+    console.log(`migrations complete: ${applied.length} file(s) considered`);
+    return 0;
+  } catch (err) {
+    console.error(`migrations FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
   }
-  console.log(`migrations complete: ${applied.length} file(s) considered`);
-} catch (err) {
-  console.error(`migrations FAILED: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
 }
+
+main().then((code) => process.exit(code));
