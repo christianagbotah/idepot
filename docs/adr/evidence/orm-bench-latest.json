@@ -1,0 +1,177 @@
+{
+  "generatedAt": "2026-10-26T17:39:46.336Z",
+  "node": "v24.21.0",
+  "postgres": "18.4 (embedded)",
+  "bulkRows": 50000,
+  "criteria": "B1 explicit transaction propagation across nested services with atomic rollback; B2 numeric(18,4) exact round-trip/sum; B3 parameterized raw ledger SQL with window functions; B4 migration facility; B5 bulk insert throughput (10^5 scale, migration path); B6 RLS via transaction-scoped session context; B7 SQL observability.",
+  "candidates": [
+    {
+      "candidate": "raw-pg (control)",
+      "connection": "app-role (least privilege)",
+      "dimensions": [
+        {
+          "id": "B1",
+          "name": "transaction propagation + atomic rollback",
+          "pass": true,
+          "ms": 7.955549000000019,
+          "detail": "nested service calls shared one client tx; rollback left 0 rows"
+        },
+        {
+          "id": "B2",
+          "name": "numeric(18,4) exact handling",
+          "pass": true,
+          "ms": 441.8733830000001,
+          "detail": "sum(0.1 x2500 + 0.2 x2500) == 750.0000 exact; extreme value round-trips"
+        },
+        {
+          "id": "B3",
+          "name": "parameterized raw ledger SQL (window fn)",
+          "pass": true,
+          "ms": 8.098139000000174,
+          "detail": "running balance correct (first ledger row is dr +1.0000)"
+        },
+        {
+          "id": "B4",
+          "name": "migration facility",
+          "pass": true,
+          "ms": 0,
+          "detail": "checksum-verified SQL runner (infra/migrations/runner.ts), idempotent re-run proven in tests"
+        },
+        {
+          "id": "B5",
+          "name": "bulk insert (COPY FROM STDIN)",
+          "pass": true,
+          "ms": 1377.5113129999997,
+          "detail": "50000 rows in 1378ms (36297 rows/s)"
+        },
+        {
+          "id": "B6",
+          "name": "RLS via transaction-scoped session context",
+          "pass": true,
+          "ms": 2.5381750000001375,
+          "detail": "SET LOCAL app.tenant_id scopes visibility; absent context sees 0 rows"
+        },
+        {
+          "id": "B7",
+          "name": "SQL observability",
+          "pass": true,
+          "ms": 0,
+          "detail": "explicit statement construction; every SQL string visible at call site"
+        }
+      ],
+      "allPass": true
+    },
+    {
+      "candidate": "typeorm 0.3",
+      "connection": "app-role (least privilege)",
+      "dimensions": [
+        {
+          "id": "B1",
+          "name": "transaction propagation + atomic rollback",
+          "pass": true,
+          "ms": 4.053995000000214,
+          "detail": "nested inserts through propagated EntityManager; failure rolled back to 0 rows"
+        },
+        {
+          "id": "B2",
+          "name": "numeric(18,4) exact handling",
+          "pass": true,
+          "ms": 100.67242600000009,
+          "detail": "decimal mapped as string; sum exact at 750.0000"
+        },
+        {
+          "id": "B3",
+          "name": "parameterized raw ledger SQL (window fn)",
+          "pass": true,
+          "ms": 2.96154099999967,
+          "detail": "manager.query supports parameterized windows"
+        },
+        {
+          "id": "B4",
+          "name": "migration facility",
+          "pass": true,
+          "ms": 0,
+          "detail": "DataSource.migrationsRun executed candidate migration at connect (bookkeeping in migrations table)"
+        },
+        {
+          "id": "B5",
+          "name": "bulk insert (chunked multi-row INSERT)",
+          "pass": true,
+          "ms": 819.405542,
+          "detail": "50000 rows in 819ms (61020 rows/s)"
+        },
+        {
+          "id": "B6",
+          "name": "RLS via transaction-scoped session context",
+          "pass": true,
+          "ms": 3.7445589999997537,
+          "detail": "SET LOCAL inside ds.transaction; absent context sees 0 rows"
+        },
+        {
+          "id": "B7",
+          "name": "SQL observability",
+          "pass": true,
+          "ms": 0,
+          "detail": "logger captured 80 statements (56 INSERTs)"
+        }
+      ],
+      "allPass": true
+    },
+    {
+      "candidate": "kysely 0.28",
+      "connection": "app-role (least privilege)",
+      "dimensions": [
+        {
+          "id": "B1",
+          "name": "transaction propagation + atomic rollback",
+          "pass": true,
+          "ms": 10.036551000000145,
+          "detail": "nested inserts on propagated trx; rollback left 0 rows"
+        },
+        {
+          "id": "B2",
+          "name": "numeric(18,4) exact handling",
+          "pass": true,
+          "ms": 53.48791799999981,
+          "detail": "numeric stays string through query builder; sum exact"
+        },
+        {
+          "id": "B3",
+          "name": "parameterized raw ledger SQL (window fn)",
+          "pass": true,
+          "ms": 3.893272000000252,
+          "detail": "sql template composes with query builder"
+        },
+        {
+          "id": "B4",
+          "name": "migration facility",
+          "pass": true,
+          "ms": 0,
+          "detail": "Kysely Migrator available (MigrationProvider); bench seeds via checksum runner + bookkeeping table"
+        },
+        {
+          "id": "B5",
+          "name": "bulk insert (chunked multi-row INSERT)",
+          "pass": true,
+          "ms": 377.1583049999999,
+          "detail": "50000 rows in 377ms (132570 rows/s)"
+        },
+        {
+          "id": "B6",
+          "name": "RLS via transaction-scoped session context",
+          "pass": true,
+          "ms": 3.843112999999903,
+          "detail": "set_config inside trx scopes visibility; absent context sees 0 rows"
+        },
+        {
+          "id": "B7",
+          "name": "SQL observability",
+          "pass": true,
+          "ms": 0,
+          "detail": "log listener captured 78 executed queries"
+        }
+      ],
+      "allPass": true
+    }
+  ]
+}

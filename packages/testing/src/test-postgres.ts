@@ -69,7 +69,8 @@ async function bootEmbedded(): Promise<TestPostgres> {
     password: ADMIN_PASSWORD,
     port,
     persistent: false,
-    onError: (msg: string) => process.stderr.write(`[embedded-pg] ${msg}\n`),
+    onError: (msgOrErr: unknown) =>
+      process.stderr.write(`[embedded-pg] ${String(msgOrErr)}\n`),
   });
   await pg.initialise();
   await pg.start();

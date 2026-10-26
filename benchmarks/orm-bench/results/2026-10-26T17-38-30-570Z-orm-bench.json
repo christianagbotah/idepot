@@ -1,0 +1,77 @@
+{
+  "generatedAt": "2026-10-26T17:38:30.570Z",
+  "node": "v24.21.0",
+  "postgres": "18.4 (embedded)",
+  "bulkRows": 50000,
+  "criteria": "B1 explicit transaction propagation across nested services with atomic rollback; B2 numeric(18,4) exact round-trip/sum; B3 parameterized raw ledger SQL with window functions; B4 migration facility; B5 bulk insert throughput (10^5 scale, migration path); B6 RLS via transaction-scoped session context; B7 SQL observability.",
+  "candidates": [
+    {
+      "candidate": "raw-pg (control)",
+      "connection": "app-role (least privilege)",
+      "dimensions": [
+        {
+          "id": "B1",
+          "name": "transaction propagation + atomic rollback",
+          "pass": true,
+          "ms": 8.93347800000015,
+          "detail": "nested service calls shared one client tx; rollback left 0 rows"
+        },
+        {
+          "id": "B2",
+          "name": "numeric(18,4) exact handling",
+          "pass": false,
+          "ms": 510.8901739999999,
+          "detail": "sum=750.0000 extremeOk=true"
+        },
+        {
+          "id": "B3",
+          "name": "parameterized raw ledger SQL (window fn)",
+          "pass": false,
+          "ms": 5.741939999999886,
+          "detail": "first running=1.0000"
+        },
+        {
+          "id": "B4",
+          "name": "migration facility",
+          "pass": true,
+          "ms": 0,
+          "detail": "checksum-verified SQL runner (infra/migrations/runner.ts), idempotent re-run proven in tests"
+        },
+        {
+          "id": "B5",
+          "name": "bulk insert (COPY FROM STDIN)",
+          "pass": true,
+          "ms": 1659.276019,
+          "detail": "50000 rows in 1659ms (30134 rows/s)"
+        },
+        {
+          "id": "B6",
+          "name": "RLS via transaction-scoped session context",
+          "pass": true,
+          "ms": 2.755540999999994,
+          "detail": "SET LOCAL app.tenant_id scopes visibility; absent context sees 0 rows"
+        },
+        {
+          "id": "B7",
+          "name": "SQL observability",
+          "pass": true,
+          "ms": 0,
+          "detail": "explicit statement construction; every SQL string visible at call site"
+        }
+      ],
+      "allPass": false
+    },
+    {
+      "candidate": "typeorm 0.3",
+      "connection": "app-role (least privilege)",
+      "dimensions": [],
+      "allPass": false
+    },
+    {
+      "candidate": "kysely 0.28",
+      "connection": "app-role (least privilege)",
+      "dimensions": [],
+      "allPass": false
+    }
+  ]
+}
