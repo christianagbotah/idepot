@@ -1,0 +1,22 @@
+{
+  "name": "@idepot/orm-bench",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ADR-0002 evidence: PostgreSQL access layer benchmark (B1-B7). Not production code.",
+  "type": "module",
+  "scripts": {
+    "bench": "tsx src/run.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@idepot/testing": "*",
+    "kysely": "^0.28.2",
+    "pg": "^8.13.1",
+    "typeorm": "^0.3.21"
+  },
+  "devDependencies": {
+    "@idepot/config": "*",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2"
+  }
+}

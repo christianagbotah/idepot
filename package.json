@@ -1,0 +1,43 @@
+{
+  "name": "idepot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "iDepot modernization — monorepo foundation (Phase 1)",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "benchmarks/*"
+  ],
+  "scripts": {
+    "build": "node scripts/build-order.mjs",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint packages apps --ext .ts,.tsx",
+    "lint:fix": "eslint packages apps --ext .ts,.tsx --fix",
+    "format": "prettier --write \"packages/**/src/**/*.ts\" \"apps/*/src/**/*.ts\"",
+    "test": "vitest run --exclude \"**/*.integration.test.ts\"",
+    "test:watch": "vitest --exclude \"**/*.integration.test.ts\"",
+    "test:integration": "vitest run \"**/*.integration.test.ts\"",
+    "db:migrate": "tsx infra/migrations/run.ts",
+    "migration:smoke": "tsx packages/migration/src/cli.ts smoke",
+    "verify": "npm run lint && npm run typecheck && npm run build && npm run test && npm run test:integration && npm run migration:smoke"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@typescript-eslint/eslint-plugin": "^8.20.0",
+    "@typescript-eslint/parser": "^8.20.0",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^10.0.1",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.4"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "@embedded-postgres/linux-x64@18.4.0-beta.17": true
+  }
+}

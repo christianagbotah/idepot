@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+.next/
+.turbo/
+
+# Test runtime artifacts
+.pg-test/
+coverage/
+
+# Migration runtime artifacts (run-scoped; never commit run outputs)
+migration-artifacts/
+!docs/adr/evidence/
+# ADR evidence results are committed deliberately:
+!benchmarks/orm-bench/results/latest.json
+
+# Local databases / services
+.mysql/
+downloads/
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
