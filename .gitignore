@@ -34,3 +34,6 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# benchmark run outputs: only latest.json is committed as ADR evidence
+benchmarks/orm-bench/results/2*-orm-bench.json
