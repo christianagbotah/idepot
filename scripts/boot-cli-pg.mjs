@@ -5,12 +5,15 @@
  */
 import EmbeddedPostgres from 'embedded-postgres';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { createServer } from 'node:net';
 
-const out = process.argv[2] ?? '/home/z/my-project/idepot/.pg-test/cli-url';
+// scripts/ lives at the monorepo root — resolve paths from the module location
+// so the tool works from any checkout path (no hardcoded machine paths).
+const repoRoot = resolve(import.meta.dirname, '..');
+const out = process.argv[2] ?? join(repoRoot, '.pg-test', 'cli-url');
 mkdirSync(dirname(out), { recursive: true });
-const dataDir = '/home/z/my-project/.pg-test/cli-data';
+const dataDir = join(repoRoot, '.pg-test', 'cli-data');
 // disposable scratch cluster: always start fresh (initdb creates the dir itself)
 if (existsSync(dataDir)) rmSync(dataDir, { recursive: true, force: true });
 const port = await new Promise((resolve, reject) => {

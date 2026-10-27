@@ -11,10 +11,11 @@
  */
 import EmbeddedPostgres from 'embedded-postgres';
 import { Client } from 'pg';
-import { mkdirSync, rmSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 export const ADMIN_USER = 'postgres';
 export const ADMIN_PASSWORD = 'postgres_test';
@@ -38,6 +39,34 @@ export interface TestPostgres {
 let singleton: Promise<TestPostgres> | null = null;
 let stopped = false;
 
+/**
+ * Locate the monorepo root by walking up from this module until a package.json
+ * declaring "workspaces" is found. Resolved at RUNTIME from the module's own
+ * location — never hardcoded — so the harness works on any machine/CI runner
+ * and both when executed from src (vitest source alias) and from dist.
+ */
+function findMonorepoRoot(): string {
+  let dir = dirname(fileURLToPath(new URL('.', import.meta.url)));
+  while (true) {
+    const pkgPath = join(dir, 'package.json');
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { workspaces?: unknown };
+        if (Array.isArray(pkg.workspaces) && pkg.workspaces.length > 0) return dir;
+      } catch {
+        /* malformed package.json — keep walking up */
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) {
+      throw new Error(
+        `monorepo root not found: no package.json with "workspaces" above ${dir}`,
+      );
+    }
+    dir = parent;
+  }
+}
+
 async function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = createServer();
@@ -58,7 +87,10 @@ async function bootEmbedded(): Promise<TestPostgres> {
         'Provide IDEPOT_TEST_PG_ADMIN_URL or enable self-boot.',
     );
   }
-  const dataRoot = process.env.IDEPOT_TEST_PG_DIR ?? '/home/z/my-project/.pg-test';
+  // Disposable scratch space inside the repo (gitignored). Override with
+  // IDEPOT_TEST_PG_DIR. CI runners check the repo out at an arbitrary path,
+  // so this must be resolved at runtime, never hardcoded.
+  const dataRoot = process.env.IDEPOT_TEST_PG_DIR ?? join(findMonorepoRoot(), '.pg-test');
   const dataDir = join(dataRoot, `data-${randomUUID()}`);
   mkdirSync(dataDir, { recursive: true });
   const port = await getFreePort();
