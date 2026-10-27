@@ -36,26 +36,28 @@
 
 **apps/web:** Next.js 15 shell with `@idepot/ui` design tokens and a login scaffold wired to the API contract.
 
-**CI (`.github/workflows/ci.yml`):** postgres:16 + mysql:8 services; lint → typecheck → build → unit → integration (RLS/RBAC/coordinator/migration smoke) → CLI migration smoke with `reconciliation.json` artifact upload.
+**CI (`.github/workflows/ci.yml`):** two jobs. `verify`: postgres:16 + mysql:8 services; lint → **clean typecheck (regression-gated: all `dist/` deleted first, source-path resolution)** → build → unit → integration (RLS/RBAC/coordinator/migration smoke) → CLI migration smoke with `reconciliation.json` artifact upload. `security`: gitleaks secret scanning (pinned v8.30.1, checksum-verified, full history, `.gitleaks.toml` policy) + dependency audits (runtime chains fail on high/critical; all chains fail on critical) — policy and triage in `docs/security/dependency-audit.md`.
 
-## Test status (this branch, all green)
+## Test status (this branch — re-verified after clean-checkout fixes, 2026-10-27)
 
 | Suite | Result |
 |---|---|
-| Unit (auth: Argon2id, RBAC decision, JWT types) | 4/4 |
+| Unit (auth: Argon2id, RBAC decision, JWT types) | 4/4 (vitest 4.1.12) |
 | Infra migrations + RLS + least-privilege | 5/5 |
 | Posting Coordinator atomicity + enforcement | 3/3 |
 | RBAC matrix + cross-tenant impossibility | 26/26 |
 | Vertical slice E2E (login→tenant→CRUD→audit→change-feed→ack→devices) | 7/7 |
 | Migration smoke + idempotency + ownership contract | 7/7 |
-| ORM benchmark (3 candidates × B1–B7) | 21/21 PASS |
-| CLI end-to-end smoke (PG + MariaDB + fixture) | PASS (14 rows, checksums OK) |
-| Lint / typecheck / build | clean (8 workspaces) |
+| ORM benchmark (3 candidates × B1–B7) | 21/21 PASS (committed evidence, unchanged) |
+| CLI end-to-end smoke (fixture → legacy_raw → reconciliation.json) | PASS ×2 runs (idempotent: second run imported=0, reused=3) |
+| Lint / **clean** typecheck (no dist) / build | clean (9 workspaces) |
+| npm audit (runtime + full) | 0 vulnerabilities |
+| gitleaks full-history secret scan | clean (2 documented allowlist entries) |
 
 ## Exit criteria check (ROADMAP Phase 1)
 
 - [x] auth+RBAC enforced on a sample CRUD resource with matrix tests green, **including cross-tenant access impossibility** (26/26)
-- [x] CI green (workflow committed; services mirror the verified local pipeline)
+- [ ] **CI green — PENDING.** GitHub Actions run `40376824450` (PR #2 head `217e67d`) FAILED at the Typecheck step: a clean checkout has no `dist/` output, so workspace-internal packages (`@idepot/domain`, `@idepot/contracts`, `@idepot/auth`, `@idepot/testing`) were unresolvable, and every later step was skipped. Fixes on this branch: source-path typecheck configs (`tsconfig.typecheck.json` per workspace), corrected `types` → `*.d.ts` package metadata, `npm run typecheck:clean` regression gate, dependency/security scanning gates, all 8 npm-audit findings remediated (see `docs/security/dependency-audit.md`). To be marked complete only when a fresh GitHub Actions run succeeds through every step.
 - [x] posting-coordinator reference test proves **all-or-nothing rollback** (failure injected after partial writes → zero rows)
 - [x] migration smoke runs a fixture dump end-to-end and emits `reconciliation.json` (CLI + vitest + CI step)
 - [x] ADR-0001..0003 approved **before** their dependent production code (commit order in history)
@@ -65,7 +67,7 @@
 - Migration workstream Phase 1 imports only `store`→`warehouse`; `item`/`invoice`/`payment` are staged, validated, quarantined and reconciled but not imported (their targets arrive in Phases 2–3 per the continuous-migration plan).
 - Reconstruction for D1 uses the invoice-amount authority (defect-register remediation rule); invoice-level manual sign-off workflow (approval UI) lands with Phase 3 migration workstream — records are stored and flagged now.
 - Outbox projector is a primitive (read + ack endpoints); scheduled background dispatcher arrives with the first real consumer.
-- CI uses service containers for MySQL/PostgreSQL; the sandbox verification used an embedded PostgreSQL 18.4 and a local MariaDB 11.4.7 staging — the harness is the contract.
+- CI uses service containers for MySQL/PostgreSQL; the current sandbox has no MySQL server, so local smoke verification uses the documented parsed-dump fallback source — CI exercises the MySQL protocol path (mysql:8 service).
 - Web is a shell + design baseline only (no session persistence yet).
 
 ## Next actions (Phase 2)

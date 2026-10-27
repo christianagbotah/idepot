@@ -1434,7 +1434,7 @@ class Crud_model extends CI_Model {
 
 		$product_code = $code;
 
-		$personal_token = "FkA9UyDiQT0YiKwYLK3ghyFNRVV9SeUn";
+		$personal_token = getenv("ENVATO_PERSONAL_TOKEN"); // redacted: hardcoded Envato token removed (see legacy/SECURITY-NOTE.md)
 		$url = "https://api.envato.com/v3/market/author/sale?code=" . $product_code;
 		$curl = curl_init($url);
 

@@ -10,7 +10,7 @@ import { createApiFixture } from './helpers.js';
 interface MatrixCase {
   role: keyof ApiFixture['tenantA']['users'];
   method: 'get' | 'post' | 'patch';
-  path: 'warehouses' | 'change-feed' | 'devices' | 'sample-documents';
+  path: 'warehouses' | 'internal/change-feed' | 'auth/devices' | 'sample-documents';
   body?: Record<string, unknown>;
   expect: number;
 }

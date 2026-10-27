@@ -5,7 +5,7 @@
   "description": "iDepot API (NestJS) — tenancy, auth, RBAC, audit, Posting Coordinator/UoW, outbox",
   "scripts": {
     "build": "nest build",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
     "start": "node dist/main.js",
     "start:dev": "nest start --watch"
   },

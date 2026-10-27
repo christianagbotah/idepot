@@ -2,9 +2,11 @@ name: ci
 
 on:
   push:
-    branches: ['phase-1/**', 'phase-0/**']
-  pull_request:
     branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   verify:
@@ -54,13 +56,17 @@ jobs:
         run: |
           npm install-scripts approve esbuild || true
           npm install-scripts approve @embedded-postgres/linux-x64 || true
-          npm rebuild esbuild @embedded-postgres/linux-x64
+          npm install-scripts approve @swc/core || true
+          npm rebuild esbuild @embedded-postgres/linux-x64 @swc/core
 
       - name: Lint (module boundaries enforced)
         run: npm run lint
 
-      - name: Typecheck
-        run: npm run typecheck
+      # Regression guard: deletes every generated dist/.next first, then
+      # typechecks from SOURCE via tsconfig.typecheck.json path mappings —
+      # proves the repo never depends on stale build output (PR #2 root cause).
+      - name: Typecheck (clean — no stale dist allowed)
+        run: npm run typecheck:clean
 
       - name: Build (topological)
         run: npm run build
@@ -84,3 +90,43 @@ jobs:
         with:
           name: reconciliation
           path: migration-artifacts/
+
+  security:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: secret scanning must cover every commit, not just HEAD.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Secret scanning (gitleaks, pinned + checksum-verified)
+        run: |
+          set -euo pipefail
+          GITLEAKS_VERSION="8.30.1"
+          GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum --check --strict -
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --redact --config .gitleaks.toml \
+            --report-format sarif --report-path /tmp/gitleaks-report.sarif
+
+      - name: Upload secret-scan report (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: /tmp/gitleaks-report.sarif
+
+      # Policy (docs/security/dependency-audit.md): runtime dependency chains
+      # hard-fail on high/critical; dev-only chains hard-fail on critical and
+      # highs are triaged to zero with a documented expiry.
+      - name: Dependency audit — runtime chains (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Dependency audit — all chains incl. dev (fail on critical)
+        run: npm audit --audit-level=critical

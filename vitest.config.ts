@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 import { resolve } from 'node:path';
 import swc from 'unplugin-swc';
 
-const srcAlias = (pkg: string) => resolve(__dirname, `packages/${pkg}/src/index.ts`);
+const srcAlias = (pkg: string) => resolve(import.meta.dirname, `packages/${pkg}/src/index.ts`);
 
 export default defineConfig({
   plugins: [
@@ -35,6 +35,5 @@ export default defineConfig({
     maxConcurrency: 2,
     fileParallelism: true,
     pool: 'forks',
-    poolOptions: { forks: { singleFork: false } },
   },
 });

@@ -1,0 +1,23 @@
+# Gitleaks policy for the iDepot repository.
+#
+# Extends the default rule set. Every allowlist entry below is a DELIBERATE,
+# DOCUMENTED exception — add new entries only together with a justification in
+# docs/security/dependency-audit.md (or the relevant ADR), never to "make the
+# gate pass" for an unreviewed finding.
+
+title = "iDepot secret-scanning policy"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "CI-only HMAC test key. Fixed, public, protects nothing: required for reproducible integration tests on GitHub runners (throwaway tokens are signed/verified inside ephemeral test databases only)."
+regexTarget = "match"
+regexes = [
+  'IDEPOT_JWT_SECRET: ci-secret-0123456789abcdef-0123456789abcdef',
+]
+
+[[allowlists]]
+description = "Legacy Envato template-author token, hardcoded in the purchased CodeIgniter template. Redacted from the tree on the Phase 1 branch (getenv placeholder, see legacy/SECURITY-NOTE.md); the original value remains reachable in Phase 0 git history (commits predating this gate). Assessed low risk: template-author credential duplicated across public copies of that template, no access to iDepot systems. Advisory: rotate if the Envato account is yours."
+regexTarget = "match"
+regexes = ['FkA9UyDiQT0YiKwYLK3ghyFNRVV9SeUn']

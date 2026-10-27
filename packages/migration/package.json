@@ -5,7 +5,7 @@
   "description": "Legacy migration engine: staging, checksums, validators, quarantine, transform, legacy-ID mapping, correction-aware reconciliation, CLI",
   "type": "module",
   "main": "./dist/index.js",
-  "types": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
     "idepot-migrate": "./dist/cli.js"
   },
@@ -17,7 +17,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.typecheck.json"
   },
   "dependencies": {
     "mysql2": "^3.12.0",
