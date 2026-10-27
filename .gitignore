@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+.next/
+.turbo/
+
+# Test runtime artifacts
+.pg-test/
+coverage/
+
+# Migration runtime artifacts (run-scoped; never commit run outputs)
+migration-artifacts/
+!docs/adr/evidence/
+# ADR evidence results are committed deliberately:
+!benchmarks/orm-bench/results/latest.json
+
+# Local databases / services
+.mysql/
+downloads/
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# benchmark run outputs: only latest.json is committed as ADR evidence
+benchmarks/orm-bench/results/2*-orm-bench.json

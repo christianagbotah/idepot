@@ -1,0 +1,3 @@
+{"extends": "@idepot/config/tsconfig/package.json",
+ "compilerOptions": {"outDir": "dist", "rootDir": "src"},
+ "include": ["src/**/*.ts"]}

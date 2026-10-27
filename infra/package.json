@@ -1,0 +1,7 @@
+{
+  "name": "@idepot/infra-migrations",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SQL migration runner + immutable migration set (owner-connection DDL). Not an npm workspace; type: module matches the ESM runner executed via tsx.",
+  "type": "module"
+}

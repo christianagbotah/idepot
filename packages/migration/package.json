@@ -1,0 +1,30 @@
+{
+  "name": "@idepot/migration",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Legacy migration engine: staging, checksums, validators, quarantine, transform, legacy-ID mapping, correction-aware reconciliation, CLI",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "idepot-migrate": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.typecheck.json"
+  },
+  "dependencies": {
+    "mysql2": "^3.12.0",
+    "pg": "^8.13.1",
+    "pg-copy-streams": "^7.0.0"
+  },
+  "devDependencies": {
+    "@idepot/config": "*"
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "name": "idepot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "iDepot modernization — monorepo foundation (Phase 1)",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "benchmarks/*"
+  ],
+  "scripts": {
+    "build": "node scripts/build-order.mjs",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck:clean": "node scripts/clean-generated.mjs && npm run typecheck",
+    "lint": "eslint packages apps --ext .ts,.tsx",
+    "lint:fix": "eslint packages apps --ext .ts,.tsx --fix",
+    "format": "prettier --write \"packages/**/src/**/*.ts\" \"apps/*/src/**/*.ts\"",
+    "test": "vitest run --exclude \"**/*.integration.test.ts\"",
+    "test:watch": "vitest --exclude \"**/*.integration.test.ts\"",
+    "test:integration": "vitest run integration.test.ts",
+    "db:migrate": "tsx infra/migrations/run.ts",
+    "migration:smoke": "tsx packages/migration/src/cli.ts smoke --dump fixtures/legacy-mysql/idepot_phase1_fixture.sql",
+    "verify": "npm run lint && npm run typecheck:clean && npm run build && npm run test && npm run test:integration && npm run migration:smoke"
+  },
+  "devDependencies": {
+    "@swc/core": "^1.16.20",
+    "@types/node": "^22.10.5",
+    "@typescript-eslint/eslint-plugin": "^8.20.0",
+    "@typescript-eslint/parser": "^8.20.0",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^10.0.1",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "unplugin-swc": "^2.0.0",
+    "vitest": "^4.1.12"
+  },
+  "overrides": {
+    "multer": "^2.5.0",
+    "postcss": "^8.5.32"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "@embedded-postgres/linux-x64@18.4.0-beta.17": true,
+    "@swc/core@1.16.20": true
+  }
+}

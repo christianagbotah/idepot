@@ -1,0 +1,31 @@
+{
+  "name": "@idepot/testing",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Test infrastructure: embedded PostgreSQL harness (roles, RLS) + assertions",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./assertions": {
+      "types": "./dist/assertions.d.ts",
+      "default": "./dist/assertions.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.typecheck.json"
+  },
+  "dependencies": {
+    "embedded-postgres": "^18.4.0-beta.17",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@idepot/config": "*",
+    "@types/pg": "^8.11.10"
+  }
+}

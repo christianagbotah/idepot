@@ -1,0 +1,37 @@
+:root {
+  /* Palette */
+  --idp-color-bg: #f6f7f9;
+  --idp-color-surface: #ffffff;
+  --idp-color-text: #17202a;
+  --idp-color-text-muted: #5f6b7a;
+  --idp-color-primary: #1a56db;
+  --idp-color-primary-hover: #1447b4;
+  --idp-color-danger: #d92d20;
+  --idp-color-success: #067647;
+  --idp-color-warning: #b54708;
+  --idp-color-border: #d7dce3;
+
+  /* Typography */
+  --idp-font-sans: 'Inter', 'Noto Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --idp-font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  --idp-text-xs: 0.75rem;
+  --idp-text-sm: 0.875rem;
+  --idp-text-md: 1rem;
+  --idp-text-lg: 1.125rem;
+  --idp-text-xl: 1.375rem;
+
+  /* Spacing (4pt scale) */
+  --idp-space-1: 0.25rem;
+  --idp-space-2: 0.5rem;
+  --idp-space-3: 0.75rem;
+  --idp-space-4: 1rem;
+  --idp-space-6: 1.5rem;
+  --idp-space-8: 2rem;
+
+  /* Shape & elevation */
+  --idp-radius-sm: 6px;
+  --idp-radius-md: 10px;
+  --idp-radius-lg: 14px;
+  --idp-shadow-card: 0 1px 2px rgba(23, 32, 42, 0.06), 0 1px 3px rgba(23, 32, 42, 0.1);
+  --idp-shadow-pop: 0 8px 24px rgba(23, 32, 42, 0.16);
+}
