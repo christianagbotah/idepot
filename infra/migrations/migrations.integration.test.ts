@@ -33,13 +33,37 @@ describe('infra/migrations', () => {
       const res = await c.query<{ table_name: string; table_schema: string }>(
         `SELECT table_schema, table_name FROM information_schema.tables
          WHERE table_name IN ('tenant','warehouse','app_user','device','audit_event','outbox_event',
-                              'sample_document','migration_run','legacy_id_map','quarantine_row','reconciliation_record')
-           OR (table_schema='legacy_raw' AND table_name IN ('store','item','invoice','payment'))`,
+                              'sample_document','migration_run','legacy_id_map','quarantine_row','reconciliation_record',
+                              'unit','product','product_category','product_unit','product_barcode','brand',
+                              'customer','supplier','price_list','price_list_item','party_opening_balance',
+                              'stock_movement','stock_balance','stock_count','stock_count_line',
+                              'stock_adjustment','stock_adjustment_line','transfer','transfer_line')
+           OR (table_schema='legacy_raw' AND table_name IN ('store','item','invoice','payment',
+                              'item_main_category','item_category','units','units_items',
+                              'customers','suppliers','opening_stock_count'))`,
       );
       const names = res.rows.map((r) => `${r.table_schema}.${r.table_name}`).sort();
       expect(names).toContain('public.tenant');
       expect(names).toContain('legacy_raw.store');
-      expect(names.length).toBe(15);
+      expect(names).toContain('public.product');
+      expect(names).toContain('public.stock_movement');
+      // 11 Phase-1 public + 19 Phase-2 public + 11 legacy_raw = 41
+      expect(names.length).toBe(41);
+    } finally {
+      await c.end();
+    }
+  });
+
+  it('stock_movement is append-only for the app role', async () => {
+    const c = new Client({ connectionString: appUrl });
+    await c.connect();
+    try {
+      await expect(
+        c.query(`UPDATE stock_movement SET quantity_base = 0 WHERE false`),
+      ).rejects.toThrow(/permission denied/i);
+      await expect(
+        c.query(`DELETE FROM stock_movement WHERE false`),
+      ).rejects.toThrow(/permission denied/i);
     } finally {
       await c.end();
     }
