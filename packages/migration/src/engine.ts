@@ -20,6 +20,14 @@ import { assertLegacyRawReady, stageTable } from './stager.js';
 import { runValidators, isQuarantined } from './validators.js';
 import { reconcile } from './reconcile.js';
 import { transformStores } from './transform.js';
+import {
+  transformCategories,
+  transformParties,
+  transformProductsAndConversions,
+  transformUnits,
+  type TransformReject,
+} from './transform-phase2.js';
+import { transformOpeningStock } from './opening-stock.js';
 
 export interface MigrationRunConfig {
   pgAdminUrl: string;
@@ -116,7 +124,7 @@ export async function runMigration(config: MigrationRunConfig): Promise<Migratio
         );
       }
 
-      // 6. transform: store -> warehouse (clean rows only, idempotent)
+      // 6. transform: master data first (map doc §2 stage order), idempotent
       const storeSpec = specs.find((s) => s.table === 'store')!;
       const storeRows = (staged.get('store') ?? []).filter(
         (r) => !isQuarantined(outcome.findings, 'store', r[storeSpec.pk] ?? ''),
@@ -125,6 +133,99 @@ export async function runMigration(config: MigrationRunConfig): Promise<Migratio
         tenantId: config.tenantId,
         runId,
       });
+
+      const clean = (table: string): LegacyRow[] => {
+        const spec = specs.find((s) => s.table === table)!;
+        return (staged.get(table) ?? []).filter((r) => !isQuarantined(outcome.findings, table, r[spec.pk] ?? ''));
+      };
+
+      const mainCats = clean('item_main_category');
+      const subCats = clean('item_category');
+      const unitRows = clean('units');
+      const convRows = clean('units_items');
+      const customerRows = clean('customers');
+      const supplierRows = clean('suppliers');
+      const itemRows = clean('item');
+      const countRows = clean('opening_stock_count');
+
+      const transformRejects: TransformReject[] = [];
+      const categoriesResult = await transformCategories(pg, mainCats, subCats, { tenantId: config.tenantId, runId });
+      transformRejects.push(...categoriesResult.rejects);
+      const categoryMap = new Map<string, string>();
+      const catMaps = await pg.query<{ legacy_table: string; legacy_id: string; target_id: string }>(
+        `SELECT legacy_table, legacy_id, target_id FROM legacy_id_map
+         WHERE target_table = 'product_category' AND legacy_table IN ('item_main_category','item_category')`,
+      );
+      for (const r of catMaps.rows) categoryMap.set(r.legacy_id, r.target_id);
+
+      const unitsResult = await transformUnits(pg, unitRows, { tenantId: config.tenantId, runId });
+      transformRejects.push(...unitsResult.rejects);
+
+      const partiesResult = await transformParties(pg, customerRows, supplierRows, { tenantId: config.tenantId, runId });
+      transformRejects.push(...partiesResult.rejects);
+      const supplierMaps = await pg.query<{ legacy_id: string; target_id: string }>(
+        `SELECT legacy_id, target_id FROM legacy_id_map WHERE legacy_table = 'suppliers' AND target_table = 'supplier'`,
+      );
+      const supplierMap = new Map(supplierMaps.rows.map((r) => [r.legacy_id, r.target_id]));
+
+      const productsResult = await transformProductsAndConversions(
+        pg,
+        itemRows,
+        convRows,
+        unitsResult.unitMap,
+        categoryMap,
+        supplierMap,
+        { tenantId: config.tenantId, runId },
+      );
+      transformRejects.push(...productsResult.rejects);
+
+      const openingResult = await transformOpeningStock(
+        pg,
+        itemRows,
+        countRows,
+        productsResult.info.productByItem,
+        productsResult.info.maxFactorByItem,
+        { tenantId: config.tenantId, runId },
+      );
+      transformRejects.push(...openingResult.rejects);
+
+      // transform-level rejects land in quarantine with reasons (never silent)
+      for (const rej of transformRejects) {
+        await pg.query(
+          `INSERT INTO quarantine_row (run_id, legacy_table, legacy_pk, src_row_number, reason_code, reason_detail, severity, row_payload)
+           VALUES ($1,$2,$3,$4,$5,$6,'error',$7)
+           ON CONFLICT (run_id, legacy_table, legacy_pk, reason_code) DO NOTHING`,
+          [runId, rej.table, rej.pk, null, rej.reasonCode, rej.reasonDetail, JSON.stringify(rej.row ?? {})],
+        );
+      }
+
+      const phase2Stats = {
+        categoriesImported: categoriesResult.stats.imported,
+        categoriesReused: categoriesResult.stats.reused,
+        unitsImported: unitsResult.stats.imported,
+        unitsReused: unitsResult.stats.reused,
+        productsImported: productsResult.products.imported,
+        productsReused: productsResult.products.reused,
+        conversionsImported: productsResult.convStats.imported,
+        conversionsReused: productsResult.convStats.reused,
+        customersImported: partiesResult.customers.imported,
+        customersReused: partiesResult.customers.reused,
+        suppliersImported: partiesResult.suppliers.imported,
+        suppliersReused: partiesResult.suppliers.reused,
+        openingStockDocs: openingResult.docsCreated,
+        openingStockDocsReused: openingResult.docsReused,
+        openingStockMovements: openingResult.movements,
+        openingStockRiskItems: openingResult.riskItems,
+        openingStockVariances: openingResult.variances,
+        legacyIdMapRowsPhase2:
+          categoriesResult.stats.imported + categoriesResult.stats.reused +
+          unitsResult.stats.imported + unitsResult.stats.reused +
+          productsResult.products.imported + productsResult.products.reused +
+          productsResult.convStats.imported + productsResult.convStats.reused +
+          partiesResult.customers.imported + partiesResult.customers.reused +
+          partiesResult.suppliers.imported + partiesResult.suppliers.reused +
+          openingResult.docsCreated + openingResult.docsReused,
+      };
 
       // 7. correction-aware reconciliation (D1 + payment-sum mismatches)
       const invoiceSpec = specs.find((s) => s.table === 'invoice')!;
@@ -136,7 +237,8 @@ export async function runMigration(config: MigrationRunConfig): Promise<Migratio
         (r) => !isQuarantined(outcome.findings, 'payment', r[paymentSpec.pk] ?? ''),
       );
       const recon = reconcile(invoiceRows, paymentRows);
-      for (const rec of recon.records) {
+      const allRecords = [...recon.records, ...openingResult.records];
+      for (const rec of allRecords) {
         await pg.query(
           `INSERT INTO reconciliation_record
              (run_id, legacy_table, legacy_id, field, legacy_stored_value, legacy_reconstructed_value,
@@ -171,22 +273,27 @@ export async function runMigration(config: MigrationRunConfig): Promise<Migratio
         tables: tableStats,
         validators: outcome.checks,
         quarantine: {
-          total: quarantinedRows.length,
-          byReason: quarantinedRows.reduce<Record<string, number>>((acc, f) => {
+          total: quarantinedRows.length + transformRejects.length,
+          byReason: [...quarantinedRows, ...transformRejects.map((r) => ({ reasonCode: r.reasonCode }))].reduce<Record<string, number>>((acc, f) => {
             acc[f.reasonCode] = (acc[f.reasonCode] ?? 0) + 1;
             return acc;
           }, {}),
         },
         reconciliation: {
           summary: {
-            records: recon.records.length,
-            flagged: new Set(recon.records.map((r) => r.legacy_id)).size,
-            requiresManualApproval: recon.records.filter((r) => r.requires_manual_approval).length,
+            records: allRecords.length,
+            flagged: new Set(allRecords.map((r) => r.legacy_id)).size,
+            requiresManualApproval: allRecords.filter((r) => r.requires_manual_approval).length,
           },
-          records: recon.records,
+          records: allRecords,
         },
-        warnings: [...outcome.censusWarnings, ...recon.warnings.map((w) => ({ code: 'reconcile', table: '-', message: w }))],
+        warnings: [
+          ...outcome.censusWarnings,
+          ...recon.warnings.map((w) => ({ code: 'reconcile', table: '-', message: w })),
+          ...productsResult.roundingWarnings.map((w) => ({ code: 'rounding_normalization', table: 'item', message: w })),
+        ],
         transform: transformStats,
+        phase2: phase2Stats,
       };
 
       await pg.query(
@@ -241,6 +348,22 @@ function humanReport(a: ReconciliationArtifact): string {
   lines.push(`Total withheld rows: **${a.quarantine.total}**`);
   for (const [reason, n] of Object.entries(a.quarantine.byReason)) {
     lines.push(`- ${reason}: ${n}`);
+  }
+  lines.push('');
+  lines.push('## Master data & opening stock (Phase 2)');
+  lines.push('');
+  if (a.phase2) {
+    lines.push(
+      `- categories: ${a.phase2.categoriesImported} imported / ${a.phase2.categoriesReused} reused; units: ${a.phase2.unitsImported}/${a.phase2.unitsReused}; products: ${a.phase2.productsImported}/${a.phase2.productsReused}; conversions: ${a.phase2.conversionsImported}/${a.phase2.conversionsReused}`,
+    );
+    lines.push(
+      `- customers: ${a.phase2.customersImported}/${a.phase2.customersReused}; suppliers: ${a.phase2.suppliersImported}/${a.phase2.suppliersReused}`,
+    );
+    lines.push(
+      `- opening stock: ${a.phase2.openingStockDocs} count document(s), ${a.phase2.openingStockMovements} movement(s), ${a.phase2.openingStockVariances} count variance(s), ${a.phase2.openingStockRiskItems} accepted-risk fallback(s)`,
+    );
+  } else {
+    lines.push('- (no Phase 2 stats)');
   }
   lines.push('');
   lines.push('## Correction-aware reconciliation');
