@@ -2,77 +2,85 @@
 
 | | |
 |---|---|
-| **Current phase** | Phase 1 — monorepo foundation + migration engineering foundation (this branch) |
-| **Previous phase** | Phase 0 — forensic audit & architecture ✅ (merged to main) |
-| **Branch** | `phase-1/monorepo-foundation` |
-| **Repo state** | Phase 1 implementation: ADRs, monorepo, API, migration engine, tests, CI |
+| **Current phase** | Phase 2 — master data & inventory (+ continuous migration: master data & stock) (this branch) |
+| **Previous phases** | Phase 0 — forensic audit & architecture ✅ (merged); Phase 1 — monorepo foundation + migration engineering foundation ✅ (merged) |
+| **Branch** | `phase-2/master-data-inventory` |
+| **Repo state** | Phase 2 implementation: catalog/parties/pricing/stock ledger/counts/transfers + migration extension, tests, UI slices |
 
-## Completed capabilities (Phase 1)
+## Completed capabilities (Phase 1 — merged to main, preserved unchanged)
 
-**ADR gate (before dependent production code, per ROADMAP):**
-- **ADR-0001** Posting Coordinator / Unit-of-Work: application transaction context + AsyncLocalStorage propagation + repository-layer enforcement (`NoActiveTransactionError`); HTTP interceptors never manage transactions; audit + outbox are in-transaction participants. Reference implementation + all-or-nothing rollback test.
-- **ADR-0002** Database access/ORM: **PostgreSQL + TypeORM 0.3 (primary ORM) over a pg base layer; Kysely approved for typed reporting SQL; COPY (`pg-copy-streams`) for migration bulk loads.** Decision backed by measured benchmark (B1–B7, 3 candidates, all PASS; evidence in `docs/adr/evidence/orm-bench-latest.json`): B5 bulk 50k rows — kysely 128k rows/s, typeorm 57k rows/s, raw COPY 45k rows/s (2-CPU sandbox); numeric(18,4) exact in all paths; migrations require owner connection (measured, enforced).
-- **ADR-0003** Multi-tenancy/RLS: shared schema, `tenant_id` everywhere, transaction-scoped `SET LOCAL app.tenant_id` (fail-closed), app role least-privilege (no TRUNCATE/CREATE — enforced by tests), tenant-scoped unique constraints, on-prem = same schema one tenant.
+- ADR-0001 Posting Coordinator / Unit-of-Work (AsyncLocalStorage + repository-layer enforcement); ADR-0002 DB/ORM decision (PostgreSQL + TypeORM chosen, pg base layer, Kysely for reporting); ADR-0003 RLS topology (shared schema, transaction-scoped `SET LOCAL app.tenant_id`, fail-closed).
+- AuthN (Argon2id, HS256 pair, device registry), RBAC (catalog + matrix tests incl. cross-tenant impossibility), audit events, transactional outbox + change feed, checksum-verified idempotent migrations, clean-checkout typecheck gate (`typecheck:clean`), security CI (gitleaks + runtime/full dependency audits), migration engine with quarantined staging → legacy_raw → validators → transform → correction-aware reconciliation; D1 evidence pipeline.
 
-**Monorepo & tooling:**
-- npm workspaces: `packages/{config,domain,contracts,auth,migration,testing,ui}`, `apps/{api,web}`, `benchmarks/orm-bench`; topological build driver; strict TS base; ESLint flat config with **enforced module boundaries** (domain framework-free; api cannot import migration internals; web cannot import DB drivers).
-- Embedded PostgreSQL test harness (random port, admin/app role split, external-server + no-self-boot modes).
-- Checksum-verified idempotent SQL migration runner (`infra/migrations`) — migrations are immutable once applied.
+## Completed capabilities (Phase 2 — this branch)
 
-**apps/api (NestJS 11) — vertical slice live:**
-- AuthN: Argon2id (64 MiB/t3/p4), HS256 access/refresh with type separation, device registry, tenant-slug login (RLS-consistent tenant resolution via admin pool).
-- AuthZ: global JwtAuthGuard + RbacGuard with permission catalog (`owner/admin/manager/cashier/auditor`), authorization-matrix tests.
-- Tenancy: JWT-bound tenant context, RLS policies on all tenant-owned tables, tenant-scoped uniques; cross-tenant access impossibility proven by tests (404 semantics both read & write).
-- Posting Coordinator: `UnitOfWork.run()` — document + audit + outbox commit in ONE transaction; injected-failure test proves **zero partial rows**; repository write outside UoW is structurally impossible.
-- Transactional outbox + change-feed primitives (`GET /internal/change-feed`, `POST /internal/change-feed/ack`) — projection-only consumers.
-- Audit events written inside the posting transaction for every mutating action.
+**Decimal-safe foundation (`packages/domain`):**
+- `decimal.ts`: exact scaled-BigInt arithmetic (parse strict, half-even rounding, exact-vs-rounded multiply) — NO floating-point anywhere in quantity/money paths.
+- `quantity.ts`: base-quantity conversion with EXACT conservation (a conversion that cannot terminate at 6 dp is rejected, never rounded).
 
-**Migration engineering foundation (`packages/migration`):**
-- `legacy_raw` ownership contract: schema+tables created ONLY by the DDL layer (`0002_migration_workstream.sql`); the runtime stager **fails fast** if absent — never issues CREATE SCHEMA/TABLE (tested).
-- Pipeline: legacy dump → isolated staging MySQL (non-strict import reproducing legacy semantics) → verbatim `legacy_raw` (all-TEXT, COPY FROM STDIN, `_src_row_number`) → sha256 checksums staging↔raw (must match) → validators (encoding/mojibake, date parsability, orphan FKs, D1 split-receipt signature, code census) → quarantine WITH reasons (never silent drops) → transform (`store`→`warehouse`) via `legacy_id_map` (idempotent) → **correction-aware reconciliation** → `reconciliation.json` + human report + `migration_run` registry.
-- **D1 handled from day one**: receipt-total multiplication detected (`Σ payment rows = N × tender`); reconstructed from the invoice-amount authority; records carry `legacy_stored_value`, `legacy_reconstructed_value`, `new_system_value` (per-payment allocation model), `correction_delta`, `correction_reason`, evidence citing `Admin.php:17270-17438`, severity `critical`, `requires_manual_approval=true`. No silent repair anywhere.
-- Synthetic fixture (no PII) exercising: clean imports, double-encoded text, zero-date row, orphan FK, D1 split receipt (2 invoices, stored 100/100 vs reconstructed 40/60).
-- CLI: `idepot-migrate smoke` (end-to-end; MySQL protocol primary, documented parsed-dump fallback).
+**Catalog (API + RLS + RBAC):** products (code/name/category/supplier/brand/base unit SMU/status/prices), two-level categories, brands, units, configurable conversions (`product_unit`, factor-to-base numeric(18,6) > 0), barcodes (tenant-scoped unique).
 
-**apps/web:** Next.js 15 shell with `@idepot/ui` design tokens and a login scaffold wired to the API contract.
+**Parties:** customers/suppliers — Ghana phone-first identity (phone required, email optional), codes auto-derived or provided; party opening-balance document foundation (document + audit + outbox now; GL posting Phase 4).
 
-**CI (`.github/workflows/ci.yml`):** two jobs. `verify`: postgres:16 + mysql:8 services; lint → **clean typecheck (regression-gated: all `dist/` deleted first, source-path resolution)** → build → unit → integration (RLS/RBAC/coordinator/migration smoke) → CLI migration smoke with `reconciliation.json` artifact upload. `security`: gitleaks secret scanning (pinned v8.30.1, checksum-verified, full history, `.gitleaks.toml` policy) + dependency audits (runtime chains fail on high/critical; all chains fail on critical) — policy and triage in `docs/security/dependency-audit.md`.
+**Effective-dated pricing:** standard + customer lists; per-product+unit windows with a DB-level EXCLUDE (no overlapping windows); precedence customer list → standard list → product default; rows immutable once effective (historical resolutions stay stable — proven by test).
 
-## Test status (this branch — re-verified after clean-checkout fixes, 2026-10-27)
+**Inventory (all writes through the Posting Coordinator):**
+- Append-only `stock_movement` ledger (7 movement types incl. transfer_out/in, count_variance, reversal; signed base quantities; cross-unit movements store transacted unit+quantity+factor beside the base quantity). DB-level append-only: app role has SELECT/INSERT only (UPDATE/DELETE denied — tested).
+- `stock_balance` is a derived projection, never truth: rebuild job recomputes from the ledger and repairs drift (`on_hand == Σ movements` invariant test + drift-injection test).
+- Row-locked balance posting (no oversell; oversell policy arrives with offline sync in Phase 3).
+- Stock counts: draft → counted → approve; approval posts variance adjustments + movements in the SAME transaction; material variance approval gated by `stockcount:approve` (cashier 403 tested).
+- Adjustments: reason-mandatory documents; cross-unit evidence optional per line; explicit reversal endpoint (reversal movements with `reversal_of`, double-reversal rejected).
+- Transfers: draft → in_transit → received; partial receipt accumulates; over-receipt rejected; cancel-after-dispatch rejected; dispatch/receive both audited — no silent quantity disappearance.
+- Opening stock: count-first authority (physical_count default); `legacy_quantity` authority REQUIRES accepted-migration-risk flag + approve permission — never silent (strategy §4).
 
-| Suite | Result |
+**Migration workstream (extends the Phase 1 engine):**
+- Imports: item categories (two-level) → product_category; units + units_items → unit + product_unit (unit_total → exact factor; base = smallest-unit row; non-terminating ratios → documented 6dp rounding warning); items → product + barcode (duplicate barcode/code quarantine); customers/suppliers → phone-first parties; opening stock → approved count documents (authority/risk/evidence flags) + opening-balance receipt movements + derived balances, all via `legacy_id_map` (idempotent re-runs: reused, never duplicated).
+- I1 discrepancy detection: legacy stored (quantity × package factor + loose) vs physical count vs new opening — correction-aware records `I1_OPENING_STOCK_COUNT_VARIANCE` (count wins) and `I1_LEGACY_QUANTITY_WITHOUT_COUNT_ACCEPTED_RISK` (fallback requires owner/accountant sign-off; never silent).
+- New validators: numeric parsability (malformed conversion factor), invalid conversion (≤ 0), extended FK orphans (category/supplier/units/count-sheet). New quarantine reasons: `numeric_unparsable`, `invalid_conversion`, `duplicate_barcode`.
+- Fixture extended: 10 items (5 Phase-1 rows byte-identical), 12 conversions (bundle/ton/bottle/carton/coil realities), 4 customers, 2 suppliers, 4-row count sheet; deliberate cases: malformed conversion, invalid factor, duplicate barcode, orphan category, orphan count row, count variance ×2, accepted-risk fallback ×2.
+
+**UI (apps/web, responsive, functional):** login → session shell; catalog (products + conversions + barcodes), categories, units, customers, suppliers, warehouses, stock overview (+ ledger verify), movements, counts (create/submit/approve), adjustments (+ reverse, cross-unit lines), transfers (dispatch/receive with per-line progress).
+
+**RBAC additions:** catalog/party/pricing/inventory read+write; stockcount read/count/**approve** (supervisor gate). Roles updated: manager ≈ ops-full; cashier read + count; auditor read.
+
+## Verification summary (Phase 2)
+
+| Check | Result |
 |---|---|
-| Unit (auth: Argon2id, RBAC decision, JWT types) | 4/4 (vitest 4.1.12) |
-| Infra migrations + RLS + least-privilege | 5/5 |
+| Domain unit tests (decimal math, conversion conservation property sweep) | 16/16 |
+| Unit (auth: Argon2id, RBAC decision, JWT types) | 4/4 |
+| Migration guard (41 tables, append-only ledger grants, RLS, idempotency) | 6/6 |
+| Migration smoke + Phase 2 import + idempotency re-run | 9/9 |
 | Posting Coordinator atomicity + enforcement | 3/3 |
 | RBAC matrix + cross-tenant impossibility | 26/26 |
-| Vertical slice E2E (login→tenant→CRUD→audit→change-feed→ack→devices) | 7/7 |
-| Migration smoke + idempotency + ownership contract | 7/7 |
-| ORM benchmark (3 candidates × B1–B7) | 21/21 PASS (committed evidence, unchanged) |
-| CLI end-to-end smoke (fixture → legacy_raw → reconciliation.json) | PASS ×2 runs (idempotent: second run imported=0, reused=3) |
+| Vertical slice E2E | 7/7 |
+| **Inventory invariants: on_hand≡Σ movements, rebuild-repairs-drift, cross-unit conservation, reversal restores, tenant isolation, coordinator rollback (zero partial state)** | **7/7** |
+| **E2E: transfer partial-receipt, count approval (RBAC-gated), opening-stock authority, pricing effective-dating** | **5/5** |
 | Lint / **clean** typecheck (no dist) / build | clean (9 workspaces) |
-| npm audit (runtime + full) | 0 vulnerabilities |
-| gitleaks full-history secret scan | clean (2 documented allowlist entries) |
+| npm audit (runtime + full) / gitleaks | 0 / clean (unchanged) |
+| CLI migration smoke (fixture → legacy_raw → reconciliation.json) | PASS (artifact: 4/4 checksums, 9 quarantined, 6 correction records) |
 
-## Exit criteria check (ROADMAP Phase 1)
+## Exit criteria check (ROADMAP Phase 2)
 
-- [x] auth+RBAC enforced on a sample CRUD resource with matrix tests green, **including cross-tenant access impossibility** (26/26)
-- [x] **CI green.** GitHub Actions run `40437576011` (PR #2 head `f714cbd`) succeeded through every step in both jobs on a clean runner: install → lint → typecheck (clean — no stale dist) → build → unit → integration (embedded PG + RLS + RBAC + coordinator) → migrations → MySQL→legacy_raw smoke → `reconciliation.json` artifact uploaded; security job green (gitleaks full-history scan, runtime + full dependency audits). History: run `40376824450` (head `217e67d`) failed at Typecheck — a clean checkout has no `dist/`, so workspace-internal packages were unresolvable; fixed by source-path typecheck configs (`tsconfig.typecheck.json` per workspace), corrected `types` → `*.d.ts` package metadata, the `npm run typecheck:clean` regression gate, dependency/security scanning gates, and remediating all 8 npm-audit findings (`9aa8d24`, see `docs/security/dependency-audit.md`). Run `40436100540` (head `9aa8d24`) then failed at Integration tests — the embedded-PG scratch directory defaulted to a hardcoded development-sandbox absolute path, uncreatable on the runner; fixed by resolving it at runtime from the monorepo root (`f714cbd`).
-- [x] posting-coordinator reference test proves **all-or-nothing rollback** (failure injected after partial writes → zero rows)
-- [x] migration smoke runs a fixture dump end-to-end and emits `reconciliation.json` (CLI + vitest + CI step)
-- [x] ADR-0001..0003 approved **before** their dependent production code (commit order in history)
+- [x] invariant tests: `balance ≡ Σ movements` (ledger rebuild) + conversion conservation (exact)
+- [x] E2E: transfer + count + adjustment flows green (incl. partial receipt, over-receipt rejection, supervisor-gated approval)
+- [x] ledger rebuild job proves equality on fixture data (drift injection → repair → verified)
+- [x] migrated master data reconciles against fixture dumps with zero unapproved correction rows — every material diff (D1 ×2, I1 variance ×2, I1 accepted-risk ×2) has a full correction record flagged `requires_manual_approval` (2 D1 critical, 2 I1 high, 2 I1 critical); clean paths (exact count) emit none
+- [x] fresh-checkout CI green — see run on this branch (verify + security jobs)
+- [x] security gates green (gitleaks full history + runtime/full dependency audits) — unchanged from Phase 1
 
 ## Known limitations / deferred (deliberate)
 
-- Migration workstream Phase 1 imports only `store`→`warehouse`; `item`/`invoice`/`payment` are staged, validated, quarantined and reconciled but not imported (their targets arrive in Phases 2–3 per the continuous-migration plan).
-- Reconstruction for D1 uses the invoice-amount authority (defect-register remediation rule); invoice-level manual sign-off workflow (approval UI) lands with Phase 3 migration workstream — records are stored and flagged now.
-- Outbox projector is a primitive (read + ack endpoints); scheduled background dispatcher arrives with the first real consumer.
-- CI uses service containers for MySQL/PostgreSQL; the current sandbox has no MySQL server, so local smoke verification uses the documented parsed-dump fallback source — CI exercises the MySQL protocol path (mysql:8 service).
-- Web is a shell + design baseline only (no session persistence yet).
+- Stock identity is (product, warehouse); bins/shelf-level locations deferred (legacy had none wired).
+- Transfers move base-unit quantities (cross-unit transacted evidence is captured on adjustments; sale/issue documents with units arrive with POS in Phase 3).
+- Party opening balances are document foundation only — AR/AP/GL posting + reconciliation land in Phase 4 per the migration map.
+- Outbox projector remains the Phase 1 primitive (read + ack); scheduled dispatcher waits for the first real consumer.
+- Pricing covers standard + customer lists; segment lists and per-customer unit-price migration (`items_prices`/`items_units_prices`) are scheduled with the sales-phase migration.
+- Web session lives in localStorage; token refresh UX and device registration screens arrive with offline sync (Phase 3).
 
-## Next actions (Phase 2)
+## Next actions (Phase 3 — Sales & POS)
 
-1. Master data & inventory domain (products/categories/units/price lists) + stock ledger with posting participants registered with the coordinator.
-2. Migration workstream: import products/categories/units/customers/suppliers/locations; opening stock count-first authority.
-3. Invariant tests (`balance ≡ Σ movements`, conversion conservation) on fixture data.
-4. Outbox background projector + first real projection (read-model refresh).
+1. POS screen (keyboard-first), sales orders + state machine, fulfillments/waybills with sequence leases.
+2. Invoices + payments/tenders/allocations posting through the coordinator (document + stock + COGS + tender + allocation + subledger + tax + GL + audit + outbox).
+3. Offline engine (SQLite replica + outbox sync) with idempotent sync + chaos suite.
+4. Migration: sales orders/invoices/payments (D1-corrected reconstruction), deposits/credits, open-SO carryover.
