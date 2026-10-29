@@ -14,6 +14,26 @@ import { SampleDocumentService } from './documents/sample-document.service.js';
 import { ChangeFeedController } from './outbox/change-feed.controller.js';
 import { ChangeFeedService } from './outbox/change-feed.service.js';
 import { HealthController } from './health.controller.js';
+import { InventoryController, StockAdjustmentController, StockCountController, TransferController } from './inventory/inventory.controller.js';
+import { StockPoster } from './inventory/stock-poster.js';
+import { StockCountService } from './inventory/stock-count.service.js';
+import { StockAdjustmentService } from './inventory/stock-adjustment.service.js';
+import { TransferService } from './inventory/transfer.service.js';
+import { OpeningStockService } from './inventory/opening-stock.service.js';
+import { BalanceRebuildService, InventoryReadService } from './inventory/balance-rebuild.service.js';
+// Phase 2 — catalog / parties / pricing
+import { ProductController } from './catalog/product.controller.js';
+import { ProductService } from './catalog/product.service.js';
+import { ProductRepository } from './catalog/product.repository.js';
+import { CatalogReferenceController } from './catalog/catalog-reference.controller.js';
+import { CatalogReferenceService } from './catalog/catalog-reference.service.js';
+import { CatalogReferenceRepository } from './catalog/catalog-reference.repository.js';
+import { CustomerController, SupplierController, PartyOpeningBalanceController } from './parties/party.controller.js';
+import { PartyService } from './parties/party.service.js';
+import { PartyRepository } from './parties/party.repository.js';
+import { PricingController } from './pricing/pricing.controller.js';
+import { PricingService } from './pricing/pricing.service.js';
+import { PricingRepository } from './pricing/pricing.repository.js';
 
 @Module({
   imports: [DbModule],
@@ -23,6 +43,16 @@ import { HealthController } from './health.controller.js';
     SampleDocumentController,
     ChangeFeedController,
     HealthController,
+    InventoryController,
+    StockCountController,
+    StockAdjustmentController,
+    TransferController,
+    ProductController,
+    CatalogReferenceController,
+    CustomerController,
+    SupplierController,
+    PartyOpeningBalanceController,
+    PricingController,
   ],
   providers: [
     AuthService,
@@ -31,6 +61,23 @@ import { HealthController } from './health.controller.js';
     WarehouseRepository,
     SampleDocumentService,
     ChangeFeedService,
+    // Phase 2 — inventory (all authoritative writes via StockPoster inside the UoW)
+    StockPoster,
+    StockCountService,
+    StockAdjustmentService,
+    TransferService,
+    OpeningStockService,
+    BalanceRebuildService,
+    InventoryReadService,
+    // Phase 2 — catalog / parties / pricing
+    ProductService,
+    ProductRepository,
+    CatalogReferenceService,
+    CatalogReferenceRepository,
+    PartyService,
+    PartyRepository,
+    PricingService,
+    PricingRepository,
     // global guard chain: authentication -> authorization
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RbacGuard },

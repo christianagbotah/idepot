@@ -69,6 +69,35 @@ function validateRow(
     }
   }
 
+  // 2b. numeric parsability + conversion sanity (declared per table/column)
+  for (const col of NUMERIC_COLUMNS[spec.table] ?? []) {
+    const v = row[col];
+    if (v == null || v === '') continue;
+    if (!/^[+-]?\d+(\.\d+)?$/.test(v.trim())) {
+      findings.push({
+        validator: 'numeric',
+        table: spec.table,
+        pk,
+        reasonCode: 'numeric_unparsable',
+        reasonDetail: `column ${col} value "${v}" is not a plain number`,
+        severity: 'error',
+        quarantine: true,
+      });
+      continue;
+    }
+    if (col === 'unit_total' && Number(v) <= 0) {
+      findings.push({
+        validator: 'numeric',
+        table: spec.table,
+        pk,
+        reasonCode: 'invalid_conversion',
+        reasonDetail: `column ${col} value "${v}" is not a positive conversion factor`,
+        severity: 'error',
+        quarantine: true,
+      });
+    }
+  }
+
   // 3. orphan FK checks (declared: table.column -> referencedTable.pk)
   for (const [col, refTable] of FK_MAP[spec.table] ?? []) {
     const v = row[col];
@@ -91,9 +120,23 @@ function validateRow(
 }
 
 const FK_MAP: Record<string, Array<[string, string]>> = {
-  item: [['store_id', 'store']],
+  item: [
+    ['store_id', 'store'],
+    ['category_id', 'item_category'],
+    ['supplier_id', 'suppliers'],
+  ],
   invoice: [['store_id', 'store']],
   payment: [['invoice_id', 'invoice'], ['store_id', 'store']],
+  item_category: [['main_id', 'item_main_category']],
+  units_items: [['unit_id', 'units'], ['item_id', 'item']],
+  opening_stock_count: [['item_id', 'item'], ['store_id', 'store']],
+};
+
+/** Numeric columns that must parse as plain decimal numbers. */
+const NUMERIC_COLUMNS: Record<string, string[]> = {
+  units_items: ['unit_total', 'unit_price'],
+  item: ['quantity', 'unit_quantity', 'selling_price', 'purchase_price'],
+  opening_stock_count: ['counted_quantity'],
 };
 
 /** Receipt-level consistency: the D1 defect class detection. */

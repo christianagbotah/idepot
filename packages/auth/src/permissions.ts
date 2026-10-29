@@ -12,6 +12,18 @@ export const PERMISSIONS = [
   'device:register',
   'sample:post',
   'tenant:manage',
+  // Phase 2 — master data & inventory
+  'catalog:read',
+  'catalog:write',
+  'party:read',
+  'party:write',
+  'pricing:read',
+  'pricing:write',
+  'inventory:read',
+  'inventory:write',
+  'stockcount:read',
+  'stockcount:count',
+  'stockcount:approve',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -19,12 +31,52 @@ export type Permission = (typeof PERMISSIONS)[number];
 export const ROLES = ['owner', 'admin', 'manager', 'cashier', 'auditor'] as const;
 export type Role = (typeof ROLES)[number];
 
+const MANAGER_PERMISSIONS: readonly Permission[] = [
+  'warehouse:read',
+  'warehouse:write',
+  'audit:read',
+  'sample:post',
+  'catalog:read',
+  'catalog:write',
+  'party:read',
+  'party:write',
+  'pricing:read',
+  'pricing:write',
+  'inventory:read',
+  'inventory:write',
+  'stockcount:read',
+  'stockcount:count',
+  'stockcount:approve',
+];
+
+const CASHIER_PERMISSIONS: readonly Permission[] = [
+  'warehouse:read',
+  'device:register',
+  'catalog:read',
+  'party:read',
+  'pricing:read',
+  'inventory:read',
+  'stockcount:read',
+  'stockcount:count',
+];
+
+const AUDITOR_PERMISSIONS: readonly Permission[] = [
+  'warehouse:read',
+  'audit:read',
+  'outbox:read',
+  'catalog:read',
+  'party:read',
+  'pricing:read',
+  'inventory:read',
+  'stockcount:read',
+];
+
 export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   owner: PERMISSIONS,
   admin: PERMISSIONS.filter((p) => p !== 'tenant:manage'),
-  manager: ['warehouse:read', 'warehouse:write', 'audit:read', 'sample:post'],
-  cashier: ['warehouse:read', 'device:register'],
-  auditor: ['warehouse:read', 'audit:read', 'outbox:read'],
+  manager: MANAGER_PERMISSIONS,
+  cashier: CASHIER_PERMISSIONS,
+  auditor: AUDITOR_PERMISSIONS,
 };
 
 export function isRole(value: string): value is Role {

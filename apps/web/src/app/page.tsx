@@ -1,12 +1,18 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { apiFetch, apiErrorMessage } from '../lib/api';
+import { writeSession } from '../lib/session';
+import type { Session, TokenPair } from '../lib/types';
 
 /**
- * Design-system baseline + auth scaffold (Phase 1 shell).
- * Real auth wiring to the API arrives with the first product phase.
+ * Login scaffold: authenticates against the API and persists the session
+ * ({ accessToken, refreshToken, user }) to localStorage['idepot.session']
+ * before entering the authenticated app shell at /catalog.
  */
 export default function LoginPage() {
+  const router = useRouter();
   const [tenantSlug, setTenantSlug] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -18,23 +24,22 @@ export default function LoginPage() {
     setStatus('busy');
     setMessage('');
     try {
-      const apiBase = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:3001';
-      const res = await fetch(`${apiBase}/api/auth/login`, {
+      const pair = await apiFetch<TokenPair>('/auth/login', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ tenantSlug, email, password }),
+        body: { tenantSlug, email, password },
       });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        setStatus('error');
-        setMessage(body.error ?? `login failed (${res.status})`);
-        return;
-      }
+      const session: Session = {
+        accessToken: pair.accessToken,
+        refreshToken: pair.refreshToken,
+        user: pair.user,
+      };
+      writeSession(session);
       setStatus('ok');
-      setMessage('Signed in. (Session handling arrives with the first product phase.)');
-    } catch {
+      setMessage('Signed in. Opening your workspace…');
+      router.replace('/catalog');
+    } catch (err) {
       setStatus('error');
-      setMessage('API unreachable');
+      setMessage(apiErrorMessage(err));
     }
   }
 

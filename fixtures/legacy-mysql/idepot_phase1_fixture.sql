@@ -2,6 +2,13 @@
 -- Schema is a reduced, faithful verbatim layout; every column is TEXT in legacy_raw.
 SET NAMES utf8mb4;
 
+DROP TABLE IF EXISTS opening_stock_count;
+DROP TABLE IF EXISTS suppliers;
+DROP TABLE IF EXISTS customers;
+DROP TABLE IF EXISTS units_items;
+DROP TABLE IF EXISTS units;
+DROP TABLE IF EXISTS item_category;
+DROP TABLE IF EXISTS item_main_category;
 DROP TABLE IF EXISTS payment;
 DROP TABLE IF EXISTS invoice;
 DROP TABLE IF EXISTS item;
@@ -20,7 +27,71 @@ CREATE TABLE item (
   quantity DOUBLE,
   status VARCHAR(30),
   created_date DATETIME,
-  store_id INT
+  store_id INT,
+  category_id INT,
+  supplier_id INT,
+  selling_price DOUBLE,
+  purchase_price DOUBLE,
+  unit_quantity DOUBLE,
+  barcode VARCHAR(64)
+);
+
+CREATE TABLE item_main_category (
+  category_id INT PRIMARY KEY,
+  category_name VARCHAR(120)
+);
+
+CREATE TABLE item_category (
+  category_id INT PRIMARY KEY,
+  main_id INT,
+  category_name VARCHAR(120)
+);
+
+CREATE TABLE units (
+  unit_id INT PRIMARY KEY,
+  unit_name VARCHAR(60)
+);
+
+CREATE TABLE units_items (
+  id INT PRIMARY KEY,
+  unit_id INT,
+  item_id INT,
+  unit_total DOUBLE,
+  unit_price DOUBLE
+);
+
+CREATE TABLE customers (
+  customer_id INT PRIMARY KEY,
+  customer_name VARCHAR(200),
+  contact_person VARCHAR(200),
+  mobile VARCHAR(40),
+  phone VARCHAR(40),
+  email VARCHAR(200),
+  customer_active VARCHAR(20),
+  guest VARCHAR(5),
+  address VARCHAR(300),
+  created_date DATETIME
+);
+
+CREATE TABLE suppliers (
+  supplier_id INT PRIMARY KEY,
+  supplier_name VARCHAR(200),
+  contact_person VARCHAR(200),
+  mobile VARCHAR(40),
+  phone VARCHAR(40),
+  email VARCHAR(200),
+  address VARCHAR(300),
+  created_date DATETIME
+);
+
+-- Synthetic pre-cutover physical count sheet (count-first authority, strategy §4).
+CREATE TABLE opening_stock_count (
+  id INT PRIMARY KEY,
+  item_id INT,
+  store_id INT,
+  counted_quantity DOUBLE,
+  counted_by VARCHAR(120),
+  counted_date DATETIME
 );
 
 CREATE TABLE invoice (
@@ -47,13 +118,50 @@ CREATE TABLE payment (
 -- stores: 3 clean rows (one closed)
 INSERT INTO store (id, name, status) VALUES (1,'Accra Main Store','OPEN'), (2,'Kumasi Branch','OPEN'), (3,'Takoradi Depot (closed 2019)','CLOSED');
 
--- items: clean, then 3 validator/quarantine cases
-INSERT INTO item (id, item_code, name, quantity, status, created_date, store_id) VALUES
-  (101,'ITM-CEM-50','Cement 50kg bag',120.5,'ACTIVE','2022-03-15 09:30:00',1),
-  (102,'ITM-RID-01','Roofing sheet 8ft',40,'ACTIVE','2022-07-01 14:05:00',2),
-  (103,'ITM-BLA-MAL','BlÃ© tendu (double-encoded demo)',7.25,'ACTIVE','2022-09-12 11:00:00',1),
-  (104,'ITM-BAD-DATE','Zero-date legacy row',3,'ACTIVE','0000-00-00 00:00:00',1),
-  (105,'ITM-ORPHAN','Orphan store reference row',5,'DISCONTINUED','2023-01-05 08:00:00',99);
+-- categories: two levels (main -> sub), legacy item_main_category/item_category
+INSERT INTO item_main_category (category_id, category_name) VALUES
+  (1,'Building Materials'), (2,'Beverages'), (3,'Textiles');
+INSERT INTO item_category (category_id, main_id, category_name) VALUES
+  (11,1,'Cement'), (12,1,'Steel & Roofing'), (21,2,'Beer & Malt'), (31,3,'Fabrics');
+
+-- units (legacy free-text names; importer derives codes)
+INSERT INTO units (unit_id, unit_name) VALUES
+  (1,'Piece'), (2,'Bundle'), (3,'Yard'), (4,'Coil'), (5,'Shot'),
+  (6,'Bottle'), (7,'Carton'), (8,'Ton'), (9,'Box'), (10,'Crate');
+
+-- items: Phase 1 rows (101-105, DO NOT MODIFY) with extended Phase 2 columns,
+-- then Phase 2 conversion/product rows (106-110) and deliberate defect cases.
+INSERT INTO item (id, item_code, name, quantity, status, created_date, store_id, category_id, supplier_id, selling_price, purchase_price, unit_quantity, barcode) VALUES
+  (101,'ITM-CEM-50','Cement 50kg bag',120.5,'ACTIVE','2022-03-15 09:30:00',1,11,1,85,72,0,'BC-101'),
+  (102,'ITM-RID-01','Roofing sheet 8ft',3,'ACTIVE','2022-07-01 14:05:00',2,12,1,240,190,5,'BC-102'),
+  (103,'ITM-BLA-MAL','BlÃ© tendu (double-encoded demo)',7.25,'ACTIVE','2022-09-12 11:00:00',1,11,1,19.5,15,0,'BC-103'),
+  (104,'ITM-BAD-DATE','Zero-date legacy row',3,'ACTIVE','0000-00-00 00:00:00',1,12,2,45,38,0,'BC-104'),
+  (105,'ITM-ORPHAN','Orphan store reference row',5,'DISCONTINUED','2023-01-05 08:00:00',99,12,2,60,50,0,'BC-105'),
+  (106,'ITM-ROD-12','Steel rod 12mm',0.4,'ACTIVE','2022-11-02 10:00:00',1,12,2,3500,2800,5,'BC-106'),
+  (107,'ITM-BEER-CL','Club beer 625ml',2,'ACTIVE','2022-12-05 16:20:00',2,21,2,2800,2200,15,'BC-107'),
+  (108,'ITM-WIRE-C','Wire coil 14g',2,'ACTIVE','2023-02-18 09:45:00',1,31,1,380,300,13,'BC-108'),
+  (109,'ITM-COT-FAB','Cotton fabric',40,'ACTIVE','2023-03-01 12:00:00',2,31,1,25,18,0,'BC-101'),
+  (110,'ITM-ORPH-CAT','Orphan category row',10,'ACTIVE','2023-03-10 10:10:00',1,99,1,120,95,0,'BC-110');
+
+-- conversions (units_items.unit_total = how many of this unit make one package;
+-- importer derives exact factors relative to the smallest-unit row = base).
+-- Row semantics: 1/2 = roofing sheet base+bundle, 3/4 = steel rod base+ton,
+-- 5/6/7 = beer shot/bottle/carton, 8/9 = wire yard/coil,
+-- 10 = box conversion for quarantined item 103 (becomes orphan),
+-- 11 = MALFORMED factor 'abc' (quarantine), 12 = INVALID factor 0 (quarantine).
+INSERT INTO units_items (id, unit_id, item_id, unit_total, unit_price) VALUES
+  (1,1,102,1,25),
+  (2,2,102,10,240),
+  (3,1,106,1,15),
+  (4,8,106,250,3500),
+  (5,5,107,1,5),
+  (6,6,107,30,120),
+  (7,7,107,720,2800),
+  (8,3,108,1,8),
+  (9,4,108,50,380),
+  (10,9,103,12,99),
+  (11,9,101,'abc',50),
+  (12,10,101,0,60);
 
 -- invoices: INV-1001 (40.00) + INV-1002 (60.00) share receipt REC-2023-0001 (D1 case);
 -- legacy stored amount_paid = receipt total on BOTH invoices (multiplied), amount_due correct.
@@ -68,3 +176,25 @@ INSERT INTO payment (id, receipt_code, invoice_id, amount, pay_method, created_d
   (9001,'REC-2023-0001',1001,100.00,'CASH','2023-06-01 10:10:00',1),
   (9002,'REC-2023-0001',1002,100.00,'CASH','2023-06-01 10:10:00',1),
   (9003,'REC-2023-0002',2001,150.00,'MOMO-MTN','2023-06-02 12:05:00',2);
+
+-- customers: phone-first identity (email optional), one guest, one inactive
+INSERT INTO customers (customer_id, customer_name, contact_person, mobile, phone, email, customer_active, guest, address, created_date) VALUES
+  (1,'Market Plaza Ltd','K. Owusu','0244000001',NULL,NULL,'active','0','12 Market Rd, Accra','2021-03-10 09:00:00'),
+  (2,'Adom Stores','A. Boateng','0244000002','0302000002','adom@example.com','active','0','High St, Kumasi','2021-06-21 10:30:00'),
+  (3,'Kumasi Traders','Y. Asante','0200000003',NULL,NULL,'inactive','0','Adum, Kumasi','2022-01-15 11:00:00'),
+  (4,'Walk-in Guest',NULL,'0000000000',NULL,NULL,'active','1',NULL,'2022-02-01 08:00:00');
+
+-- suppliers
+INSERT INTO suppliers (supplier_id, supplier_name, contact_person, mobile, phone, email, address, created_date) VALUES
+  (1,'Ghacem Depot','S. Amankwah','0271000001',NULL,NULL,'Tema','2021-01-05 08:00:00'),
+  (2,'Rock Chemicals','M. Osei','0271000002','0303000002','sales@rockchem.example','Spintex, Accra','2021-04-11 14:00:00');
+
+-- physical count sheet: 101 exact (clean), 102 + 108 variances (I1 records),
+-- 110 unimportable (orphan count row quarantined). 106/107 deliberately ABSENT
+-- → legacy-quantity fallback = accepted migration risk requiring sign-off.
+-- Count rows always match the item's owning store (items.store_id).
+INSERT INTO opening_stock_count (id, item_id, store_id, counted_quantity, counted_by, counted_date) VALUES
+  (1,101,1,120.5,'K. Mensah','2026-10-20 17:00:00'),
+  (2,102,2,34,'K. Mensah','2026-10-20 17:30:00'),
+  (3,108,1,110,'A. Duplan','2026-10-20 18:00:00'),
+  (4,110,1,55,'A. Duplan','2026-10-20 18:05:00');

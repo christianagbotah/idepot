@@ -65,19 +65,38 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
   it('loads all fixture tables into legacy_raw with matching checksums', () => {
     const tables = Object.fromEntries(first.artifact.tables.map((t) => [t.table, t]));
     expect(tables.store!.stagedRows).toBe(3);
-    expect(tables.item!.stagedRows).toBe(5);
+    // Phase 2 extended the fixture: 5 Phase-1 rows (unchanged) + 5 new product rows
+    expect(tables.item!.stagedRows).toBe(10);
     expect(tables.invoice!.stagedRows).toBe(3);
     expect(tables.payment!.stagedRows).toBe(3);
+    expect(tables.units_items!.stagedRows).toBe(12);
+    expect(tables.customers!.stagedRows).toBe(4);
+    expect(tables.suppliers!.stagedRows).toBe(2);
+    expect(tables.opening_stock_count!.stagedRows).toBe(4);
     for (const t of first.artifact.tables) {
       expect(t.checksumMatch, `checksum ${t.table}`).toBe(true);
     }
   });
 
-  it('quarantines the three corrupted rows with precise reasons', () => {
-    expect(first.artifact.quarantine.total).toBe(3);
+  it('quarantines the corrupted rows with precise reasons', () => {
+    // Phase 2 fixture deliberately adds: orphan category ref (item 110), the
+    // orphaned box-conversion of quarantined item 103 + the orphan count row
+    // for item 110 (fk_orphan total 4), a malformed conversion ('abc'), an
+    // invalid factor (0) and a duplicate barcode (item 109 re-uses BC-101).
+    expect(first.artifact.quarantine.total).toBe(9);
     expect(first.artifact.quarantine.byReason.encoding_mojibake).toBe(1);
     expect(first.artifact.quarantine.byReason.date_unparsable).toBe(1);
-    expect(first.artifact.quarantine.byReason.fk_orphan).toBe(1);
+    expect(first.artifact.quarantine.byReason.fk_orphan).toBe(4);
+    expect(first.artifact.quarantine.byReason.duplicate_barcode).toBe(1);
+    // the malformed factor ('abc') is backend-sensitive BY DESIGN: staging MySQL
+    // runs non-strict (legacy-faithful), so DOUBLE coercion turns 'abc' into 0 →
+    // invalid_conversion on the mysql-protocol path, while the parsed-dump
+    // fallback preserves the raw string → numeric_unparsable. Either way the
+    // malformed conversion + the zero factor are quarantined (2 rows total).
+    const coerced =
+      (first.artifact.quarantine.byReason.numeric_unparsable ?? 0) +
+      (first.artifact.quarantine.byReason.invalid_conversion ?? 0);
+    expect(coerced).toBe(2);
   });
 
   it('emits correction-aware D1 reconciliation records with the full contract', () => {
@@ -113,6 +132,79 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
     expect(records.find((r) => r.legacy_id === '2001')).toBeUndefined();
   });
 
+  it('emits Phase 2 opening-stock correction records (count variance + accepted risk)', () => {
+    const records = first.artifact.reconciliation.records;
+    // count authority wins with recorded variance (I1 evidence)
+    const variances = records.filter((r) => r.correction_reason === 'I1_OPENING_STOCK_COUNT_VARIANCE');
+    expect(variances.map((r) => r.legacy_id).sort()).toEqual(['102', '108']);
+    const v102 = variances.find((r) => r.legacy_id === '102')!;
+    expect(v102.legacy_stored_value.base_quantity).toBe('35.000000');
+    expect(v102.new_system_value.opening_base_quantity).toBe('34.000000');
+    expect(v102.correction_delta.opening_quantity_base).toBe('-1.000000');
+    expect(v102.new_system_value.authority).toBe('physical_count');
+    expect(v102.requires_manual_approval).toBe(true);
+    // legacy fallback WITHOUT count = accepted migration risk, never silent
+    const risks = records.filter(
+      (r) => r.correction_reason === 'I1_LEGACY_QUANTITY_WITHOUT_COUNT_ACCEPTED_RISK',
+    );
+    expect(risks.map((r) => r.legacy_id).sort()).toEqual(['106', '107']);
+    const v106 = risks.find((r) => r.legacy_id === '106')!;
+    expect(v106.legacy_reconstructed_value.base_quantity).toBe('105.000000'); // 0.4 ton × 250 + 5
+    expect(v106.new_system_value.accepted_migration_risk).toBe(true);
+    expect(v106.severity).toBe('critical');
+    expect(v106.evidence.defect).toBe('I1');
+    // exact count match (101) produces NO record
+    expect(records.filter((r) => r.legacy_id === '101')).toHaveLength(0);
+  });
+
+  it('imports Phase 2 master data with conversions and opening stock', async () => {
+    const p2 = first.artifact.phase2!;
+    expect(p2.categoriesImported).toBe(7); // 3 mains + 4 subs
+    expect(p2.unitsImported).toBe(10);
+    expect(p2.productsImported).toBe(5); // 101,102,106,107,108
+    expect(p2.conversionsImported).toBe(5); // bundle, ton, bottle, carton, coil
+    expect(p2.customersImported).toBe(4);
+    expect(p2.suppliersImported).toBe(2);
+    expect(p2.openingStockDocs).toBe(5);
+    expect(p2.openingStockMovements).toBe(5);
+    expect(p2.openingStockRiskItems).toBe(2);
+    expect(p2.openingStockVariances).toBe(2);
+
+    const c = new Client({ connectionString: adminUrl });
+    await c.connect();
+    try {
+      // conversion factors are exact decimals to base (unit-conversion-rules §8)
+      const conv = await c.query<{ code: string; f: string }>(
+        `SELECT u.code, pu.conversion_factor::text f FROM product_unit pu
+         JOIN unit u ON u.id = pu.unit_id ORDER BY u.code`,
+      );
+      const factors = Object.fromEntries(conv.rows.map((r) => [r.code, r.f]));
+      expect(factors['BUNDLE']).toBe('10.000000');
+      expect(factors['TON']).toBe('250.000000');
+      expect(factors['BOTTLE']).toBe('30.000000');
+      expect(factors['CARTON']).toBe('720.000000');
+      expect(factors['COIL']).toBe('50.000000');
+      // opening balances derived from the ledger movements
+      const bal = await c.query<{ code: string; q: string }>(
+        `SELECT p.code, b.quantity_base::text q FROM stock_balance b
+         JOIN product p ON p.id = b.product_id ORDER BY p.code`,
+      );
+      const balances = Object.fromEntries(bal.rows.map((r) => [r.code, r.q]));
+      expect(balances['ITM-CEM-50']).toBe('120.500000');
+      expect(balances['ITM-RID-01']).toBe('34.000000');
+      expect(balances['ITM-ROD-12']).toBe('105.000000');
+      expect(balances['ITM-BEER-CL']).toBe('1455.000000');
+      expect(balances['ITM-WIRE-C']).toBe('110.000000');
+      // accepted-risk count documents are flagged for sign-off
+      const risk = await c.query<{ n: string }>(
+        `SELECT count(*)::text n FROM stock_count WHERE accepted_migration_risk = true`,
+      );
+      expect(Number(risk.rows[0]!.n)).toBe(2);
+    } finally {
+      await c.end();
+    }
+  });
+
   it('imports stores into the target tenant with legacy_id_map rows', async () => {
     expect(first.artifact.transform.storesImported).toBe(3);
     expect(first.artifact.transform.legacyIdMapRows).toBe(3);
@@ -128,12 +220,14 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
         'SELECT reason_code reason FROM quarantine_row WHERE run_id = $1 GROUP BY reason_code',
         [first.runId],
       );
-      expect(q.rows.length).toBe(3);
+      // DB reason set mirrors the artifact (both are backend-stable in count)
+      expect(q.rows.length).toBe(Object.keys(first.artifact.quarantine.byReason).length);
       const rr = await c.query<{ n: string }>(
         'SELECT count(*)::text n FROM reconciliation_record WHERE run_id = $1',
         [first.runId],
       );
-      expect(Number(rr.rows[0]!.n)).toBe(2);
+      // 2 D1 + 4 opening-stock (2 count variances + 2 accepted-risk fallbacks)
+      expect(Number(rr.rows[0]!.n)).toBe(6);
     } finally {
       await c.end();
     }
@@ -148,7 +242,7 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
       stagingBackend: string;
     };
     expect(artifact.runId).toBe(first.runId);
-    expect(artifact.reconciliation.summary.records).toBe(2);
+    expect(artifact.reconciliation.summary.records).toBe(6);
     expect(artifact.stagingBackend).toBe(backend);
   });
 
@@ -184,7 +278,17 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
     expect(second.runId).not.toBe(first.runId);
     expect(second.artifact.transform.storesReused).toBe(3);
     expect(second.artifact.transform.storesImported).toBe(0);
-    expect(second.artifact.quarantine.total).toBe(3);
+    expect(second.artifact.quarantine.total).toBe(9);
+    // Phase 2 idempotency: every master-data target is reused, never duplicated
+    expect(second.artifact.phase2!.productsReused).toBe(5);
+    expect(second.artifact.phase2!.productsImported).toBe(0);
+    expect(second.artifact.phase2!.conversionsReused).toBe(5);
+    expect(second.artifact.phase2!.conversionsImported).toBe(0);
+    expect(second.artifact.phase2!.customersReused).toBe(4);
+    expect(second.artifact.phase2!.suppliersReused).toBe(2);
+    expect(second.artifact.phase2!.openingStockDocs).toBe(0);
+    expect(second.artifact.phase2!.openingStockDocsReused).toBe(5);
+    expect(second.artifact.phase2!.openingStockMovements).toBe(0);
 
     const c2 = new Client({ connectionString: adminUrl });
     await c2.connect();

@@ -14,9 +14,17 @@ export interface TableSpec {
 
 export const FIXTURE_TABLES: TableSpec[] = [
   { table: 'store', columns: ['id', 'name', 'status'], pk: 'id' },
-  { table: 'item', columns: ['id', 'item_code', 'name', 'quantity', 'status', 'created_date', 'store_id'], pk: 'id' },
+  { table: 'item', columns: ['id', 'item_code', 'name', 'quantity', 'status', 'created_date', 'store_id', 'category_id', 'supplier_id', 'selling_price', 'purchase_price', 'unit_quantity', 'barcode'], pk: 'id' },
   { table: 'invoice', columns: ['id', 'invoice_code', 'amount', 'amount_paid', 'amount_due', 'status', 'created_date', 'store_id'], pk: 'id' },
   { table: 'payment', columns: ['id', 'receipt_code', 'invoice_id', 'amount', 'pay_method', 'created_date', 'store_id'], pk: 'id' },
+  // Phase 2 master data & stock
+  { table: 'item_main_category', columns: ['category_id', 'category_name'], pk: 'category_id' },
+  { table: 'item_category', columns: ['category_id', 'main_id', 'category_name'], pk: 'category_id' },
+  { table: 'units', columns: ['unit_id', 'unit_name'], pk: 'unit_id' },
+  { table: 'units_items', columns: ['id', 'unit_id', 'item_id', 'unit_total', 'unit_price'], pk: 'id' },
+  { table: 'customers', columns: ['customer_id', 'customer_name', 'contact_person', 'mobile', 'phone', 'email', 'customer_active', 'guest', 'address', 'created_date'], pk: 'customer_id' },
+  { table: 'suppliers', columns: ['supplier_id', 'supplier_name', 'contact_person', 'mobile', 'phone', 'email', 'address', 'created_date'], pk: 'supplier_id' },
+  { table: 'opening_stock_count', columns: ['id', 'item_id', 'store_id', 'counted_quantity', 'counted_by', 'counted_date'], pk: 'id' },
 ];
 
 /** A legacy source: yields canonical row batches per table (staging backend). */
@@ -74,4 +82,27 @@ export interface ReconciliationArtifact {
   };
   warnings: Array<{ code: string; table: string; message: string }>;
   transform: { storesImported: number; storesReused: number; legacyIdMapRows: number };
+  /** Phase 2 master-data & opening-stock import stats (additive). */
+  phase2?: Phase2TransformStats;
+}
+
+export interface Phase2TransformStats {
+  categoriesImported: number;
+  categoriesReused: number;
+  unitsImported: number;
+  unitsReused: number;
+  productsImported: number;
+  productsReused: number;
+  conversionsImported: number;
+  conversionsReused: number;
+  customersImported: number;
+  customersReused: number;
+  suppliersImported: number;
+  suppliersReused: number;
+  openingStockDocs: number;
+  openingStockDocsReused: number;
+  openingStockMovements: number;
+  openingStockRiskItems: number;
+  openingStockVariances: number;
+  legacyIdMapRowsPhase2: number;
 }

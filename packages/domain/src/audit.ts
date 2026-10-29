@@ -7,7 +7,29 @@ export type AuditAction =
   | 'warehouse.created'
   | 'warehouse.updated'
   | 'document.posted'
-  | 'change_feed.acked';
+  | 'change_feed.acked'
+  | 'product.created'
+  | 'product.updated'
+  | 'category.created'
+  | 'category.updated'
+  | 'unit.created'
+  | 'product_unit.created'
+  | 'product_barcode.created'
+  | 'customer.created'
+  | 'customer.updated'
+  | 'supplier.created'
+  | 'supplier.updated'
+  | 'price_list.created'
+  | 'price_list_item.created'
+  | 'price_list_item.closed'
+  | 'stock.moved'
+  | 'stock.count.created'
+  | 'stock.count.approved'
+  | 'stock.adjustment.posted'
+  | 'transfer.dispatched'
+  | 'transfer.received'
+  | 'transfer.created'
+  | 'party_opening_balance.posted';
 
 export interface AuditEventProps {
   tenantId: string;
