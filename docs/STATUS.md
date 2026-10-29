@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Current phase** | Phase 2 — master data & inventory (+ continuous migration: master data & stock) (this branch) |
+| **Current phase** | Phase 2 — master data & inventory (+ continuous migration: master data & stock) — review-hardened (this branch) |
 | **Previous phases** | Phase 0 — forensic audit & architecture ✅ (merged); Phase 1 — monorepo foundation + migration engineering foundation ✅ (merged) |
 | **Branch** | `phase-2/master-data-inventory` |
-| **Repo state** | Phase 2 implementation: catalog/parties/pricing/stock ledger/counts/transfers + migration extension, tests, UI slices |
+| **Repo state** | Phase 2 implementation + independent-review hardening (concurrency, conversion authority, tenant-reference isolation, reversal idempotency, duplicate-line validation) |
 
 ## Completed capabilities (Phase 1 — merged to main, preserved unchanged)
 
@@ -27,10 +27,15 @@
 **Inventory (all writes through the Posting Coordinator):**
 - Append-only `stock_movement` ledger (7 movement types incl. transfer_out/in, count_variance, reversal; signed base quantities; cross-unit movements store transacted unit+quantity+factor beside the base quantity). DB-level append-only: app role has SELECT/INSERT only (UPDATE/DELETE denied — tested).
 - `stock_balance` is a derived projection, never truth: rebuild job recomputes from the ledger and repairs drift (`on_hand == Σ movements` invariant test + drift-injection test).
-- Row-locked balance posting (no oversell; oversell policy arrives with offline sync in Phase 3).
+- **Concurrency-safe balance posting (review fix 1):** every posting ensures the zero balance row idempotently (`INSERT … ON CONFLICT DO NOTHING`) then locks it `FOR UPDATE`, reads under the lock, and applies a plain `UPDATE` — two concurrent FIRST postings serialize on the now-existing row and the projection can never lose a committed movement (proven by concurrent +5/+7 and a 10-way storm: projection == ledger == Σ). All balance rows of a posting set are locked up front in one deterministic sorted order (no lock-order deadlocks between multi-line postings).
+- **Rebuild coordinates with posting (review fix 2):** postings hold a per-tenant SHARED `pg_advisory_xact_lock`; a repair rebuild takes it EXCLUSIVELY, so no posting can commit between the ledger SUM and the projection writes — the committed projection is never older than the ledger it was rebuilt from (proven by rebuild-vs-posting race test). Rebuild also locks its key universe (stored ∪ movement keys) with the same ensure+FOR UPDATE mechanism and no longer resets out-of-scope warehouses on a warehouse-filtered run.
+- **Configured conversion is authoritative (review fix 3):** online cross-unit movements resolve the factor server-side from `product_unit` (base unit ⇒ factor 1), compute `|quantity_base| = quantity_transacted × configured factor` server-side, and store the RESOLVED factor on the ledger row as historical evidence. Client-supplied factor/base are optimistic expectations compared numerically against configuration — stale/tampered values are rejected 409 (`stale conversion configuration` / `conversion mismatch`), never silently posted. The migration engine keeps its separate explicit path for legacy conversion evidence.
+- **Tenant-reference isolation closed (review fix 4):** migration 0005 adds tenant-aware composite FKs `(tenant_id, ref) → parent(tenant_id, id)` across all Phase 2 catalog/inventory relationships (plus the required `UNIQUE (tenant_id, id)` targets), so a cross-tenant reference is structurally impossible; RLS-filtered reference validation (`inventory-refs.ts`) gives clean 404s and the composite FKs are the backstop. Positive cross-tenant attacks (adjustment +10, opening stock, count, transfer, unit/conversion ids) are all tested to fail with ZERO tenant-B rows referencing tenant-A entities.
 - Stock counts: draft → counted → approve; approval posts variance adjustments + movements in the SAME transaction; material variance approval gated by `stockcount:approve` (cashier 403 tested).
 - Adjustments: reason-mandatory documents; cross-unit evidence optional per line; explicit reversal endpoint (reversal movements with `reversal_of`, double-reversal rejected).
+- **Reversal is concurrency-idempotent (review fix 5):** the original adjustment row is locked FOR UPDATE for the whole reversal, and a partial unique index `uq_stock_movement_reversal_of WHERE reversal_of IS NOT NULL` (migration 0005) makes single-reversal a database guarantee — a uniqueness conflict maps to the domain 409. Two concurrent reverse requests: exactly one commits, stock restored exactly once (tested).
 - Transfers: draft → in_transit → received; partial receipt accumulates; over-receipt rejected; cancel-after-dispatch rejected; dispatch/receive both audited — no silent quantity disappearance.
+- **Duplicate transfer lines rejected (review fix 6):** a product may appear at most once per create/receive payload — schema-level refine (clean 400) + service-level check (domain 409). Duplicate lines can no longer bypass the dispatched quantity and fall through to a database CHECK error (500); zero partial receipt is proven.
 - Opening stock: count-first authority (physical_count default); `legacy_quantity` authority REQUIRES accepted-migration-risk flag + approve permission — never silent (strategy §4).
 
 **Migration workstream (extends the Phase 1 engine):**
@@ -55,6 +60,7 @@
 | RBAC matrix + cross-tenant impossibility | 26/26 |
 | Vertical slice E2E | 7/7 |
 | **Inventory invariants: on_hand≡Σ movements, rebuild-repairs-drift, cross-unit conservation, reversal restores, tenant isolation, coordinator rollback (zero partial state)** | **7/7** |
+| **Inventory trust boundary (review fixes): first-row concurrency, posting-vs-rebuild race, authoritative conversion (tampered/stale/unconfigured), positive cross-tenant attacks ×5, concurrent double reversal, duplicate transfer lines** | **19/19** |
 | **E2E: transfer partial-receipt, count approval (RBAC-gated), opening-stock authority, pricing effective-dating** | **5/5** |
 | Lint / **clean** typecheck (no dist) / build | clean (9 workspaces) |
 | npm audit (runtime + full) / gitleaks | 0 / clean (unchanged) |

@@ -282,6 +282,8 @@ export const MovementEntrySchema = z.object({
   quantityBase: qty(),
   unitId: uuid().nullish(),
   quantityTransacted: qty().nullish(),
+  /** OPTIMISTIC EXPECTATION ONLY — the authoritative factor is resolved
+   *  server-side from product_unit configuration; a mismatch is rejected. */
   conversionFactor: qty().nullish(),
   reason: z.string().max(200).nullish(),
 });
@@ -355,7 +357,10 @@ export const CreateStockAdjustmentSchema = z.object({
   lines: z.array(z.object({
     productId: uuid(),
     quantityBase: qty(),
-    /** optional cross-unit evidence: base == transacted × factor (exact) */
+    /** optional cross-unit evidence: the SERVER resolves the factor from
+     *  product_unit configuration and computes |quantityBase| from
+     *  transacted × configured factor; these fields are optimistic
+     *  expectations compared against server configuration (409 on drift) */
     unitId: uuid().nullish(),
     quantityTransacted: qty().nullish(),
     conversionFactor: qty().nullish(),
@@ -375,19 +380,28 @@ export interface StockAdjustmentDto {
 
 /* -------------------------------- transfers ------------------------------- */
 
+/** A product may appear at most once per transfer payload — duplicate lines
+ *  could bypass the dispatched-quantity check and fall through to a database
+ *  constraint error instead of a clean business rejection (review fix 6). */
 export const CreateTransferSchema = z.object({
   fromWarehouseId: uuid(),
   toWarehouseId: uuid(),
   code: z.string().min(2).max(40).optional(),
   note: z.string().max(2000).nullish(),
   lines: z.array(z.object({ productId: uuid(), quantityBase: qty() })).min(1).max(2000),
-});
+}).refine(
+  (dto) => new Set(dto.lines.map((l) => l.productId)).size === dto.lines.length,
+  { message: 'duplicate productId in transfer lines: each product may appear at most once' },
+);
 export type CreateTransfer = z.infer<typeof CreateTransferSchema>;
 export const ReceiveTransferSchema = z.object({
   lines: z.array(z.object({ productId: uuid(), quantityBase: qty() })).min(1).max(2000),
   /** injects a failure AFTER partial writes — proves all-or-nothing rollback */
   simulateFailureAfterWrites: z.boolean().optional(),
-});
+}).refine(
+  (dto) => new Set(dto.lines.map((l) => l.productId)).size === dto.lines.length,
+  { message: 'duplicate productId in transfer lines: each product may appear at most once' },
+);
 export type ReceiveTransfer = z.infer<typeof ReceiveTransferSchema>;
 
 export interface TransferLineDto {

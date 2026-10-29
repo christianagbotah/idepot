@@ -30,14 +30,33 @@ export class StockAdjustmentService {
 
   /** Reverse a posted adjustment: posts 'reversal' movements with reversal_of
    *  pointing at the original movements, restoring the prior quantities
-   *  exactly. Reversing a reversal is rejected. One transaction. */
+   *  exactly. Reversing a reversal is rejected. One transaction.
+   *
+   *  Concurrency (PR #3 review fix 5): the original adjustment row is locked
+   *  FOR UPDATE for the whole reversal, so two concurrent reverse requests
+   *  serialize — the loser observes the winner's committed reversal and gets
+   *  a clean 409. The partial unique index uq_stock_movement_reversal_of
+   *  (migration 0005) is the database-level guarantee: even a path that
+   *  skipped the row lock cannot insert a second reversal movement for the
+   *  same original (23505 → ConflictError in StockPoster). */
   reverse(principal: PrincipalLike, id: string): Promise<StockAdjustmentDto> {
     return this.uow.run({ tenantId: principal.tenantId, userId: principal.userId }, async (ctx) => {
+      // serialize concurrent reversals of the same adjustment (RLS-filtered:
+      // a cross-tenant adjustment is indistinguishable from a missing one)
+      const locked = await ctx.query<{ id: string }>(
+        `SELECT id FROM stock_adjustment WHERE id = $1 FOR UPDATE`,
+        [id],
+      );
+      if (locked.rows.length === 0) throw new NotFoundError('stock adjustment', id);
+
       const original = await this.counts.getAdjustmentWithinCtx(ctx, id);
       if (!original) throw new NotFoundError('stock adjustment', id);
       if (original.status !== 'posted') {
         throw new ConflictError(`cannot reverse a ${original.status} adjustment`);
       }
+      // plain read: stock_movement is append-only for the app role (no row
+      // locks); the adjustment-row lock above serializes reverse requests
+      // and the partial unique index enforces single-reversal at the DB level
       const movementIds = await ctx.query<{ id: string }>(
         `SELECT id FROM stock_movement WHERE tenant_id = $1 AND source_document_type = 'stock_adjustment' AND source_document_id = $2`,
         [ctx.tenantId, id],

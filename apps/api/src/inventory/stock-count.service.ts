@@ -25,6 +25,7 @@ import { hasPermission } from '@idepot/auth';
 import type { UowContext } from '../db/unit-of-work.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork } from '../db/unit-of-work.js';
+import { assertTenantRefs } from './inventory-refs.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { StockPoster } from './stock-poster.js';
 
@@ -58,6 +59,10 @@ export class StockCountService {
 
   create(principal: PrincipalLike, dto: CreateStockCount): Promise<StockCountDto> {
     return this.uow.run({ tenantId: principal.tenantId, userId: principal.userId }, async (ctx) => {
+      // RLS-filtered reference validation (review fix 4): cross-tenant
+      // warehouse/products are indistinguishable from missing ones
+      await assertTenantRefs(ctx, 'warehouse', 'warehouse', [dto.warehouseId]);
+      await assertTenantRefs(ctx, 'product', 'product', dto.lines.map((l) => l.productId));
       const authority = dto.authority ?? 'system_entry';
       const risk = dto.acceptedMigrationRisk ?? false;
       if (authority === 'legacy_quantity') {
@@ -106,6 +111,8 @@ export class StockCountService {
       if (count.status !== 'draft' && count.status !== 'counted') {
         throw new ConflictError(`cannot update lines of a ${count.status} count`);
       }
+      // RLS-filtered product validation (review fix 4)
+      await assertTenantRefs(ctx, 'product', 'product', dto.lines.map((l) => l.productId));
       for (const line of dto.lines) {
         if (line.countedQuantityBase != null) validateNonNegativeQuantity(line.countedQuantityBase);
       }
@@ -293,6 +300,11 @@ export class StockCountService {
       movementReason?: string;
     },
   ): Promise<StockAdjustmentDto> {
+    // RLS-filtered reference validation (review fix 4): happens inside the
+    // caller's transaction before any document row is written, so a failed
+    // reference leaves zero partial state
+    await assertTenantRefs(ctx, 'warehouse', 'warehouse', [dto.warehouseId]);
+    await assertTenantRefs(ctx, 'product', 'product', dto.lines.map((l) => l.productId));
     const movementType = dto.movementType ?? 'adjustment';
     const movementReason = dto.movementReason ?? `adjustment: ${dto.reason}`;
     const code = dto.code ?? newCode('ADJ');

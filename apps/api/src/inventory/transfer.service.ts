@@ -12,10 +12,11 @@ import {
   parseQuantity,
   validateMovementQuantity,
 } from '@idepot/domain';
- 
+
 import type { UowContext } from '../db/unit-of-work.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork } from '../db/unit-of-work.js';
+import { assertTenantRefs } from './inventory-refs.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { StockPoster } from './stock-poster.js';
 
@@ -31,6 +32,21 @@ function newCode(): string {
     .toString(36)
     .toUpperCase()
     .padStart(2, '0')}`;
+}
+
+/** Rejects duplicated product lines (review fix 6): duplicate lines in a
+ *  create/receive payload could bypass the dispatched-quantity check (each
+ *  line is validated against the same pre-update received value) and then
+ *  fall through to a database CHECK violation — a 500 instead of a clean
+ *  business rejection. */
+function rejectDuplicateProducts(lines: Array<{ productId: string }>): void {
+  const seen = new Set<string>();
+  for (const line of lines) {
+    if (seen.has(line.productId)) {
+      throw new ConflictError(`product ${line.productId} appears more than once in the transfer lines`);
+    }
+    seen.add(line.productId);
+  }
 }
 
 /**
@@ -49,11 +65,16 @@ export class TransferService {
     private readonly poster: StockPoster,
   ) {}
 
-  create(principal: PrincipalLike, dto: CreateTransfer): Promise<TransferDto> {
+  async create(principal: PrincipalLike, dto: CreateTransfer): Promise<TransferDto> {
     if (dto.fromWarehouseId === dto.toWarehouseId) {
       throw new ConflictError('transfer source and destination must differ');
     }
+    rejectDuplicateProducts(dto.lines);
     return this.uow.run({ tenantId: principal.tenantId, userId: principal.userId }, async (ctx) => {
+      // RLS-filtered reference validation (review fix 4): cross-tenant
+      // warehouses/products are indistinguishable from missing ones
+      await assertTenantRefs(ctx, 'warehouse', 'warehouse', [dto.fromWarehouseId, dto.toWarehouseId]);
+      await assertTenantRefs(ctx, 'product', 'product', dto.lines.map((l) => l.productId));
       for (const line of dto.lines) validateMovementQuantity(line.quantityBase);
       const code = dto.code ?? newCode();
       const res = await ctx.query<{ id: string }>(
@@ -128,7 +149,8 @@ export class TransferService {
     });
   }
 
-  receive(principal: PrincipalLike, id: string, dto: ReceiveTransfer): Promise<TransferDto> {
+  async receive(principal: PrincipalLike, id: string, dto: ReceiveTransfer): Promise<TransferDto> {
+    rejectDuplicateProducts(dto.lines);
     return this.uow.run({ tenantId: principal.tenantId, userId: principal.userId }, async (ctx) => {
       const t = await this.lockTransfer(ctx, id);
       if (!t) throw new NotFoundError('transfer', id);

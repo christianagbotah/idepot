@@ -73,13 +73,16 @@ export function validateMovementEntry(m: MovementEntry): bigint {
 
   const hasTransacted = m.quantityTransacted != null && m.quantityTransacted !== '';
   const hasFactor = m.conversionFactor != null && m.conversionFactor !== '';
-  if (hasTransacted || hasFactor) {
-    if (!hasTransacted || !hasFactor || !m.unitId) {
+  if (hasTransacted || hasFactor || m.unitId) {
+    if (!m.unitId || !hasTransacted) {
       throw new ValidationError(
-        'cross-unit movements require unitId, quantityTransacted AND conversionFactor together',
+        'cross-unit movements require unitId and quantityTransacted together ' +
+          '(conversionFactor is optional — the server resolves the configured factor authoritatively)',
       );
     }
-    validateConversionFactor(m.conversionFactor!);
+    if (hasFactor) {
+      validateConversionFactor(m.conversionFactor!);
+    }
     const transacted = validateNonNegativeQuantity(m.quantityTransacted!);
     if (transacted === 0n) throw new ValidationError('transacted quantity must be non-zero');
   }
