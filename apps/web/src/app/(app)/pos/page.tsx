@@ -155,7 +155,7 @@ export default function PosPage() {
 
   useEffect(() => {
     if (online && session && deviceId && queued.length > 0) void drainOutbox();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- drain on (re)connect
+    // drain on (re)connect; queued.length intentionally not a trigger
   }, [online, deviceId]);
 
   function addProduct(productId: string) {
