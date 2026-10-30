@@ -570,23 +570,29 @@ CREATE TABLE IF NOT EXISTS legacy_raw.payment_with_goods (
   _loaded_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS legacy_raw.invoice (
-  id text, invoice_code text, so_code text, customer_id text,
-  amount text, amount_paid text, amount_due text, status text,
-  date_timestamp text, track_code text, opening_entry text,
-  _src_row_number bigint,
-  _loaded_at timestamptz NOT NULL DEFAULT now()
-);
+-- legacy_raw.invoice exists since 0002 (Phase 1 verbatim subset) — extend it
+ALTER TABLE legacy_raw.invoice ADD COLUMN IF NOT EXISTS so_code text;
+ALTER TABLE legacy_raw.invoice ADD COLUMN IF NOT EXISTS customer_id text;
+ALTER TABLE legacy_raw.invoice ADD COLUMN IF NOT EXISTS date_timestamp text;
+ALTER TABLE legacy_raw.invoice ADD COLUMN IF NOT EXISTS track_code text;
+ALTER TABLE legacy_raw.invoice ADD COLUMN IF NOT EXISTS opening_entry text;
 
-CREATE TABLE IF NOT EXISTS legacy_raw.payment (
-  id text, receipt_code text, amount text, payment_type text, category text,
-  customer_id text, invoice_code text, so_code text, method_account text,
-  bank_name text, branch text, cheque_number text, momo_phone text,
-  momo_transaction_id text, momo_type text, timestamp text, track_code text,
-  cash_sales_in_payables text, due text,
-  _src_row_number bigint,
-  _loaded_at timestamptz NOT NULL DEFAULT now()
-);
+-- legacy_raw.payment exists since 0002 (Phase 1 verbatim subset) — extend it
+ALTER TABLE legacy_raw.payment ADD COLUMN IF NOT EXISTS payment_type text;
+ALTER TABLE legacy_raw.payment ADD COLUMN IF NOT EXISTS category text;
+ALTER TABLE legacy_raw.payment ADD COLUMN IF NOT EXISTS customer_id text;
+ALTER TABLE legacy_raw.payment ADD COLUMN IF NOT EXISTS invoice_code text;
+ALTER TABLE legacy_raw.payment ADD COLUMN IF NOT EXISTS so_code text;
+ALTER TABLE legacy_raw.payment ADD COLUMN IF NOT EXISTS method_account text;
+ALTER TABLE legacy_raw.payment ADD COLUMN IF NOT EXISTS bank_name text;
+ALTER TABLE legacy_raw.payment ADD COLUMN IF NOT EXISTS branch text;
+ALTER TABLE legacy_raw.payment ADD COLUMN IF NOT EXISTS cheque_number text;
+ALTER TABLE legacy_raw.payment ADD COLUMN IF NOT EXISTS momo_phone text;
+ALTER TABLE legacy_raw.payment ADD COLUMN IF NOT EXISTS momo_transaction_id text;
+ALTER TABLE legacy_raw.payment ADD COLUMN IF NOT EXISTS momo_type text;
+ALTER TABLE legacy_raw.payment ADD COLUMN IF NOT EXISTS track_code text;
+ALTER TABLE legacy_raw.payment ADD COLUMN IF NOT EXISTS cash_sales_in_payables text;
+ALTER TABLE legacy_raw.payment ADD COLUMN IF NOT EXISTS due text;
 
 CREATE TABLE IF NOT EXISTS legacy_raw.proforma_invoice (
   id text, invoice_code text, so_code text, customer_id text,

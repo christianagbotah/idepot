@@ -19,6 +19,19 @@
  *     (item 110 → category 99), count-authority variance (102: count 34 vs
  *     legacy 35; 108: count 110 vs legacy 113), accepted-risk legacy
  *     fallback (106 & 107 have NO count row), I1 stock drift evidence.
+ *
+ * Phase 3 additions (sales cycle — prices follow the items' selling prices:
+ * 101 = 85.00, 102 = 240.00, 106 = 3500.00):
+ *   - SO-3001: clean cash sale, fully picked, waybill WB-3001;
+ *   - SO-3002: credit sale with the D1 multi-account receipt (2 payment rows
+ *     each carrying the receipt total 160; stored amount_paid 320 corrupted),
+ *     an R14 header divergence (row 4 grand_total 4345 vs 4340) and an R8
+ *     discount case (Σ lines 4350 vs grand_total 4340 — 10.00 never stored);
+ *     partial pick (6 of 10 cement bags) → open-SO carryover;
+ *   - Deposit-163000: legacy negative-invoice deposit (200.00) with a
+ *     cash_deposit_disbursement of 100.00 applied to INV-3002;
+ *   - PMF-4001: proforma (quotation) with two lines;
+ *   - invoice_code / waybill_code booklets incl. closed + 'not used' rows.
  */
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -126,12 +139,17 @@ CREATE TABLE opening_stock_count (
 CREATE TABLE invoice (
   id INT PRIMARY KEY,
   invoice_code VARCHAR(40),
+  so_code VARCHAR(40),
+  customer_id INT,
   amount DOUBLE,
   amount_paid DOUBLE,
   amount_due DOUBLE,
   status VARCHAR(30),
   created_date DATETIME,
-  store_id INT
+  store_id INT,
+  date_timestamp DATETIME,
+  track_code VARCHAR(40),
+  opening_entry INT
 );
 
 CREATE TABLE payment (
@@ -141,7 +159,22 @@ CREATE TABLE payment (
   amount DOUBLE,
   pay_method VARCHAR(30),
   created_date DATETIME,
-  store_id INT
+  store_id INT,
+  payment_type VARCHAR(30),
+  category VARCHAR(30),
+  customer_id INT,
+  invoice_code VARCHAR(40),
+  so_code VARCHAR(40),
+  method_account VARCHAR(60),
+  bank_name VARCHAR(120),
+  branch VARCHAR(120),
+  cheque_number VARCHAR(80),
+  momo_phone VARCHAR(30),
+  momo_transaction_id VARCHAR(80),
+  momo_type VARCHAR(20),
+  track_code VARCHAR(40),
+  cash_sales_in_payables DOUBLE,
+  due DOUBLE
 );
 
 -- stores: 3 clean rows (one closed)
@@ -227,6 +260,116 @@ INSERT INTO opening_stock_count (id, item_id, store_id, counted_quantity, counte
   (2,102,2,34,'K. Mensah','2026-10-20 17:30:00'),
   (3,108,1,110,'A. Duplan','2026-10-20 18:00:00'),
   (4,110,1,55,'A. Duplan','2026-10-20 18:05:00');
+
+-- ============================================================
+-- Phase 3: sales cycle (verbatim legacy shapes, TEXT coerced by staging)
+-- ============================================================
+DROP TABLE IF EXISTS waybill_code;
+DROP TABLE IF EXISTS invoice_code;
+DROP TABLE IF EXISTS cash_deposit_disbursement;
+DROP TABLE IF EXISTS proforma_invoice_order;
+DROP TABLE IF EXISTS proforma_invoice;
+DROP TABLE IF EXISTS payment_with_goods;
+DROP TABLE IF EXISTS sales_order;
+
+CREATE TABLE sales_order (
+  id INT PRIMARY KEY, so_code VARCHAR(40), customer_id INT, item_id INT,
+  quantity DOUBLE, quantity_picked DOUBLE, price DOUBLE, amount DOUBLE,
+  grand_total DOUBLE, amount_paid DOUBLE, amount_due DOUBLE, status VARCHAR(30),
+  type_of_sales VARCHAR(30), negative_or_goods VARCHAR(20), opening_entry INT,
+  cost_price DOUBLE, item_balance DOUBLE, total_quantity DOUBLE,
+  order_item_has_unit_sales INT, bundle_quantity DOUBLE, bundle_price DOUBLE,
+  date_timestamp DATETIME, track_code VARCHAR(40), created_by INT
+);
+
+CREATE TABLE payment_with_goods (
+  id INT PRIMARY KEY, so_code VARCHAR(40), customer_id INT, item_id INT,
+  quantity DOUBLE, quantity_picked DOUBLE, quantity_due DOUBLE, price DOUBLE,
+  amount DOUBLE, grand_total DOUBLE, amount_paid DOUBLE, amount_due DOUBLE,
+  status VARCHAR(30), type_of_sales VARCHAR(30), waybill_code VARCHAR(40),
+  invoice_code VARCHAR(40), date_timestamp DATETIME, track_code VARCHAR(40)
+);
+
+CREATE TABLE proforma_invoice (
+  id INT PRIMARY KEY, invoice_code VARCHAR(40), so_code VARCHAR(40),
+  customer_id INT, amount DOUBLE, date_timestamp DATETIME
+);
+
+CREATE TABLE proforma_invoice_order (
+  id INT PRIMARY KEY, so_code VARCHAR(40), item_id INT, quantity DOUBLE,
+  price DOUBLE, amount DOUBLE, unit_or_package VARCHAR(20)
+);
+
+CREATE TABLE cash_deposit_disbursement (
+  id INT PRIMARY KEY, so_code VARCHAR(40), invoice_code VARCHAR(40),
+  deposit_code VARCHAR(40), amount DOUBLE, date_timestamp DATETIME
+);
+
+CREATE TABLE invoice_code (
+  id INT PRIMARY KEY, code VARCHAR(40), status VARCHAR(20), reason TEXT,
+  customer_id INT, code_range VARCHAR(80), created_by INT, created_date DATETIME
+);
+
+CREATE TABLE waybill_code (
+  id INT PRIMARY KEY, code VARCHAR(40), status VARCHAR(20), reason TEXT,
+  customer_id INT, code_range VARCHAR(80), created_by INT, created_date DATETIME
+);
+
+-- SO-3001: clean cash sale (2 lines, fully picked) — prices per items table
+INSERT INTO sales_order (id, so_code, customer_id, item_id, quantity, quantity_picked, price, amount, grand_total, amount_paid, amount_due, status, type_of_sales, negative_or_goods, opening_entry, cost_price, item_balance, total_quantity, order_item_has_unit_sales, bundle_quantity, bundle_price, date_timestamp, track_code, created_by) VALUES
+  (1,'SO-3001',2,101,2,2,85.00,170.00,410.00,410.00,0.00,'Paid','Cash',NULL,0,72.00,NULL,3,0,0,0,'2023-06-05 10:00:00','TRK-3001',3),
+  (2,'SO-3001',2,102,1,1,240.00,240.00,410.00,410.00,0.00,'Paid','Cash',NULL,0,190.00,NULL,3,0,0,0,'2023-06-05 10:00:00','TRK-3001',3);
+
+-- SO-3002: credit sale, D1 + R8 + R14 + partial pick (6 of 10 bags out)
+-- row 4 deliberately carries grand_total 4345 vs 4340 on row 3 (R14 divergence)
+-- Σ lines = 850 + 3500 = 4350 vs grand_total 4340 (R8: 10.00 discount baked in)
+-- amount_paid 320 = 2 accounts × 160 (D1 corruption; true cash paid = 160)
+INSERT INTO sales_order (id, so_code, customer_id, item_id, quantity, quantity_picked, price, amount, grand_total, amount_paid, amount_due, status, type_of_sales, negative_or_goods, opening_entry, cost_price, item_balance, total_quantity, order_item_has_unit_sales, bundle_quantity, bundle_price, date_timestamp, track_code, created_by) VALUES
+  (3,'SO-3002',1,101,10,6,85.00,850.00,4340.00,320.00,4080.00,'Partially Paid','Receivables','goods',0,72.00,NULL,11,0,0,0,'2023-06-06 09:30:00','TRK-3002',3),
+  (4,'SO-3002',1,106,1,0,3500.00,3500.00,4345.00,320.00,4080.00,'Partially Paid','Receivables','goods',0,2800.00,NULL,11,0,0,0,'2023-06-06 09:30:00','TRK-3002',3);
+
+INSERT INTO payment_with_goods (id, so_code, customer_id, item_id, quantity, quantity_picked, quantity_due, price, amount, grand_total, amount_paid, amount_due, status, type_of_sales, waybill_code, invoice_code, date_timestamp, track_code) VALUES
+  (1,'SO-3001',2,101,2,2,0.00,85.00,170.00,410.00,410.00,0.00,'Paid','Cash','WB-3001','INV-3001','2023-06-05 10:05:00','TRK-3001'),
+  (2,'SO-3001',2,102,1,1,0.00,240.00,240.00,410.00,410.00,0.00,'Paid','Cash','WB-3001','INV-3001','2023-06-05 10:05:00','TRK-3001'),
+  (3,'SO-3002',1,101,10,6,4.00,85.00,850.00,4340.00,320.00,4080.00,'Partially Paid','Receivables','WB-3002','INV-3002','2023-06-06 09:35:00','TRK-3002'),
+  (4,'SO-3002',1,106,1,0,1.00,3500.00,3500.00,4345.00,320.00,4080.00,'Partially Paid','Receivables','WB-3002','INV-3002','2023-06-06 09:35:00','TRK-3002');
+
+-- invoices: the two sale invoices + the legacy negative-row deposit
+INSERT INTO invoice (id, invoice_code, so_code, customer_id, amount, amount_paid, amount_due, status, created_date, store_id, date_timestamp, track_code, opening_entry) VALUES
+  (3001,'INV-3001','SO-3001',2,410.00,410.00,0.00,'Paid','2023-06-05 10:00:00',2,'2023-06-05 10:00:00','TRK-3001',0),
+  (3002,'INV-3002','SO-3002',1,4340.00,320.00,4080.00,'Partially Paid','2023-06-06 09:30:00',1,'2023-06-06 09:30:00','TRK-3002',0),
+  (3003,'Deposit-163000','Deposit-163000',1,-200.00,200.00,-200.00,'Paid','2023-06-07 08:00:00',1,'2023-06-07 08:00:00','TRK-DEP1',0);
+
+-- payments: RCT-3001 clean; RCT-3002 = D1 multi-account (each row carries
+-- the receipt total 160; true cash paid = amount − amount_due − credit 100);
+-- RCT-DEP1 funds the deposit. MOMO-MTN/VODAFONE exercise tender mapping.
+INSERT INTO payment (id, receipt_code, invoice_id, amount, pay_method, created_date, store_id, payment_type, category, customer_id, invoice_code, so_code, method_account, bank_name, branch, cheque_number, momo_phone, momo_transaction_id, momo_type, track_code, cash_sales_in_payables, due) VALUES
+  (9101,'RCT-3001',3001,410.00,'CASH','2023-06-05 10:10:00',2,'Receivable','Cash Sales',2,'INV-3001','SO-3001','Cash',NULL,NULL,NULL,NULL,NULL,NULL,'TRK-3001',NULL,0),
+  (9102,'RCT-3002',3002,160.00,'CASH','2023-06-06 09:40:00',1,'Receivable','Receivables',1,'INV-3002','SO-3002','Cash',NULL,NULL,NULL,NULL,NULL,NULL,'TRK-3002',NULL,0),
+  (9103,'RCT-3002',3002,160.00,'MOMO-MTN','2023-06-06 09:40:00',1,'Receivable','Receivables',1,'INV-3002','SO-3002','MTN MoMo',NULL,NULL,NULL,'0244000001','TX-3002-B','MTN','TRK-3002',NULL,0),
+  (9104,'RCT-DEP1',3003,200.00,'CASH','2023-06-07 08:05:00',1,'Deposit',NULL,1,'Deposit-163000','Deposit-163000','Cash',NULL,NULL,NULL,NULL,NULL,NULL,'TRK-DEP1',NULL,0);
+
+-- deposit disbursement: 100.00 of the deposit applied to INV-3002 at invoicing
+INSERT INTO cash_deposit_disbursement (id, so_code, invoice_code, deposit_code, amount, date_timestamp) VALUES
+  (1,'SO-3002','INV-3002','Deposit-163000',100.00,'2023-06-06 09:30:00');
+
+-- proforma (quotation): 1× cement + 1× roofing = 325.00
+INSERT INTO proforma_invoice (id, invoice_code, so_code, customer_id, amount, date_timestamp) VALUES
+  (4001,'PMF-4001','SO-4001',2,325.00,'2023-06-08 11:00:00');
+INSERT INTO proforma_invoice_order (id, so_code, item_id, quantity, price, amount, unit_or_package) VALUES
+  (1,'SO-4001',101,1,85.00,85.00,'package'),
+  (2,'SO-4001',102,1,240.00,240.00,'package');
+
+-- pre-printed booklets (verbatim codes; legacy invoice/waybill codes COME
+-- from these booklets, so closed codes match the imported documents)
+INSERT INTO invoice_code (id, code, status, reason, customer_id, code_range, created_by, created_date) VALUES
+  (1,'INV-3001','closed',NULL,2,'INV-3001..INV-3004',1,'2023-06-01 07:00:00'),
+  (2,'IC-0002','open',NULL,NULL,'INV-3001..INV-3004',1,'2023-06-01 07:00:00'),
+  (3,'IC-0003','not used','Torn during printing - damaged corner',NULL,'INV-3001..INV-3004',1,'2023-06-01 07:00:00'),
+  (4,'IC-0004','open',NULL,NULL,'INV-3001..INV-3004',1,'2023-06-01 07:00:00');
+INSERT INTO waybill_code (id, code, status, reason, customer_id, code_range, created_by, created_date) VALUES
+  (1,'WB-3001','closed',NULL,2,'WB-3001..WB-3002',1,'2023-06-01 07:00:00'),
+  (2,'WB-0002','open',NULL,NULL,'WB-3001..WB-3002',1,'2023-06-01 07:00:00');
 `;
 
 const outPath = join(outDir, 'idepot_phase1_fixture.sql');

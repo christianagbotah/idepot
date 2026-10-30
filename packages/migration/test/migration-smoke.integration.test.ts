@@ -67,8 +67,17 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
     expect(tables.store!.stagedRows).toBe(3);
     // Phase 2 extended the fixture: 5 Phase-1 rows (unchanged) + 5 new product rows
     expect(tables.item!.stagedRows).toBe(10);
-    expect(tables.invoice!.stagedRows).toBe(3);
-    expect(tables.payment!.stagedRows).toBe(3);
+    // Phase 3 extended the fixture: 3 Phase-1 invoices (unchanged rows) +
+    // 2 sale invoices + 1 legacy deposit row; 3 + 4 payment rows
+    expect(tables.invoice!.stagedRows).toBe(6);
+    expect(tables.payment!.stagedRows).toBe(7);
+    expect(tables.sales_order!.stagedRows).toBe(4);
+    expect(tables.payment_with_goods!.stagedRows).toBe(4);
+    expect(tables.proforma_invoice!.stagedRows).toBe(1);
+    expect(tables.proforma_invoice_order!.stagedRows).toBe(2);
+    expect(tables.cash_deposit_disbursement!.stagedRows).toBe(1);
+    expect(tables.invoice_code!.stagedRows).toBe(4);
+    expect(tables.waybill_code!.stagedRows).toBe(2);
     expect(tables.units_items!.stagedRows).toBe(12);
     expect(tables.customers!.stagedRows).toBe(4);
     expect(tables.suppliers!.stagedRows).toBe(2);
@@ -226,8 +235,10 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
         'SELECT count(*)::text n FROM reconciliation_record WHERE run_id = $1',
         [first.runId],
       );
-      // 2 D1 + 4 opening-stock (2 count variances + 2 accepted-risk fallbacks)
-      expect(Number(rr.rows[0]!.n)).toBe(6);
+      // 2 D1 (multi-invoice receipts) + 4 opening-stock (2 count variances +
+      // 2 accepted-risk fallbacks) + 3 Phase 3 sales-cycle detections
+      // (D1 multi-account ×1, R14 header divergence ×1, R8 discount ×1)
+      expect(Number(rr.rows[0]!.n)).toBe(9);
     } finally {
       await c.end();
     }
@@ -242,9 +253,134 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
       stagingBackend: string;
     };
     expect(artifact.runId).toBe(first.runId);
-    expect(artifact.reconciliation.summary.records).toBe(6);
+    expect(artifact.reconciliation.summary.records).toBe(9);
     expect(artifact.stagingBackend).toBe(backend);
   });
+
+  it('imports the Phase 3 sales cycle with D1/R8/R14 corrections applied', async () => {
+    const p3 = first.artifact.phase3!;
+    expect(p3.ordersImported).toBe(2);
+    expect(p3.invoicesImported).toBe(5); // INV-3001, INV-3002 + the 3 Phase-1 standalone invoices
+    expect(p3.paymentsImported).toBe(5); // RCT-3001, RCT-3002, RCT-DEP1, REC-2023-0001/0002
+    expect(p3.depositsImported).toBe(1);
+    expect(p3.creditApplications).toBe(1);
+    expect(p3.quotationsImported).toBe(1);
+    expect(p3.waybillsImported).toBe(2);
+    expect(p3.bookletCodesImported).toBe(6);
+    expect(p3.d1MultiaccountReconstructions).toBe(1);
+    expect(p3.r14Divergences).toBe(1);
+    expect(p3.r8DiscountMismatches).toBe(1);
+
+    const c = new Client({ connectionString: adminUrl });
+    await c.connect();
+    try {
+      // D1 correction applied: INV-3002 payment doc carries the RECONSTRUCTED
+      // 160.00 (amount − amount_due − credit 100), not the corrupted 320
+      const d1pay = await c.query<{ amount: string; tenders: number }>(
+        `SELECT p.amount::text amount, count(t.id)::int tenders
+         FROM payment p JOIN payment_tender t ON t.payment_id = p.id
+         WHERE p.code = 'RCT-3002' GROUP BY p.id`,
+      );
+      expect(d1pay.rows[0]!.amount).toBe('160.0000');
+
+      // credit application from the legacy cash_deposit_disbursement
+      const app = await c.query<{ amount: string }>(
+        `SELECT ca.amount::text amount FROM credit_application ca
+         JOIN customer_deposit d ON d.id = ca.deposit_id
+         JOIN payment p ON p.id = d.payment_id WHERE p.code = 'RCT-DEP1'`,
+      );
+      expect(app.rows[0]!.amount).toBe('100.0000');
+      const remaining = await c.query<{ remaining: string }>(
+        `SELECT (d.amount - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca WHERE ca.deposit_id = d.id),0))::text remaining
+         FROM customer_deposit d WHERE d.code = 'Deposit-163000'`,
+      );
+      expect(remaining.rows[0]!.remaining).toBe('100.0000');
+
+      // R8: the imported invoice total is SERVER-computed from lines (4350),
+      // never the legacy grand_total with the unstored discount (4340)
+      const inv = await c.query<{ total: string; lines: string }>(
+        `SELECT i.total::text total,
+                (SELECT SUM(l.line_net)::text FROM invoice_line l WHERE l.invoice_id = i.id) lines
+         FROM invoice i WHERE i.code = 'INV-3002'`,
+      );
+      expect(inv.rows[0]!.total).toBe('4350.0000');
+      expect(inv.rows[0]!.lines).toBe('4350.0000');
+
+      // open-SO carryover: 6 of 10 cement bags delivered → partially_fulfilled
+      const so = await c.query<{ status: string; fulfilled: string; ordered: string }>(
+        `SELECT o.status, l.fulfilled_quantity_base::text fulfilled, l.quantity_base::text ordered
+         FROM sales_order o JOIN sales_order_line l ON l.order_id = o.id
+         WHERE o.code = 'SO-3002' AND l.fulfilled_quantity_base > 0`,
+      );
+      expect(so.rows[0]!.status).toBe('partially_fulfilled');
+      expect(so.rows[0]!.fulfilled).toBe('6.000000');
+      expect(so.rows[0]!.ordered).toBe('10.000000');
+
+      // cross-unit sales line: 1 steel-rod package = 250 rods (factor evidence)
+      const rod = await c.query<{ qty: string; base: string; cost: string | null }>(
+        `SELECT l.quantity::text qty, l.quantity_base::text base, l.cost_at_sale::text cost
+         FROM invoice_line l JOIN invoice i ON i.id = l.invoice_id
+         JOIN product p ON p.id = l.product_id
+         WHERE i.code = 'INV-3002' AND p.code = 'ITM-ROD-12'`,
+      );
+      expect(rod.rows[0]!.qty).toBe('1.000000');
+      expect(rod.rows[0]!.base).toBe('250.000000');
+      expect(rod.rows[0]!.cost).toBe('2800.0000'); // cost_at_sale snapshot
+
+      // clean cash sale fully picked → fulfilled order + paid invoice
+      const so1 = await c.query<{ status: string }>(
+        `SELECT status FROM sales_order WHERE code = 'SO-3001'`,
+      );
+      expect(so1.rows[0]!.status).toBe('fulfilled');
+      const inv1 = await c.query<{ total: string }>(
+        `SELECT total::text total FROM invoice WHERE code = 'INV-3001'`,
+      );
+      expect(inv1.rows[0]!.total).toBe('410.0000');
+
+      // booklet: legacy statuses preserved verbatim — 'closed' → allocated
+      // AND linked to the imported document (legacy invoice/waybill codes
+      // come from the booklet), 'not used' keeps its mandatory reason
+      const booklet = await c.query<{ status: string; doc: string | null }>(
+        `SELECT status, allocated_document_id::text doc
+         FROM document_booklet_code WHERE code = 'INV-3001'`,
+      );
+      expect(booklet.rows[0]!.status).toBe('allocated');
+      expect(booklet.rows[0]!.doc).not.toBeNull();
+      const waybillBooklet = await c.query<{ status: string; doc: string | null }>(
+        `SELECT status, allocated_document_id::text doc
+         FROM document_booklet_code WHERE code = 'WB-3001'`,
+      );
+      expect(waybillBooklet.rows[0]!.status).toBe('allocated');
+      expect(waybillBooklet.rows[0]!.doc).not.toBeNull();
+      const spoiled = await c.query<{ status: string; reason: string | null }>(
+        `SELECT status, reason FROM document_booklet_code WHERE code = 'IC-0003'`,
+      );
+      expect(spoiled.rows[0]!.status).toBe('not_used');
+      expect(spoiled.rows[0]!.reason).toBe('Torn during printing - damaged corner');
+      const openCodes = await c.query<{ n: string }>(
+        `SELECT count(*)::text n FROM document_booklet_code WHERE status = 'open'`,
+      );
+      expect(Number(openCodes.rows[0]!.n)).toBe(3); // IC-0002 + IC-0004 (invoice booklet) + WB-0002 (waybill booklet)
+
+      // proforma imported as a draft quotation with verbatim code
+      const quote = await c.query<{ code: string; status: string; total: string }>(
+        `SELECT q.code, q.status,
+                (SELECT SUM(l.line_net)::text FROM quotation_line l WHERE l.quotation_id = q.id) total
+         FROM quotation q WHERE q.code = 'PMF-4001'`,
+      );
+      expect(quote.rows[0]!.status).toBe('draft');
+      expect(quote.rows[0]!.total).toBe('325.0000');
+
+      // legacy track codes preserved on tender evidence (traceability)
+      const tenderRef = await c.query<{ reference: string | null }>(
+        `SELECT reference FROM payment_tender t JOIN payment p ON p.id = t.payment_id
+         WHERE p.code = 'RCT-3001'`,
+      );
+      expect(tenderRef.rows[0]!.reference).toContain('TRK-3001');
+    } finally {
+      await c.end();
+    }
+  }, 60_000);
 
   it('is idempotent: re-run reuses mappings, never duplicates targets or evidence', async () => {
     const c = new Client({ connectionString: adminUrl });
@@ -289,6 +425,18 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
     expect(second.artifact.phase2!.openingStockDocs).toBe(0);
     expect(second.artifact.phase2!.openingStockDocsReused).toBe(5);
     expect(second.artifact.phase2!.openingStockMovements).toBe(0);
+    // Phase 3 idempotency: every sales target is reused, never duplicated
+    expect(second.artifact.phase3).toBeDefined();
+    expect(second.artifact.phase3!.ordersImported).toBe(0);
+    expect(second.artifact.phase3!.ordersReused).toBe(2);
+    expect(second.artifact.phase3!.invoicesImported).toBe(0);
+    expect(second.artifact.phase3!.invoicesReused).toBe(5);
+    expect(second.artifact.phase3!.paymentsImported).toBe(0);
+    expect(second.artifact.phase3!.paymentsReused).toBe(5);
+    expect(second.artifact.phase3!.depositsReused).toBe(1);
+    expect(second.artifact.phase3!.quotationsReused).toBe(1);
+    expect(second.artifact.phase3!.waybillsReused).toBe(2);
+    expect(second.artifact.phase3!.bookletCodesImported).toBe(0);
 
     const c2 = new Client({ connectionString: adminUrl });
     await c2.connect();
