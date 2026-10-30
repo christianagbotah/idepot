@@ -373,3 +373,90 @@ a {
     padding: var(--idp-space-4);
   }
 }
+
+/* ================================ Phase 3 ================================= */
+/* POS screen: keyboard-first two-pane layout, prominent offline status.      */
+
+.pos-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 5fr) minmax(340px, 7fr);
+  gap: var(--idp-space-4);
+}
+@media (max-width: 900px) {
+  .pos-grid { grid-template-columns: 1fr; }
+}
+.pos-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--idp-space-2);
+  margin-top: var(--idp-space-3);
+}
+.pos-tile {
+  border: 1px solid var(--idp-border, #d8d8d8);
+  border-radius: 8px;
+  background: #fff;
+  padding: var(--idp-space-2);
+  text-align: left;
+  cursor: pointer;
+}
+.pos-tile:hover { border-color: var(--idp-accent, #2f6f4f); }
+.pos-tile-code {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--idp-accent, #2f6f4f);
+}
+.pos-status {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  background: #e7f3ec;
+  color: #1e5c3c;
+}
+.pos-status-warn { background: #fdf0dc; color: #8a5a00; }
+.pos-totals > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0;
+}
+.pos-total { font-size: 1.15rem; }
+.pos-tenders { margin: var(--idp-space-3) 0; }
+.pos-tender-row {
+  display: flex;
+  gap: var(--idp-space-2);
+  margin-bottom: var(--idp-space-2);
+}
+.pos-tender-row > * { flex: 1; }
+.pos-tender-row > button { flex: 0 0 auto; }
+.input-sm { padding: 4px 8px; font-size: 0.9rem; }
+.btn-sm { padding: 4px 10px; font-size: 0.85rem; }
+
+/* receipt / print */
+.print-wrap { max-width: 100%; }
+.print-thermal .receipt { width: 80mm; }
+.print-a4 .receipt { width: 180mm; }
+.receipt {
+  margin: var(--idp-space-4) auto;
+  padding: var(--idp-space-3);
+  border: 1px solid #ddd;
+  background: #fff;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+.receipt-head { text-align: center; margin-bottom: var(--idp-space-2); }
+.receipt-business { font-weight: 700; font-size: 1rem; }
+.receipt-lines { width: 100%; border-collapse: collapse; margin: var(--idp-space-2) 0; }
+.receipt-lines th { text-align: left; border-bottom: 1px dashed #999; }
+.receipt-lines th:not(:first-child), .receipt-lines td:not(:first-child) { text-align: right; }
+.receipt-totals > div { display: flex; justify-content: space-between; }
+.receipt-total-row { font-weight: 700; border-top: 1px dashed #999; margin-top: 4px; padding-top: 4px; }
+.receipt-note { margin-top: var(--idp-space-2); font-style: italic; }
+.receipt-foot { text-align: center; margin-top: var(--idp-space-3); }
+
+@media print {
+  .no-print, .app-topbar, .app-nav { display: none !important; }
+  .print-wrap { max-width: none; }
+  .print-thermal .receipt { width: auto; border: none; }
+  .print-a4 .receipt { width: auto; border: none; }
+}
