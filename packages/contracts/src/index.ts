@@ -610,7 +610,7 @@ export interface PaymentAllocationDto {
   id: string; invoiceId: string; invoiceCode: string | null; amount: string;
 }
 export interface PaymentDto {
-  id: string; code: string; customerId: string; customerName: string | null;
+  id: string; code: string; customerId: string | null; customerName: string | null;
   amount: string; changeGiven: string; unapplied: string;
   shiftId: string | null; clientDocId: string | null; source: string;
   tenders: PaymentTenderDto[]; allocations: PaymentAllocationDto[];

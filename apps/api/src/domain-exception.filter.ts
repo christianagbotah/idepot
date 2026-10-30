@@ -42,10 +42,6 @@ export class DomainExceptionFilter implements ExceptionFilter {
       });
       return;
     }
-    if (process.env.IDEPOT_DEBUG_ERRORS === '1' && exception instanceof Error) {
-      // eslint-disable-next-line no-console
-      console.error('[debug-error]', exception);
-    }
     const message =
       exception instanceof Error && exception.name === 'ValidationError'
         ? exception.message

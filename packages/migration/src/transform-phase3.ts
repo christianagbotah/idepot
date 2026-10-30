@@ -334,14 +334,10 @@ export async function transformSalesCycle(
       const orderCode = soCode; // preserved verbatim (map §5)
 
       // the invoice for this so_code (legacy wrote one per sale; the invoice
-      // links to the order via its so_code column — invoice_code differs)
+      // links to the order via its so_code column — invoice_code differs).
+      // The imported payment documents below carry the (D1-corrected) paid
+      // state — invoice.amount_paid is legacy evidence, not copied.
       const inv = invoiceBySo.get(soCode);
-      const storedAmountPaid = inv ? num(inv.amount_paid) : num(head.amount_paid);
-      // D1 reconstruction: payment rows are canonical evidence
-      const paidForDoc = inv && d1ReconstructedPaid.has(inv.id ?? '')
-        ? d1ReconstructedPaid.get(inv.id ?? '')!
-        : storedAmountPaid;
-      const creditApplied = (disbByInvoice.get(soCode) ?? []).reduce((a, d) => a + Math.abs(num(d.amount)), 0);
 
       const warehouseId = (head.store_id ? opts.warehouseByStore.get(head.store_id) : null) ?? opts.defaultWarehouseId;
       const res = await client.query<{ id: string }>(
