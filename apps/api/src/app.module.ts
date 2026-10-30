@@ -34,6 +34,15 @@ import { PartyRepository } from './parties/party.repository.js';
 import { PricingController } from './pricing/pricing.controller.js';
 import { PricingService } from './pricing/pricing.service.js';
 import { PricingRepository } from './pricing/pricing.repository.js';
+// Phase 3 — sales & POS
+import { SalesController, PaymentController, DepositController, CreditController, CustomerBalanceController, QuotationController, SalesOrderController, FulfillmentController, ShiftController, SequenceController, SyncController } from './sales/sales.controller.js';
+import { DocumentSequenceService } from './sales/document-sequence.service.js';
+import { SalePoster } from './sales/sale-poster.js';
+import { PaymentService } from './sales/payment.service.js';
+import { OrderService } from './sales/order.service.js';
+import { ShiftService } from './sales/shift.service.js';
+import { ReceiptService } from './sales/receipt.service.js';
+import { SyncService } from './sales/sync.service.js';
 
 @Module({
   imports: [DbModule],
@@ -53,6 +62,18 @@ import { PricingRepository } from './pricing/pricing.repository.js';
     SupplierController,
     PartyOpeningBalanceController,
     PricingController,
+    // Phase 3 — sales & POS
+    SalesController,
+    PaymentController,
+    DepositController,
+    CreditController,
+    CustomerBalanceController,
+    QuotationController,
+    SalesOrderController,
+    FulfillmentController,
+    ShiftController,
+    SequenceController,
+    SyncController,
   ],
   providers: [
     AuthService,
@@ -78,6 +99,14 @@ import { PricingRepository } from './pricing/pricing.repository.js';
     PartyRepository,
     PricingService,
     PricingRepository,
+    // Phase 3 — sales & POS (all money paths inside the UoW via SalePoster)
+    DocumentSequenceService,
+    SalePoster,
+    PaymentService,
+    OrderService,
+    ShiftService,
+    ReceiptService,
+    SyncService,
     // global guard chain: authentication -> authorization
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RbacGuard },

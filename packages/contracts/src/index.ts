@@ -418,8 +418,6 @@ export interface TransferDto {
 /* ================================ Phase 3 ================================= */
 /* Sales & POS. Money is decimal(18,4) as string; quantities decimal(18,6).   */
 
-const signedMoney = () => z.string().regex(/^-?\d{1,14}(\.\d{1,4})?$/, 'signed decimal(18,4) as string');
-
 /* ---------------------------- document sequences -------------------------- */
 
 export const CreateSequenceSchema = z.object({
@@ -739,7 +737,7 @@ export interface FulfillmentDto {
   warehouseId: string; status: 'draft' | 'dispatched' | 'delivered' | 'cancelled';
   dispatchedBy: string | null; dispatchedAt: string | null;
   deliveredBy: string | null; deliveredAt: string | null;
-  note: string | null; lines: FulfillmentLineDto[]; createdAt: string;
+  note: string | null; lines: FulfillmentLineDto[]; createdBy: string | null; createdAt: string;
 }
 
 /* --------------------------------- sync ------------------------------------ */
@@ -770,15 +768,17 @@ export interface SyncPushResponseDto {
 }
 
 export const SyncPullQuerySchema = z.object({
-  cursor: z.string().regex(/^\d+$/).optional(),
+  cursor: z.string().uuid().optional(),
   limit: z.string().regex(/^\d+$/).optional(),
 });
+/** Device-replica pull page (offline-sync §4 pull): resumable cursor over
+ *  the tenant's committed-fact stream. */
 export interface ChangeFeedEntryDto {
-  seq: string; entityType: string; entityId: string; occurredAt: string; payload: Record<string, unknown>;
+  id: string; type: string; payload: Record<string, unknown>; occurredAt: string; status: string;
 }
 export interface SyncPullResponseDto {
   entries: ChangeFeedEntryDto[];
-  cursor: string;
+  cursor: string | null;
   hasMore: boolean;
 }
 

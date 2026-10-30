@@ -24,6 +24,17 @@ export const PERMISSIONS = [
   'stockcount:read',
   'stockcount:count',
   'stockcount:approve',
+  // Phase 3 — sales & POS
+  'sales:read',
+  'sales:write',      // create orders/quotations, price override visibility
+  'sales:pos',        // commit POS/counter sales (cashier core action)
+  'payment:read',
+  'payment:write',    // receive payments, deposits, apply credit
+  'shift:read',
+  'shift:write',      // open/close own shift, cash movements
+  'shift:approve',    // supervisor: review variance closes
+  'sequence:manage',  // sequence/booklet management + spoilage
+  'sync:device',      // offline device push/pull
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -47,6 +58,17 @@ const MANAGER_PERMISSIONS: readonly Permission[] = [
   'stockcount:read',
   'stockcount:count',
   'stockcount:approve',
+  // Phase 3 — sales & POS
+  'sales:read',
+  'sales:write',
+  'sales:pos',
+  'payment:read',
+  'payment:write',
+  'shift:read',
+  'shift:write',
+  'shift:approve',
+  'sequence:manage',
+  'sync:device',
 ];
 
 const CASHIER_PERMISSIONS: readonly Permission[] = [
@@ -58,6 +80,14 @@ const CASHIER_PERMISSIONS: readonly Permission[] = [
   'inventory:read',
   'stockcount:read',
   'stockcount:count',
+  // Phase 3 — the POS core: sell, accept money, run a shift, sync offline
+  'sales:read',
+  'sales:pos',
+  'payment:read',
+  'payment:write',
+  'shift:read',
+  'shift:write',
+  'sync:device',
 ];
 
 const AUDITOR_PERMISSIONS: readonly Permission[] = [
@@ -69,6 +99,9 @@ const AUDITOR_PERMISSIONS: readonly Permission[] = [
   'pricing:read',
   'inventory:read',
   'stockcount:read',
+  'sales:read',
+  'payment:read',
+  'shift:read',
 ];
 
 export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {

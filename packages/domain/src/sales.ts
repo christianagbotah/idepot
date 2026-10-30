@@ -132,7 +132,7 @@ export function validateTender(t: TenderInput): bigint {
   }
   if (t.method !== 'cash' && t.method !== 'credit') {
     for (const field of METHOD_DETAILS[t.method]) {
-      const v = (t as Record<string, unknown>)[field];
+      const v = (t as unknown as Record<string, unknown>)[field];
       if (v == null || v === '') {
         throw new ValidationError(`${t.method} tender requires ${field}`);
       }

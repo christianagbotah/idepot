@@ -20,6 +20,16 @@ export interface PostMovementsMeta {
   sourceDocumentType?: string | null;
   sourceDocumentId?: string | null;
   createdBy?: string | null;
+  /**
+   * Oversell policy (offline-sync §5b, Phase 3): the tenant-level default is
+   * 'reject' (fail loud — identical to the Phase 2 behaviour). When the
+   * tenant configures 'allow_backorder', sale postings may drive the
+   * projection negative (the ledger always applies); the CALLER is
+   * responsible for raising the backorder exception task — the poster only
+   * permits the negative arithmetic. Inventory documents (transfers,
+   * adjustments, counts) never set this flag.
+   */
+  allowNegative?: boolean;
 }
 
 /** Postgres SQLSTATE of a driver error, when present (23505 unique, 23503 fk). */
@@ -133,7 +143,7 @@ export class StockPoster {
       const key = balanceKey(entry.warehouseId, entry.productId);
       const currentQty = current.get(key)!;
       const next = currentQty + r.base;
-      if (next < 0n) {
+      if (next < 0n && !meta.allowNegative) {
         throw new ConflictError(
           `insufficient stock: product ${entry.productId} in warehouse ${entry.warehouseId} has ${formatDecimal(currentQty, QTY_SCALE)}, movement would make ${formatDecimal(next, QTY_SCALE)}`,
         );
