@@ -126,7 +126,10 @@ export class ReceiptService {
        FROM credit_application ca WHERE ca.invoice_id = $1`,
       [invoiceId],
     );
-    const creditAmount = String(creditRes.rows[0]!.amount);
+    const creditAmountRaw = String(creditRes.rows[0]!.amount);
+    // SUM over no rows renders as '0' (no fixed scale) — compare numerically
+    const hasCredit = Number(creditAmountRaw) > 0;
+    const creditAmount = hasCredit ? creditAmountRaw : null;
     const tenders: ReceiptPayloadDto['tenders'] = tenderRes.rows.map((t) => {
       const method = String(t.method);
       let detail: string | null = null;
@@ -139,8 +142,8 @@ export class ReceiptService {
       }
       return { method, amount: String(t.amount), detail };
     });
-    if (creditAmount !== '0.0000') {
-      tenders.push({ method: 'credit', amount: creditAmount, detail: 'customer credit' });
+    if (hasCredit) {
+      tenders.push({ method: 'credit', amount: creditAmount!, detail: 'customer credit' });
     }
 
     const dueRes = await ctx.query<{ due: string }>(

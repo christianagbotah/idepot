@@ -155,9 +155,12 @@ export class DocumentSequenceService {
 
   private async ensureSequence(ctx: UowContext, docType: SequenceDocType, branchId: string | null): Promise<void> {
     await ctx.query(
+      // no conflict target: the nullable-branch uniqueness is a partial
+      // index, which ON CONFLICT inference cannot see; DO NOTHING applies
+      // to any unique violation (a concurrent ensure is a benign race)
       `INSERT INTO document_sequence (tenant_id, doc_type, branch_id, prefix, next_value, padding)
        VALUES ($1,$2,$3,$4,1,$5)
-       ON CONFLICT (tenant_id, doc_type, branch_id) DO NOTHING`,
+       ON CONFLICT DO NOTHING`,
       [ctx.tenantId, docType, branchId, DEFAULT_PREFIX[docType], DEFAULT_PADDING[docType]],
     );
   }
@@ -341,8 +344,8 @@ export class DocumentSequenceService {
       const leaseRes = await ctx.query<Record<string, unknown>>(
         `INSERT INTO sequence_lease
            (tenant_id, device_id, doc_type, sequence_id, prefix, start_value, end_value, expires_at)
-         VALUES ($1,$2,$3,
-           (SELECT id FROM document_sequence WHERE tenant_id = $1 AND doc_type = $2 AND branch_id IS NULL),
+         VALUES ($1,$2::uuid,$3::text,
+           (SELECT id FROM document_sequence WHERE tenant_id = $1 AND doc_type = $3::text AND branch_id IS NULL),
            $4,$5::bigint,$6::bigint, now() + interval '7 days')
          RETURNING id, device_id, doc_type, prefix, start_value, end_value, issued_at, expires_at`,
         [ctx.tenantId, dto.deviceId, dto.docType, row.prefix, row.start, row.end],

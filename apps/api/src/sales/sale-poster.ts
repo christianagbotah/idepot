@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type {
   CommitSale,
+  ListDto,
   CreditApplicationDto,
   InvoiceDto,
   InvoiceLineDto,
@@ -152,19 +153,21 @@ export class SalePoster {
 
     // ---- 3. tenders (C-6) + credit waterfall (C-20) ----------------------
     const tenders = input.tenders ?? [];
-    const { paid, changeDue } = validateTenderSet(tenders, formatMoney(total));
     const creditTenders = tenders.filter((t) => t.method === 'credit');
     const moneyTenders = tenders.filter((t) => t.method !== 'credit');
     const moneyPaid = moneyTenders.reduce(
       (acc, t) => addScaled(acc, MONEY_SCALE, parseMoney(t.amount), MONEY_SCALE).value,
       0n,
     );
-    const allocatable = paid > total ? total : paid; // min(paid, total)
-    const remainingDue = subScaled(total, MONEY_SCALE, allocatable, MONEY_SCALE).value;
     const creditTotal = creditTenders.reduce(
       (acc, t) => addScaled(acc, MONEY_SCALE, parseMoney(t.amount), MONEY_SCALE).value,
       0n,
     );
+    const { changeDue } = validateTenderSet(tenders, formatMoney(total));
+    // allocation basis is MONEY ONLY — credit is not money, it is a deposit
+    // ledger transfer (C-20); the payment document carries the money tenders
+    const allocatable = moneyPaid > total ? total : moneyPaid; // min(moneyPaid, total)
+    const remainingDue = subScaled(total, MONEY_SCALE, allocatable, MONEY_SCALE).value;
     if (changeDue > 0n && creditTotal > 0n) {
       throw new ValidationError('credit tenders cannot be combined with a cash overpayment');
     }
@@ -183,7 +186,7 @@ export class SalePoster {
 
     // ---- 5. invoice + lines ---------------------------------------------
     const costTotal = resolved.reduce(
-      (acc, l) => (l.costAtSale != null ? addScaled(acc, MONEY_SCALE, parseMoney(l.costAtSale), MONEY_SCALE).value : acc),
+      (acc, l) => (l.costAtSale != null ? addScaled(acc, MONEY_SCALE, lineNet(l.quantity, l.costAtSale), MONEY_SCALE).value : acc),
       0n,
     );
     let invoiceId: string;
@@ -260,7 +263,7 @@ export class SalePoster {
         movementType: 'issue' as const,
         quantityBase: l.movementBase.startsWith('-') ? l.movementBase : `-${l.movementBase}`,
         unitId: l.unitId,
-        quantityTransacted: l.quantity,
+        quantityTransacted: l.unitId ? l.quantity : null,
         reason: `sale ${code}`,
       })),
       {
@@ -270,6 +273,13 @@ export class SalePoster {
         allowNegative: policy === 'allow_backorder',
       },
     );
+
+    // ---- 6b. atomicity-test hook: fail AFTER the deepest partial state ---
+    // (a plain Error — an INTERNAL failure, mapped to 'rejected' by the sync
+    // engine and to 500 by the HTTP filter; a conflict is a BUSINESS outcome)
+    if (input.simulateFailureAfterWrites) {
+      throw new Error('simulated failure after partial writes (atomicity test)');
+    }
 
     // ---- 7. backorder detection (policy allow_backorder) -----------------
     let backorder = false;
@@ -502,13 +512,22 @@ export class SalePoster {
   ): Promise<CreditApplicationDto[]> {
     let remaining = amount;
     const out: CreditApplicationDto[] = [];
-    // hold ALL open deposits of the customer in deterministic (oldest) order
+    // Serialize credit consumption per customer: customer_deposit is
+    // append-only for the app role (no UPDATE grant), so row locking with
+    // FOR UPDATE is unavailable (it requires UPDATE privilege). A
+    // transaction-scoped advisory lock gives the same serialization: two
+    // concurrent credit applications for the same customer commit one after
+    // the other and the remaining-balance re-read below is always current.
+    await ctx.query(
+      `SELECT pg_advisory_xact_lock(('x' || substr(md5($1::text), 1, 16))::bit(64)::bigint)`,
+      [`customer-credit:${ctx.tenantId}:${customerId}`],
+    );
+    // read open deposits in deterministic (oldest-first) order
     const deposits = await ctx.query<Record<string, unknown>>(
       `SELECT d.id, d.code, d.amount
        FROM customer_deposit d
        WHERE d.tenant_id = $1 AND d.customer_id = $2
-       ORDER BY d.created_at, d.id
-       FOR UPDATE`,
+       ORDER BY d.created_at, d.id`,
       [ctx.tenantId, customerId],
     );
     // remaining per deposit = amount − Σ applications (committed + this tx)
@@ -685,7 +704,7 @@ export class SalePoster {
     return this.uow.run({ tenantId }, async (ctx) => this.loadInvoice(ctx, invoiceId));
   }
 
-  async listInvoices(tenantId: string, opts: { customerId?: string; warehouseId?: string; limit?: number } = {}): Promise<InvoiceDto[]> {
+  async listInvoices(tenantId: string, opts: { customerId?: string; warehouseId?: string; limit?: number } = {}): Promise<ListDto<InvoiceDto>> {
     return this.uow.run({ tenantId }, async (ctx) => {
       const params: unknown[] = [ctx.tenantId];
       let where = 'i.tenant_id = $1';
@@ -702,9 +721,9 @@ export class SalePoster {
         `SELECT i.id FROM invoice i WHERE ${where} ORDER BY i.created_at DESC, i.id DESC LIMIT ${limit}`,
         params,
       );
-      const out: InvoiceDto[] = [];
-      for (const r of res.rows) out.push(await this.loadInvoice(ctx, r.id));
-      return out;
+      const items: InvoiceDto[] = [];
+      for (const r of res.rows) items.push(await this.loadInvoice(ctx, r.id));
+      return { items, total: items.length };
     });
   }
 
@@ -812,7 +831,7 @@ export class SalePoster {
     return {
       id: String(h.id),
       code: String(h.code),
-      customerId: String(h.customer_id),
+      customerId: h.customer_id ? String(h.customer_id) : null,
       customerName: h.customer_name ? String(h.customer_name) : null,
       amount: String(h.amount),
       changeGiven: String(h.change_given),

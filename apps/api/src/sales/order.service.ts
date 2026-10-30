@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type {
   CommitSale,
+  ListDto,
   ConfirmSalesOrder,
   CreateFulfillment,
   CreateQuotation,
@@ -438,15 +439,15 @@ export class OrderService {
     return this.uow.run({ tenantId }, (ctx) => this.loadQuotation(ctx, id));
   }
 
-  async listQuotations(tenantId: string): Promise<QuotationDto[]> {
+  async listQuotations(tenantId: string): Promise<ListDto<QuotationDto>> {
     return this.uow.run({ tenantId }, async (ctx) => {
       const res = await ctx.query<{ id: string }>(
         `SELECT id FROM quotation WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 100`,
         [ctx.tenantId],
       );
-      const out: QuotationDto[] = [];
-      for (const r of res.rows) out.push(await this.loadQuotation(ctx, r.id));
-      return out;
+      const items: QuotationDto[] = [];
+      for (const r of res.rows) items.push(await this.loadQuotation(ctx, r.id));
+      return { items, total: items.length };
     });
   }
 
@@ -454,7 +455,7 @@ export class OrderService {
     return this.uow.run({ tenantId }, (ctx) => this.loadOrder(ctx, id));
   }
 
-  async listOrders(tenantId: string, opts: { status?: string } = {}): Promise<SalesOrderDto[]> {
+  async listOrders(tenantId: string, opts: { status?: string } = {}): Promise<ListDto<SalesOrderDto>> {
     return this.uow.run({ tenantId }, async (ctx) => {
       const params: unknown[] = [ctx.tenantId];
       let where = 'tenant_id = $1';
@@ -466,9 +467,9 @@ export class OrderService {
         `SELECT id FROM sales_order WHERE ${where} ORDER BY created_at DESC LIMIT 100`,
         params,
       );
-      const out: SalesOrderDto[] = [];
-      for (const r of res.rows) out.push(await this.loadOrder(ctx, r.id));
-      return out;
+      const items: SalesOrderDto[] = [];
+      for (const r of res.rows) items.push(await this.loadOrder(ctx, r.id));
+      return { items, total: items.length };
     });
   }
 
@@ -476,7 +477,7 @@ export class OrderService {
     return this.uow.run({ tenantId }, (ctx) => this.loadFulfillment(ctx, id));
   }
 
-  async listFulfillments(tenantId: string, opts: { salesOrderId?: string } = {}): Promise<FulfillmentDto[]> {
+  async listFulfillments(tenantId: string, opts: { salesOrderId?: string } = {}): Promise<ListDto<FulfillmentDto>> {
     return this.uow.run({ tenantId }, async (ctx) => {
       const params: unknown[] = [ctx.tenantId];
       let where = 'f.tenant_id = $1';
@@ -488,9 +489,9 @@ export class OrderService {
         `SELECT f.id FROM fulfillment f WHERE ${where} ORDER BY f.created_at DESC LIMIT 100`,
         params,
       );
-      const out: FulfillmentDto[] = [];
-      for (const r of res.rows) out.push(await this.loadFulfillment(ctx, r.id));
-      return out;
+      const items: FulfillmentDto[] = [];
+      for (const r of res.rows) items.push(await this.loadFulfillment(ctx, r.id));
+      return { items, total: items.length };
     });
   }
 

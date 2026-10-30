@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { CloseShift, OpenShift, ShiftCashMovement, ShiftDto } from '@idepot/contracts';
+import type { CloseShift, ListDto, OpenShift, ShiftCashMovement, ShiftDto } from '@idepot/contracts';
 import {
   ConflictError,
   MONEY_SCALE,
@@ -158,7 +158,7 @@ export class ShiftService {
     return this.uow.run({ tenantId }, (ctx) => this.loadShift(ctx, shiftId));
   }
 
-  async listShifts(tenantId: string, opts: { openOnly?: boolean; userId?: string } = {}): Promise<ShiftDto[]> {
+  async listShifts(tenantId: string, opts: { openOnly?: boolean; userId?: string } = {}): Promise<ListDto<ShiftDto>> {
     return this.uow.run({ tenantId }, async (ctx) => {
       const params: unknown[] = [ctx.tenantId];
       let where = 's.tenant_id = $1';
@@ -171,9 +171,9 @@ export class ShiftService {
         `SELECT s.id FROM cashier_shift s WHERE ${where} ORDER BY s.opened_at DESC LIMIT 100`,
         params,
       );
-      const out: ShiftDto[] = [];
-      for (const r of res.rows) out.push(await this.loadShift(ctx, r.id));
-      return out;
+      const items: ShiftDto[] = [];
+      for (const r of res.rows) items.push(await this.loadShift(ctx, r.id));
+      return { items, total: items.length };
     });
   }
 

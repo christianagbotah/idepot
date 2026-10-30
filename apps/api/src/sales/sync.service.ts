@@ -129,27 +129,30 @@ export class SyncService {
       });
       return { eventId: event.eventId, status: 'applied', result };
     } catch (err) {
-      // 3. conflicts/rejections are ALSO recorded (a conflicted event must
-      //    not be re-applied by a naive device retry loop)
       const code = conflictCodes(err);
       const message = err instanceof Error ? err.message : 'sync apply failed';
-      const outcome: 'conflict' | 'rejected' = code ? 'conflict' : 'rejected';
-      await this.uow.run({ tenantId: p.tenantId }, async (ctx) => {
-        await ctx.query(
-          `INSERT INTO sync_applied_event
-             (event_id, tenant_id, device_id, idempotency_key, event_type, outcome, response, occurred_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-           ON CONFLICT (event_id) DO NOTHING`,
-          [
-            event.eventId, ctx.tenantId, p.deviceId, event.idempotencyKey, event.type,
-            outcome, JSON.stringify({ code: code ?? (err instanceof DomainError ? err.code : 'error'), message }),
-            event.occurredAt ?? null,
-          ],
-        );
-      });
       if (code) {
+        // CONFLICT (business outcome: oversold stock, stale config, credit) is
+        // recorded — a naive device retry gets `duplicate`, never a delayed
+        // second application of a business-conflicting sale. The accountant/
+        // supervisor resolves it from the review queue (offline-sync §5b).
+        await this.uow.run({ tenantId: p.tenantId }, async (ctx) => {
+          await ctx.query(
+            `INSERT INTO sync_applied_event
+               (event_id, tenant_id, device_id, idempotency_key, event_type, outcome, response, occurred_at)
+             VALUES ($1,$2,$3,$4,$5,'conflict',$6,$7)
+             ON CONFLICT (event_id) DO NOTHING`,
+            [
+              event.eventId, ctx.tenantId, p.deviceId, event.idempotencyKey, event.type,
+              JSON.stringify({ code, message }), event.occurredAt ?? null,
+            ],
+          );
+        });
         return { eventId: event.eventId, status: 'conflict', code, message };
       }
+      // REJECTED (validation/internal): the transaction rolled back to zero
+      // state and nothing was recorded — the device may correct and retry
+      // the SAME event (crash-safety contract).
       return {
         eventId: event.eventId,
         status: 'rejected',

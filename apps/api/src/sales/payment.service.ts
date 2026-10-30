@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type {
   ApplyCredit,
+  ListDto,
   CreateDeposit,
   CustomerDepositDto,
   CreditApplicationDto,
@@ -398,7 +399,7 @@ export class PaymentService {
     return this.uow.run({ tenantId }, async (ctx) => this.poster.loadPayment(ctx, paymentId));
   }
 
-  async listPayments(tenantId: string, opts: { customerId?: string; limit?: number } = {}): Promise<PaymentDto[]> {
+  async listPayments(tenantId: string, opts: { customerId?: string; limit?: number } = {}): Promise<ListDto<PaymentDto>> {
     return this.uow.run({ tenantId }, async (ctx) => {
       const params: unknown[] = [ctx.tenantId];
       let where = 'p.tenant_id = $1';
@@ -411,9 +412,9 @@ export class PaymentService {
         `SELECT p.id FROM payment p WHERE ${where} ORDER BY p.created_at DESC, p.id DESC LIMIT ${limit}`,
         params,
       );
-      const out: PaymentDto[] = [];
-      for (const r of res.rows) out.push(await this.poster.loadPayment(ctx, String(r.id)));
-      return out;
+      const items: PaymentDto[] = [];
+      for (const r of res.rows) items.push(await this.poster.loadPayment(ctx, String(r.id)));
+      return { items, total: items.length };
     });
   }
 
@@ -421,7 +422,7 @@ export class PaymentService {
     return this.uow.run({ tenantId }, async (ctx) => this.loadDeposit(ctx, depositId));
   }
 
-  async listDeposits(tenantId: string, opts: { customerId?: string } = {}): Promise<CustomerDepositDto[]> {
+  async listDeposits(tenantId: string, opts: { customerId?: string } = {}): Promise<ListDto<CustomerDepositDto>> {
     return this.uow.run({ tenantId }, async (ctx) => {
       const params: unknown[] = [ctx.tenantId];
       let where = 'd.tenant_id = $1';
@@ -433,13 +434,13 @@ export class PaymentService {
         `SELECT d.id FROM customer_deposit d WHERE ${where} ORDER BY d.created_at DESC LIMIT 200`,
         params,
       );
-      const out: CustomerDepositDto[] = [];
-      for (const r of res.rows) out.push(await this.loadDeposit(ctx, String(r.id)));
-      return out;
+      const items: CustomerDepositDto[] = [];
+      for (const r of res.rows) items.push(await this.loadDeposit(ctx, String(r.id)));
+      return { items, total: items.length };
     });
   }
 
-  async listCreditApplications(tenantId: string, opts: { depositId?: string; invoiceId?: string } = {}): Promise<CreditApplicationDto[]> {
+  async listCreditApplications(tenantId: string, opts: { depositId?: string; invoiceId?: string } = {}): Promise<ListDto<CreditApplicationDto>> {
     return this.uow.run({ tenantId }, async (ctx) => {
       const params: unknown[] = [ctx.tenantId];
       let where = 'ca.tenant_id = $1';
@@ -461,7 +462,7 @@ export class PaymentService {
          ORDER BY ca.created_at DESC LIMIT 200`,
         params,
       );
-      return res.rows.map((r) => ({
+      const items = res.rows.map((r) => ({
         id: String(r.id),
         depositId: String(r.deposit_id),
         depositCode: r.deposit_code ? String(r.deposit_code) : null,
@@ -470,6 +471,7 @@ export class PaymentService {
         amount: String(r.amount),
         createdAt: new Date(r.created_at as string).toISOString(),
       }));
+      return { items, total: items.length };
     });
   }
 

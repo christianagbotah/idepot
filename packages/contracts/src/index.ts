@@ -553,6 +553,9 @@ export const CommitSaleSchema = z.object({
   docNumber: z.string().min(1).max(40).nullish(),
   /** offline business time — recorded, server received_at authoritative */
   occurredAt: z.string().datetime().nullish(),
+  /** injects a failure AFTER deep partial writes (invoice+lines+stock+
+   *  tenders) — proves the whole posting set rolls back (atomicity test) */
+  simulateFailureAfterWrites: z.boolean().optional(),
 });
 export type CommitSale = z.infer<typeof CommitSaleSchema>;
 

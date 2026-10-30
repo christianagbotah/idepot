@@ -323,7 +323,8 @@ CREATE TABLE IF NOT EXISTS payment (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id uuid NOT NULL REFERENCES tenant(id),
   code text NOT NULL,
-  customer_id uuid NOT NULL REFERENCES customer(id),
+  -- nullable: a walk-in cash sale has no customer on the receipt
+  customer_id uuid REFERENCES customer(id),
   amount numeric(18,4) NOT NULL CHECK (amount > 0),
   change_given numeric(18,4) NOT NULL DEFAULT 0 CHECK (change_given >= 0),
   unapplied numeric(18,4) NOT NULL DEFAULT 0 CHECK (unapplied >= 0),
