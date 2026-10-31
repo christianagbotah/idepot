@@ -74,7 +74,9 @@ describe('sales & POS E2E (cash / credit / part payment / deposit→allocation)'
   }, 120_000);
 
   afterAll(async () => {
-    await fx.close();
+    // beforeAll may have failed before assigning fx (e.g. embedded PG boot);
+    // teardown must not turn a failed setup into a crash on undefined.
+    await fx?.close();
   });
 
   it('cash sale: one transaction posts invoice + stock + COGS + tender + allocation + audit + outbox', async () => {

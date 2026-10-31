@@ -81,7 +81,9 @@ describe('financial hardening (tax / GL / AVCO / overrides / sync identity)', ()
   }, 180_000);
 
   afterAll(async () => {
-    await fx.close();
+    // beforeAll may have failed before assigning fx (e.g. embedded PG boot);
+    // teardown must not turn a failed setup into a crash on undefined.
+    await fx?.close();
   });
 
   /* ---------------------------- finding #1: TAX ---------------------------- */
