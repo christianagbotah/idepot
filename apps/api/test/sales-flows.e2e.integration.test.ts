@@ -66,8 +66,8 @@ describe('sales & POS E2E (cash / credit / part payment / deposit→allocation)'
       warehouseId: whA,
       authority: 'physical_count',
       lines: [
-        { productId: productA, quantityBase: '1000' },
-        { productId: productB, quantityBase: '1000' },
+        { productId: productA, quantityBase: '1000', unitCost: '30.0000' },
+        { productId: productB, quantityBase: '1000', unitCost: '12.0000' },
       ],
     });
     expect(opening.status).toBe(201);
@@ -78,7 +78,10 @@ describe('sales & POS E2E (cash / credit / part payment / deposit→allocation)'
   });
 
   it('cash sale: one transaction posts invoice + stock + COGS + tender + allocation + audit + outbox', async () => {
-    const res = await commitSale(cashier, {
+    // order discounts are manager territory since the hardening round: the
+    // cashier charges the server price; a discount needs the permission +
+    // recorded evidence (finding #4)
+    const res = await commitSale(manager, {
       warehouseId: whA,
       customerId: customerC1,
       lines: [
@@ -86,6 +89,7 @@ describe('sales & POS E2E (cash / credit / part payment / deposit→allocation)'
         { productId: productB, quantityBase: '2', unitPrice: '20.00' },
       ],
       orderDiscount: '10.00',
+      discountOverride: { reason: 'loyalty discount for repeat customer' },
       tenders: [{ method: 'cash', amount: '200.00' }],
     });
     expect(res.status).toBe(201);
@@ -104,8 +108,10 @@ describe('sales & POS E2E (cash / credit / part payment / deposit→allocation)'
     // stock issued in the same transaction
     expect(await balance(productA)).toBe('997.000000');
     expect(await balance(productB)).toBe('998.000000');
-    // COGS snapshot (purchase-price basis)
+    // COGS snapshot (AVCO from the opening-stock cost layers — ADR-0004)
     expect(inv.costTotal).toBe('114.0000'); // 3×30 + 2×12
+    expect(inv.lines[0].costMethod).toBe('avco');
+    expect(inv.lines[0].cogs).toBe('90.0000');
 
     // audit + outbox committed in the same transaction
     const events = await fx.admin.query(

@@ -6,7 +6,7 @@ import type {
   SyncPullResponseDto,
   SyncPush,
 } from '@idepot/contracts';
-import { ConflictError, DomainError, ValidationError } from '@idepot/domain';
+import { ConflictError, DomainError, ValidationError, syncEventFingerprint } from '@idepot/domain';
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork } from '../db/unit-of-work.js';
@@ -22,6 +22,8 @@ function conflictCodes(err: unknown): string | null {
   if (err instanceof ConflictError) {
     if (/insufficient stock/.test(err.message)) return 'stock_oversold';
     if (/stale conversion/.test(err.message)) return 'stale_conversion';
+    if (/stale price/.test(err.message)) return 'stale_price';
+    if (/materiality threshold/.test(err.message)) return 'override_requires_approval';
     if (/credit/.test(err.message)) return 'credit_limit';
     return 'business_conflict';
   }
@@ -69,11 +71,18 @@ export class SyncService {
     p: SyncPrincipal,
     event: SyncPush['events'][number],
   ): Promise<SyncEventOutcome> {
+    // 0. CANONICAL PAYLOAD IDENTITY (finding #5): the fingerprint of
+    //    { type, payload } under canonical JSON (sorted keys, no
+    //    whitespace). The same key with a DIFFERENT payload is a reuse
+    //    conflict — never a silent second application of different business
+    //    facts under a recycled idempotency key.
+    const fingerprint = syncEventFingerprint(event.type, event.payload);
+
     // 1. idempotency pre-check (fast path; the authoritative guarantee is
     //    the registry INSERT inside the apply transaction below)
     const seen = await this.uow.run({ tenantId: p.tenantId }, async (ctx) => {
       const res = await ctx.query<Record<string, unknown>>(
-        `SELECT outcome, response FROM sync_applied_event
+        `SELECT outcome, response, payload_fingerprint FROM sync_applied_event
          WHERE event_id = $1 OR (tenant_id = $2 AND idempotency_key = $3)
          LIMIT 1`,
         [event.eventId, ctx.tenantId, event.idempotencyKey],
@@ -81,6 +90,17 @@ export class SyncService {
       return res.rows[0] ?? null;
     });
     if (seen) {
+      // NULL fingerprint = a pre-hardening row: legacy duplicate semantics
+      // (compat). A present-but-different fingerprint = key reuse conflict.
+      if (seen.payload_fingerprint != null && String(seen.payload_fingerprint) !== fingerprint) {
+        return {
+          eventId: event.eventId,
+          status: 'conflict',
+          code: 'idempotency_key_reuse',
+          message:
+            'this idempotency key (or event id) was already used for a DIFFERENT payload — reusing it is a conflict, never a silent duplicate',
+        };
+      }
       return {
         eventId: event.eventId,
         status: 'duplicate',
@@ -121,9 +141,9 @@ export class SyncService {
         }
         await ctx.query(
           `INSERT INTO sync_applied_event
-             (event_id, tenant_id, device_id, idempotency_key, event_type, outcome, response, occurred_at)
-           VALUES ($1,$2,$3,$4,$5,'applied',$6,$7)`,
-          [event.eventId, ctx.tenantId, p.deviceId, event.idempotencyKey, event.type, JSON.stringify(applied), event.occurredAt ?? null],
+             (event_id, tenant_id, device_id, idempotency_key, event_type, outcome, response, payload_fingerprint, occurred_at)
+           VALUES ($1,$2,$3,$4,$5,'applied',$6,$7,$8)`,
+          [event.eventId, ctx.tenantId, p.deviceId, event.idempotencyKey, event.type, JSON.stringify(applied), fingerprint, event.occurredAt ?? null],
         );
         return applied;
       });
@@ -132,19 +152,20 @@ export class SyncService {
       const code = conflictCodes(err);
       const message = err instanceof Error ? err.message : 'sync apply failed';
       if (code) {
-        // CONFLICT (business outcome: oversold stock, stale config, credit) is
-        // recorded — a naive device retry gets `duplicate`, never a delayed
-        // second application of a business-conflicting sale. The accountant/
-        // supervisor resolves it from the review queue (offline-sync §5b).
+        // CONFLICT (business outcome: oversold stock, stale config, credit,
+        // unauthorized override) is recorded — a naive device retry gets
+        // `duplicate`, never a delayed second application of a
+        // business-conflicting sale. The accountant/supervisor resolves it
+        // from the review queue (offline-sync §5b).
         await this.uow.run({ tenantId: p.tenantId }, async (ctx) => {
           await ctx.query(
             `INSERT INTO sync_applied_event
-               (event_id, tenant_id, device_id, idempotency_key, event_type, outcome, response, occurred_at)
-             VALUES ($1,$2,$3,$4,$5,'conflict',$6,$7)
+               (event_id, tenant_id, device_id, idempotency_key, event_type, outcome, response, payload_fingerprint, occurred_at)
+             VALUES ($1,$2,$3,$4,$5,'conflict',$6,$7,$8)
              ON CONFLICT (event_id) DO NOTHING`,
             [
               event.eventId, ctx.tenantId, p.deviceId, event.idempotencyKey, event.type,
-              JSON.stringify({ code, message }), event.occurredAt ?? null,
+              JSON.stringify({ code, message }), fingerprint, event.occurredAt ?? null,
             ],
           );
         });

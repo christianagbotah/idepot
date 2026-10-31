@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Current phase** | Phase 3 — sales & POS (+ continuous migration: sales cycle) — implemented on this branch |
+| **Current phase** | Phase 3 — sales & POS (+ financial hardening round) — implemented on this branch |
 | **Previous phases** | Phase 0 — forensic audit & architecture ✅ (merged); Phase 1 — monorepo foundation + migration engineering foundation ✅ (merged); Phase 2 — master data & inventory ✅ (merged) |
 | **Branch** | `phase-3/sales-pos` (from main @ `b07e80a6`) |
-| **Repo state** | Full Phase 3 implementation: corrected sale posting, payments/deposits/allocations, orders/fulfillments, shifts, receipts, offline sync engine, migration of the legacy sales cycle |
+| **Repo state** | Phase 3 + financial hardening round: corrected sale posting, payments/deposits/allocations, orders/fulfillments, shifts, receipts, offline sync engine, migration of the legacy sales cycle, tax engine + GL journals + AVCO costing + override authorization + sync payload identity (independent review findings 1–5) |
 
 ## Completed capabilities (Phases 0–2 — merged to main, preserved unchanged)
 
@@ -53,6 +53,11 @@
 | **Allocation invariants property-tested (API level, invariant 3/8)** | ✅ |
 | **Booklet concurrency (3 simultaneous cashiers: ordered, unique, exhaustion → counter fallback)** | ✅ |
 | **Shift expected-cash derivation + variance review gate (cashier 403)** | ✅ |
+| **Financial hardening: tax evidence (exclusive/inclusive/mixed/exempt/effective-dating/immutability/atomicity)** | ✅ (17-test suite) |
+| **Financial hardening: GL journals balanced ΣD=ΣC for sale/receipt/deposit/credit in the same transaction** | ✅ |
+| **Financial hardening: AVCO cost layers, proportional issue cost, transfer value carry, rebuildable cost state** | ✅ |
+| **Financial hardening: price authority + override evidence + server-verified supervisor approval thresholds** | ✅ |
+| **Financial hardening: sync canonical payload fingerprint (key reuse = conflict)** | ✅ |
 | **Performance: sub-second sale commit locally (median ≈ 50 ms)** | ✅ |
 | **Offline sync chaos: duplicate delivery replays the ORIGINAL result; kill mid-push rolls back registry+documents (retry applies exactly once); two-terminal oversell → policy conflict / backorder+exception; lease validation (wrong device rejected); idempotencyKey dedupe; resumable pull** | 7/7 |
 | **Migration smoke + Phase 3 sales-cycle import + idempotency re-run** | 10/10 |
@@ -62,6 +67,19 @@
 | Posting Coordinator atomicity + vertical slice E2E + migration guard | 16/16 |
 | Lint / **clean** typecheck (no dist) / build (9 workspaces incl. web) | clean |
 | npm audit (runtime) | 0 |
+
+## Financial hardening round (independent review findings 1–5)
+
+A focused correctness round on top of the delivered Phase 3, keeping every existing behaviour; additive migration `0007_phase3_financial_hardening.sql` (0006 history untouched).
+
+- **F1 TAX (ADR-aligned, statute-free):** effective-dated, versioned tax profiles with NAMED components (rate + inclusive/exclusive treatment). No statutory rate is embedded anywhere — the seeded default profile has ZERO components (tax-neutral until configured). Every invoice stores immutable transaction-time evidence: profile version, per-component name/rate/basis/amount rows, per-line tax basis after pro-rata discount allocation, exempt applicability (product-level OR line-level). Deterministic exact-decimal math (single half-even rounding; the inclusive residual lands on the last component so Σ is always exact; exclusive components levy on the NET — a levy never taxes an embedded tax). Server-side resolution by the SERVER business date; a client never names a version. Rate changes = new version (the overlap guard + append-only component grants make in-place edits structurally impossible; creating an open-ended version closes the previous window the day before). Invoice identity is now `total = subtotal − order_discount + tax_total − tax_inclusive_total` (DB CHECK).
+- **F2 GL (minimum synchronous primitives):** generic control chart + 10 purpose→account mappings seeded idempotently per tenant on first posting; append-only `journal_entry`/`journal_line` with ΣD=ΣC enforced TWICE (domain JournalBuilder pre-insert + DB constraint trigger re-deriving header totals at commit). One balanced journal per sale (revenue, per-component tax payable incl. per-component account overrides, tender control accounts, change, AR net of credit, deposits consumed, COGS/inventory) and per standalone receipt/deposit/credit application — all INSIDE the source transaction (kill-after-writes proof: no journal rows survive).
+- **F3 COST (ADR-0004, AVCO):** effective-dated cost-policy versions (avco only in Phase 3); cost-bearing receipt layers on stock movements (`unit_cost`, `cost_value`); issues remove value proportionally to on-hand value; reversals copy evidence verbatim; transfers carry the dispatched value with the exact-residual convention (Σ transfer-in == transfer-out for any partial-receive sequence); `stock_cost_state` maintained inside the StockPoster's locked critical section and rebuildable from the ledger (rebuild job recomputes both projections); `invoice_line` stores method + policy version + unit cost + line COGS. Opening stock and cost-bearing adjustments accept optional unit costs; un-costed receipts are legal zero-value layers.
+- **F4 PRICE AUTHORITY:** the server-resolved price is AUTHORITATIVE — a mismatched client price is a 409 stale-price unless the principal holds `sales:price_override` AND supplies recorded evidence (reason); material overrides beyond tenant-configured thresholds additionally require a supervisor whose credentials verify SERVER-SIDE inside the posting transaction (and who holds the permission themselves). Order discounts require `sales:discount_override` + evidence under the same threshold rule. Cashiers hold NEITHER permission by design. Offline override conflicts map to sync conflict codes (`stale_price`, `override_requires_approval`) for the device review queue.
+- **F5 SYNC IDENTITY:** canonical-JSON payload fingerprint (SHA-256 over {type, payload} with sorted keys) stored on `sync_applied_event`; same key + same payload → duplicate replay of the original result; same key + DIFFERENT payload → `idempotency_key_reuse` conflict — never a silent second application. NULL fingerprints (pre-0007 rows) keep legacy duplicate semantics.
+- **RBAC additions:** `sales:price_override`, `sales:discount_override` (manager+, never cashier), `tax:manage` (owner/admin/manager), `gl:read` (owner/admin/manager/auditor). New endpoints: tax profile/version admin + GL accounts/mappings/journals reads.
+- **Latent bug fixed en route:** standalone `POST /api/credits/apply` used SELECT … FOR UPDATE on `customer_deposit`, for which the app role deliberately has no UPDATE grant (append-only ledger) — it could only 500 in production. Now serialized with the same transaction-scoped advisory-lock domain as the sale credit waterfall.
+- **Proofs:** `apps/api/test/financial-hardening.integration.test.ts` — 17 tests covering every finding, plus unit suites for the tax/costing/GL/canonical domain modules (44 tests) and the updated RBAC matrix.
 
 ## Exit criteria check (ROADMAP Phase 3)
 
@@ -74,7 +92,7 @@
 
 ## Known limitations / deferred (deliberate)
 
-- **GL journal + tax lines** arrive with the Phase 4 posting engine (chart of accounts, ΣD=ΣC, coordinator-invoked); the Phase 3 posting set is everything structurally short of the journal (same precedent as the Phase 2 opening-balance documents). `cost_at_sale` snapshots the purchase price; the effective-dated/configurable cost basis is the deferred Phase 4 decision with migration sign-off.
+- **Chart-of-accounts administration, statements and closing** arrive with the Phase 4 posting engine; the hardening round delivered the minimum synchronous GL primitives (generic control chart + purpose mappings seeded per tenant, append-only balanced journals committed in the sale/payment/deposit/credit transactions, DB constraint trigger re-deriving totals at commit). Journal lines for NON-sale inventory documents (adjustments/transfers/opening balances) and the back-fill for pre-hardening Phase 3 documents are Phase 4 work.
 - Payment/receipt/deposit reversals are **new documents by design**; the reversal endpoints land with Phase 5 returns/credit notes (append-only grants already enforce it at the DB).
 - Offline quota/stock leases (optional hard limits) remain a documented Phase 6 option; the current policy pair (reject/allow_backorder) covers the §5b outcomes.
 - Web print goes through the browser; ESC/POS adapters, drawer kick and the device test screens are Phase 6 hardware hardening.
@@ -83,7 +101,7 @@
 
 ## Next actions (Phase 4 — Purchasing & accounting)
 
-1. Chart of accounts (effective-dated) + synchronous posting engine (ΣD=ΣC) wired as coordinator participants; back-fill GL journal + tax lines for the Phase 3 documents.
+1. Phase 4 posting engine: chart-of-accounts administration, statements, closing; GL journals for non-sale inventory documents (adjustments/transfers/opening balances); back-fill GL + tax evidence for pre-hardening Phase 3 documents (identifiable by cost_method IS NULL with a purchase-price cost_at_sale).
 2. PO/GRN/supplier invoice 3-way match; debit notes; AP payments/allocations (mirroring the Phase 3 allocation engine).
 3. Banking (accounts, transfers, statement import + matching); AR/AP subledgers with control-account reconciliation job.
 4. Migration: POs, GRNs, AP, banking references, chart of accounts; opening balances + opening trial-balance tie-out with the accountant sign-off.

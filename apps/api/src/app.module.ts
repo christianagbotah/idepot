@@ -43,6 +43,9 @@ import { OrderService } from './sales/order.service.js';
 import { ShiftService } from './sales/shift.service.js';
 import { ReceiptService } from './sales/receipt.service.js';
 import { SyncService } from './sales/sync.service.js';
+// Phase 3 hardening — financial configuration & evidence
+import { FinancialConfigurationService } from './finance/financial-configuration.service.js';
+import { TaxController, GlController } from './finance/finance.controller.js';
 
 @Module({
   imports: [DbModule],
@@ -74,6 +77,9 @@ import { SyncService } from './sales/sync.service.js';
     ShiftController,
     SequenceController,
     SyncController,
+    // Phase 3 hardening — financial configuration & evidence
+    TaxController,
+    GlController,
   ],
   providers: [
     AuthService,
@@ -107,6 +113,9 @@ import { SyncService } from './sales/sync.service.js';
     ShiftService,
     ReceiptService,
     SyncService,
+    // Phase 3 hardening — tax/GL/cost configuration, override approval,
+    // journals (all invoked INSIDE posting transactions)
+    FinancialConfigurationService,
     // global guard chain: authentication -> authorization
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RbacGuard },

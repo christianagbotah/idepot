@@ -119,6 +119,9 @@ export const CreateProductSchema = z.object({
   soldInUnits: z.boolean().optional(),
   sellingPrice: money(),
   purchasePrice: money().nullish(),
+  /** product-level tax exemption default (Phase 3 hardening, finding #1);
+   *  a line may still flag exemption explicitly */
+  taxExempt: z.boolean().optional(),
   status: ProductStatusSchema.optional(),
 });
 export type CreateProduct = z.infer<typeof CreateProductSchema>;
@@ -133,6 +136,7 @@ export const UpdateProductSchema = z.object({
   soldInUnits: z.boolean().optional(),
   sellingPrice: money().optional(),
   purchasePrice: money().nullish(),
+  taxExempt: z.boolean().optional(),
   status: ProductStatusSchema.optional(),
 });
 export type UpdateProduct = z.infer<typeof UpdateProductSchema>;
@@ -273,6 +277,9 @@ export type StockMovementDto = {
   unitId: string | null; quantityTransacted: string | null; conversionFactor: string | null;
   reason: string | null; sourceDocumentType: string | null; sourceDocumentId: string | null;
   transferId: string | null; reversalOf: string | null; occurredAt: string;
+  /** ADR-0004 AVCO transaction-time cost evidence on the ledger row
+   *  (receipts: layer unit cost; issues: resolved average). */
+  unitCost: string | null; costValue: string | null;
 };
 
 export const MovementEntrySchema = z.object({
@@ -364,6 +371,9 @@ export const CreateStockAdjustmentSchema = z.object({
     unitId: uuid().nullish(),
     quantityTransacted: qty().nullish(),
     conversionFactor: qty().nullish(),
+    /** optional AVCO cost layer for RECEIVING adjustments (ADR-0004,
+     *  decimal(18,4)) — issues never take a caller cost */
+    unitCost: money().nullish(),
     note: z.string().max(500).nullish(),
   })).min(1).max(2000),
 });
@@ -512,9 +522,22 @@ export const SaleLineSchema = z.object({
   unitId: uuid().nullish(),
   quantityTransacted: qty().nullish(),
   conversionFactor: qty().nullish(),
-  /** the agreed transacted price (what the customer pays for ONE transacted
-   *  unit); the server computes line.net — client amounts are advisory (C-1) */
+  /** the client's EXPECTED price for one transacted unit. The server price
+   *  is AUTHORITATIVE: a mismatch is a 409 stale-price unless the principal
+   *  holds sales:price_override and supplies override evidence (Phase 3
+   *  hardening — a cashier can no longer submit an arbitrary price). */
   unitPrice: money(),
+  /** line-level tax exemption flag (ORs with product.tax_exempt) */
+  taxExempt: z.boolean().nullish(),
+  /** required when unitPrice differs from the server-resolved price */
+  priceOverride: z.object({
+    reason: z.string().min(4).max(500),
+    /** supervisor approval for material overrides (threshold-configured) */
+    approver: z.object({
+      username: z.string().min(3).max(200),
+      password: z.string().min(6).max(200),
+    }).optional(),
+  }).nullish(),
   note: z.string().max(300).nullish(),
 });
 export type SaleLineInput = z.infer<typeof SaleLineSchema>;
@@ -542,6 +565,15 @@ export const CommitSaleSchema = z.object({
   shiftId: uuid().nullish(),
   note: z.string().max(2000).nullish(),
   orderDiscount: money().optional(),
+  /** required when orderDiscount > 0 (sales:discount_override + reason;
+   *  Phase 3 hardening: an unauthorized discount is a 403) */
+  discountOverride: z.object({
+    reason: z.string().min(4).max(500),
+    approver: z.object({
+      username: z.string().min(3).max(200),
+      password: z.string().min(6).max(200),
+    }).optional(),
+  }).nullish(),
   lines: z.array(SaleLineSchema).min(1).max(2000).refine(
     (lines) => new Set(lines.map((l) => l.productId)).size === lines.length,
     { message: 'duplicate productId in sale lines: each product may appear at most once' },
@@ -553,8 +585,12 @@ export const CommitSaleSchema = z.object({
   docNumber: z.string().min(1).max(40).nullish(),
   /** offline business time — recorded, server received_at authoritative */
   occurredAt: z.string().datetime().nullish(),
-  /** injects a failure AFTER deep partial writes (invoice+lines+stock+
-   *  tenders) — proves the whole posting set rolls back (atomicity test) */
+  /** injects a failure inside the tax participant (BEFORE any write) —
+   *  proves the whole posting set rolls back (atomicity test) */
+  simulateTaxParticipantFailure: z.boolean().optional(),
+  /** injects a failure AFTER the deepest partial writes (invoice+lines+tax
+   *  evidence+stock+COGS+tenders+allocations+journal) — proves the whole
+   *  posting set rolls back (atomicity test) */
   simulateFailureAfterWrites: z.boolean().optional(),
 });
 export type CommitSale = z.infer<typeof CommitSaleSchema>;
@@ -565,6 +601,16 @@ export interface InvoiceLineDto {
   unitPrice: string; lineNet: string;
   resolvedPrice: string | null; priceSource: string | null; priceOverridden: boolean;
   costAtSale: string | null; note: string | null;
+  taxExempt: boolean; taxBasis: string | null;
+  costMethod: string | null; cogs: string | null;
+}
+/** Immutable transaction-time tax evidence (Phase 3 hardening): a snapshot
+ *  of the component name/rate/basis/amount as resolved at sale time — a
+ *  later configuration change can never rewrite a historical invoice. */
+export interface InvoiceTaxComponentDto {
+  id: string; componentId: string | null; name: string;
+  rate: string; inclusive: boolean;
+  taxableBasis: string; taxAmount: string;
 }
 export interface InvoiceDto {
   id: string; code: string; salesOrderId: string | null;
@@ -575,7 +621,77 @@ export interface InvoiceDto {
   amountPaid: string; amountDue: string; costTotal: string | null;
   changeGiven: string; shiftId: string | null; source: string;
   clientDocId: string | null; note: string | null;
+  taxProfileCode: string | null; taxInclusive: boolean;
+  taxTotal: string; taxAdded: string; taxComponents: InvoiceTaxComponentDto[];
   lines: InvoiceLineDto[]; createdBy: string | null; createdAt: string;
+}
+
+/* --------------------- tax configuration (Phase 3 hardening) --------------------- */
+
+/** decimal(9,6) rate as a FRACTION (0.075000 = 7.5%) — never a percentage. */
+const rate = () => z.string().regex(/^(0|[0-9]{0,5})\.\d{1,6}$/, 'decimal(9,6) fraction as string, e.g. "0.075000"');
+
+export const TaxComponentInputSchema = z.object({
+  name: z.string().min(2).max(60),
+  rate: rate(),
+  /** true = embedded in the charged price; false = added on top */
+  inclusive: z.boolean(),
+  /** deterministic evaluation order */
+  seq: z.number().int().min(0).max(999).optional(),
+  /** optional per-component payable account override */
+  glAccountCode: z.string().min(1).max(20).nullish(),
+});
+export type TaxComponentInput = z.infer<typeof TaxComponentInputSchema>;
+
+export const CreateTaxProfileSchema = z.object({
+  code: z.string().min(2).max(40),
+  name: z.string().min(2).max(120),
+  isDefault: z.boolean().optional(),
+});
+export type CreateTaxProfile = z.infer<typeof CreateTaxProfileSchema>;
+
+export const CreateTaxVersionSchema = z.object({
+  /** defaults to max(version)+1 — the lawful way rates change */
+  version: z.number().int().min(1).max(10000).optional(),
+  effectiveFrom: isoDate(),
+  effectiveTo: isoDate().nullish(),
+  note: z.string().max(500).nullish(),
+  components: z.array(TaxComponentInputSchema).max(20),
+});
+export type CreateTaxVersion = z.infer<typeof CreateTaxVersionSchema>;
+
+export interface TaxComponentDto {
+  id: string; name: string; rate: string; inclusive: boolean; seq: number;
+  glAccountCode: string | null;
+}
+export interface TaxProfileVersionDto {
+  id: string; version: number; effectiveFrom: string; effectiveTo: string | null;
+  note: string | null; components: TaxComponentDto[];
+}
+export interface TaxProfileDto {
+  id: string; code: string; name: string; isActive: boolean; isDefault: boolean;
+  versions: TaxProfileVersionDto[];
+}
+
+/* --------------------------- GL primitives (minimum) --------------------------- */
+
+export interface GlAccountDto {
+  id: string; code: string; name: string;
+  accountType: 'asset' | 'liability' | 'equity' | 'revenue' | 'expense';
+  isActive: boolean;
+}
+export interface GlMappingDto {
+  purpose: string; accountCode: string; accountName: string; accountId: string;
+}
+export interface JournalLineDto {
+  id: string; accountId: string; accountCode: string; accountName: string;
+  debit: string; credit: string; memo: string | null;
+}
+export interface JournalEntryDto {
+  id: string; sourceKind: string; sourceId: string; event: string;
+  description: string | null; occurredAt: string;
+  totalDebit: string; totalCredit: string;
+  lines: JournalLineDto[];
 }
 
 /* -------------------------------- payments --------------------------------- */
@@ -800,6 +916,10 @@ export interface ReceiptPayloadDto {
   cashierName: string | null;
   lines: ReceiptLinePayload[];
   subtotal: string; orderDiscount: string; total: string;
+  /** tax evidence as charged (Phase 3 hardening): per-component lines and
+   *  the share that was ADDED to the payable (exclusive components). */
+  taxComponents: Array<{ name: string; rate: string; amount: string }>;
+  taxAdded: string;
   tenders: Array<{ method: string; amount: string; detail: string | null }>;
   changeGiven: string; amountDue: string;
   balanceOwedThisInvoice: string;

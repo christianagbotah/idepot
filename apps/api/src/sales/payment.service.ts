@@ -17,11 +17,16 @@ import {
   validateAllocation,
   validatePositiveMoney,
   validateTenderSet,
+  TENDER_GL_PURPOSE,
+  type GlPurpose,
+  type JournalLineSpec,
 } from '@idepot/domain';
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork, type UowContext } from '../db/unit-of-work.js';
 import { assertTenantRefs } from '../inventory/inventory-refs.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
 
 import type { SalePrincipal } from './sale-poster.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
@@ -61,6 +66,7 @@ export class PaymentService {
     private readonly uow: UnitOfWork,
     private readonly poster: SalePoster,
     private readonly sequences: DocumentSequenceService,
+    private readonly finance: FinancialConfigurationService,
   ) {}
 
   /** Receive money from a customer: multi-tender receipt + allocations. */
@@ -187,6 +193,19 @@ export class PaymentService {
       );
     }
 
+    // GL journal (finding #2): DR tender control accounts, CR receivable for
+    // the allocated share, CR deposit liability for the unapplied remainder
+    // (money received but not yet attached to a debt becomes customer credit)
+    await this.postPaymentJournal(ctx, principal, {
+      paymentId,
+      code: receiptCode,
+      tenders: dto.tenders,
+      allocated: outstandingTotal,
+      unapplied: amount - outstandingTotal,
+      sourceKind: 'payment',
+      event: 'receipt_posted',
+    });
+
     // audit + outbox (committed facts only)
     for (const [invoiceId, allocated] of dues) {
       await ctx.audit.record({
@@ -307,6 +326,19 @@ export class PaymentService {
         amount: formatMoney(amount),
         paymentId,
       });
+
+      // GL journal (finding #2): DR tender control accounts, CR customer
+      // deposits — the money is a LIABILITY until it is applied to a sale
+      await this.postPaymentJournal(ctx, principal, {
+        paymentId: depositId,
+        code,
+        tenders: dto.tenders,
+        allocated: 0n,
+        unapplied: amount,
+        sourceKind: 'customer_deposit',
+        event: 'deposit_posted',
+      });
+
       return this.loadDeposit(ctx, depositId);
     });
   }
@@ -318,9 +350,25 @@ export class PaymentService {
       await assertTenantRefs(ctx, 'invoice', 'invoice', [dto.invoiceId]);
       const amount = validatePositiveMoney(dto.amount);
 
+      // Serialize credit consumption per customer — customer_deposit is
+      // APPEND-ONLY for the app role (no UPDATE grant), so SELECT … FOR
+      // UPDATE is unavailable by design; a transaction-scoped advisory lock
+      // (same key domain as the sale's credit waterfall) gives the same
+      // guarantee: concurrent applications serialize and the
+      // remaining-balance reads below are always current.
+      const depHead = await ctx.query<{ customer_id: string }>(
+        `SELECT customer_id FROM customer_deposit WHERE id = $1 AND tenant_id = $2`,
+        [dto.depositId, ctx.tenantId],
+      );
+      if (depHead.rows.length === 0) throw new NotFoundError('customer_deposit', dto.depositId);
+      await ctx.query(
+        `SELECT pg_advisory_xact_lock(('x' || substr(md5($1::text), 1, 16))::bit(64)::bigint)`,
+        [`customer-credit:${ctx.tenantId}:${depHead.rows[0]!.customer_id}`],
+      );
+
       const depRes = await ctx.query<Record<string, unknown>>(
         `SELECT id, code, customer_id, amount FROM customer_deposit
-         WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+         WHERE id = $1 AND tenant_id = $2`,
         [dto.depositId, ctx.tenantId],
       );
       const dep = depRes.rows[0];
@@ -381,6 +429,23 @@ export class PaymentService {
         invoiceId: dto.invoiceId,
         amount: formatMoney(allocated),
       });
+
+      // GL journal (finding #2): the deposit liability is consumed to settle
+      // a receivable — DR customer deposits, CR accounts receivable
+      const creditPurposes: GlPurpose[] = ['customer_deposit_liability', 'accounts_receivable'];
+      const creditAccounts = await this.finance.resolveGlAccounts(ctx, creditPurposes);
+      await this.finance.postJournal(ctx, {
+        sourceKind: 'credit_application',
+        sourceId: String(appRow.id),
+        event: 'credit_applied',
+        description: `Credit application ${String(dep.code)} → ${String(inv.code)}`,
+        createdBy: principal.userId,
+        lines: [
+          { accountId: creditAccounts.get('customer_deposit_liability')!, debit: formatMoney(allocated), memo: `deposit ${String(dep.code)} consumed` },
+          { accountId: creditAccounts.get('accounts_receivable')!, credit: formatMoney(allocated), memo: `invoice ${String(inv.code)} settled by credit` },
+        ],
+      });
+
       return {
         id: String(appRow.id),
         depositId: dto.depositId,
@@ -390,6 +455,55 @@ export class PaymentService {
         amount: formatMoney(allocated),
         createdAt: new Date(appRow.created_at as string).toISOString(),
       };
+    });
+  }
+
+  /* ------------------------------- GL helper ------------------------------ */
+
+  /**
+   * Balanced journal for a money-receipt document (standalone receipt or
+   * deposit): DR tender control accounts (gross), CR accounts receivable for
+   * the allocated share, CR customer deposits for the unapplied share.
+   * amount = allocated + unapplied keeps the entry balanced by construction.
+   */
+  private async postPaymentJournal(
+    ctx: UowContext,
+    principal: SalePrincipal,
+    args: {
+      paymentId: string;
+      code: string;
+      tenders: ReceivePayment['tenders'];
+      allocated: bigint;
+      unapplied: bigint;
+      sourceKind: string;
+      event: string;
+    },
+  ): Promise<void> {
+    const purposes: GlPurpose[] = ['accounts_receivable', 'customer_deposit_liability'];
+    for (const t of args.tenders) {
+      const purpose = TENDER_GL_PURPOSE[t.method];
+      if (purpose && !purposes.includes(purpose)) purposes.push(purpose);
+    }
+    const accounts = await this.finance.resolveGlAccounts(ctx, purposes);
+    const lines: JournalLineSpec[] = [];
+    for (const t of args.tenders) {
+      const purpose = TENDER_GL_PURPOSE[t.method];
+      if (!purpose) throw new ValidationError(`tender method "${t.method}" has no GL control account`);
+      lines.push({
+        accountId: accounts.get(purpose)!,
+        debit: formatMoney(parseMoney(t.amount)),
+        memo: `${args.sourceKind === 'payment' ? 'receipt' : 'deposit'} ${args.code} tender ${t.method}`,
+      });
+    }
+    lines.push({ accountId: accounts.get('accounts_receivable')!, credit: formatMoney(args.allocated), memo: `${args.code} receivable settled` });
+    lines.push({ accountId: accounts.get('customer_deposit_liability')!, credit: formatMoney(args.unapplied), memo: `${args.code} customer credit` });
+    await this.finance.postJournal(ctx, {
+      sourceKind: args.sourceKind,
+      sourceId: args.paymentId,
+      event: args.event,
+      description: `${args.sourceKind === 'payment' ? 'Receipt' : 'Deposit'} ${args.code}`,
+      createdBy: principal.userId,
+      lines,
     });
   }
 

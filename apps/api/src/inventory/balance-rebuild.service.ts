@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { BalanceRebuildReportDto, StockBalanceDto, StockMovementDto } from '@idepot/contracts';
-import { parseQuantity } from '@idepot/domain';
+import { applyCostToState, parseQuantity } from '@idepot/domain';
 
 import type { UowContext } from '../db/unit-of-work.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
@@ -74,11 +74,18 @@ export class BalanceRebuildService {
     ].sort((a, b) => `${a.warehouse_id}:${a.product_id}`.localeCompare(`${b.warehouse_id}:${b.product_id}`));
 
     // ensure-and-lock every key (same mechanism and order as StockPoster):
-    // idempotent zero-row insert, then FOR UPDATE on the now-existing row
+    // the balance row AND the AVCO cost-state row (Phase 3 hardening — the
+    // cost state is a second projection the rebuild must not leave stale)
     for (const key of universe) {
       await ctx.query(
         `INSERT INTO stock_balance (tenant_id, warehouse_id, product_id, quantity_base)
          VALUES ($1,$2,$3,0)
+         ON CONFLICT (tenant_id, warehouse_id, product_id) DO NOTHING`,
+        [ctx.tenantId, key.warehouse_id, key.product_id],
+      );
+      await ctx.query(
+        `INSERT INTO stock_cost_state (tenant_id, warehouse_id, product_id, quantity_base, total_value)
+         VALUES ($1,$2,$3,0,0)
          ON CONFLICT (tenant_id, warehouse_id, product_id) DO NOTHING`,
         [ctx.tenantId, key.warehouse_id, key.product_id],
       );
@@ -90,9 +97,18 @@ export class BalanceRebuildService {
       if (cur.rows.length === 0) {
         throw new Error(`unreachable: balance row missing after ensure (${key.warehouse_id}/${key.product_id})`);
       }
+      const costCur = await ctx.query<{ quantity_base: string }>(
+        `SELECT quantity_base FROM stock_cost_state
+         WHERE tenant_id = $1 AND warehouse_id = $2 AND product_id = $3 FOR UPDATE`,
+        [ctx.tenantId, key.warehouse_id, key.product_id],
+      );
+      if (costCur.rows.length === 0) {
+        throw new Error(`unreachable: cost-state row missing after ensure (${key.warehouse_id}/${key.product_id})`);
+      }
     }
 
-    // ledger-derived truth per (warehouse, product) — under the locks above
+    // ledger-derived truth per (warehouse, product) — under the locks above:
+    // quantities AND the AVCO cost fold over the ledger's cost evidence
     const computed = await ctx.query<{ warehouse_id: string; product_id: string; total: string }>(
       `SELECT m.warehouse_id, m.product_id, SUM(m.quantity_base)::text AS total
        FROM stock_movement m
@@ -100,6 +116,22 @@ export class BalanceRebuildService {
        GROUP BY m.warehouse_id, m.product_id`,
       params,
     );
+    const costLedger = await ctx.query<{
+      warehouse_id: string; product_id: string;
+      movements: Array<{ quantity_base: string; unit_cost: string | null; cost_value: string | null }>;
+    }>(
+      `SELECT m.warehouse_id, m.product_id,
+              json_agg(json_build_object(
+                'quantity_base', m.quantity_base::text,
+                'unit_cost', m.unit_cost::text,
+                'cost_value', m.cost_value::text
+              ) ORDER BY m.occurred_at, m.created_at, m.id) AS movements
+       FROM stock_movement m
+       WHERE m.tenant_id = $1${warehouseFilter.replace('warehouse_id', 'm.warehouse_id')}
+       GROUP BY m.warehouse_id, m.product_id`,
+      params,
+    );
+    const costBy = new Map(costLedger.rows.map((r) => [`${r.warehouse_id}:${r.product_id}`, r.movements]));
 
     // stored projection, re-read AFTER locking (authoritative view)
     const stored = await ctx.query<{
@@ -140,6 +172,33 @@ export class BalanceRebuildService {
            WHERE tenant_id = $1 AND warehouse_id = $2 AND product_id = $3`,
           [ctx.tenantId, row.warehouse_id, row.product_id, computedQty],
         );
+        // AVCO cost state: fold the ledger's per-movement cost evidence in
+        // ledger order (receipts add layer value round4(qty×unit) or the
+        // recorded explicit value; issues/remove their recorded evidence)
+        let costState = { quantityBase: '0.000000', totalValue: '0.0000' };
+        for (const mv of costBy.get(key) ?? []) {
+          if (mv.cost_value == null && mv.unit_cost == null) {
+            // un-costed movement: quantity still walks the cost state
+            costState = applyCostToState(costState, { quantityBase: mv.quantity_base });
+            continue;
+          }
+          costState = applyCostToState(costState, {
+            quantityBase: mv.quantity_base,
+            unitCost: mv.unit_cost,
+            issueCost: mv.cost_value != null && parseQuantity(mv.quantity_base) < 0n
+              ? { unitCost: mv.unit_cost, costValue: mv.cost_value, layered: true }
+              : null,
+            reversalCost: mv.cost_value != null ? { unitCost: mv.unit_cost, costValue: mv.cost_value } : null,
+            explicitCost: mv.cost_value != null && parseQuantity(mv.quantity_base) > 0n
+              ? { unitCost: mv.unit_cost, costValue: mv.cost_value }
+              : null,
+          });
+        }
+        await ctx.query(
+          `UPDATE stock_cost_state SET quantity_base = $4, total_value = $5, updated_at = now()
+           WHERE tenant_id = $1 AND warehouse_id = $2 AND product_id = $3`,
+          [ctx.tenantId, row.warehouse_id, row.product_id, costState.quantityBase, costState.totalValue],
+        );
         rebuilt++;
       }
       storedMap.delete(key);
@@ -164,6 +223,11 @@ export class BalanceRebuildService {
       if (!opts.dryRun) {
         await ctx.query(
           `UPDATE stock_balance SET quantity_base = 0, updated_at = now()
+           WHERE tenant_id = $1 AND warehouse_id = $2 AND product_id = $3`,
+          [ctx.tenantId, warehouseId, productId],
+        );
+        await ctx.query(
+          `UPDATE stock_cost_state SET quantity_base = 0, total_value = 0, updated_at = now()
            WHERE tenant_id = $1 AND warehouse_id = $2 AND product_id = $3`,
           [ctx.tenantId, warehouseId, productId],
         );
@@ -251,7 +315,8 @@ export class InventoryRepositoryQueries {
     const res = await ctx.query<Record<string, unknown>>(
       `SELECT id, warehouse_id, product_id, movement_type, quantity_base,
               unit_id, quantity_transacted, conversion_factor, reason,
-              source_document_type, source_document_id, transfer_id, reversal_of, occurred_at
+              source_document_type, source_document_id, transfer_id, reversal_of,
+              unit_cost, cost_value, occurred_at
        FROM stock_movement WHERE ${where.join(' AND ')}
        ORDER BY occurred_at DESC, created_at DESC LIMIT ${limit}`,
       params,
@@ -275,6 +340,8 @@ export class InventoryRepositoryQueries {
       transferId: r.transfer_id ? String(r.transfer_id) : null,
       reversalOf: r.reversal_of ? String(r.reversal_of) : null,
       occurredAt: new Date(r.occurred_at as string).toISOString(),
+      unitCost: r.unit_cost != null ? String(r.unit_cost) : null,
+      costValue: r.cost_value != null ? String(r.cost_value) : null,
     };
   }
 }

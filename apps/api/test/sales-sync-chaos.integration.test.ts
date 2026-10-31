@@ -228,8 +228,16 @@ describe('offline sync chaos (push idempotency, crash safety, oversell policy, l
     const key = `dup-key-${randomUUID()}`;
     const first = await push(deviceA, [{ ...saleEvent(payload), idempotencyKey: key }]);
     expect(first.body.outcomes[0].status).toBe('applied');
-    const second = await push(deviceA, [{ ...saleEvent(salePayload({ warehouseId: whA, productId: productA, quantity: '1', clientDocId: randomUUID() })), idempotencyKey: key }]);
+    // a retried key with the SAME payload (new event id) replays the original
+    // result — one document ever
+    const second = await push(deviceA, [{ ...saleEvent(payload), idempotencyKey: key }]);
     expect(second.body.outcomes[0].status).toBe('duplicate');
+    // Phase 3 hardening (finding #5): the same key carrying a DIFFERENT
+    // payload is a reuse conflict — never a silent second application
+    const third = await push(deviceA, [{ ...saleEvent(salePayload({ warehouseId: whA, productId: productA, quantity: '1', clientDocId: randomUUID() })), idempotencyKey: key }]);
+    expect(third.body.outcomes[0].status).toBe('conflict');
+    expect(third.body.outcomes[0].code).toBe('idempotency_key_reuse');
+    expect(await invoiceCount(clientDocId)).toBe(1);
   });
 
   it('pull is resumable: cursor advances, entries only move forward', async () => {

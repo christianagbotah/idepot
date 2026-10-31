@@ -33,6 +33,23 @@ describe('RBAC decision function', () => {
     expect(ROLE_PERMISSIONS.cashier).not.toContain('warehouse:write');
   });
 
+  it('Phase 3 hardening: override powers and financial config are manager+, never cashier', () => {
+    // a cashier charges the server-resolved price — no override powers
+    expect(hasPermission(['cashier'], 'sales:price_override')).toBe(false);
+    expect(hasPermission(['cashier'], 'sales:discount_override')).toBe(false);
+    expect(hasPermission(['cashier'], 'tax:manage')).toBe(false);
+    expect(ROLE_PERMISSIONS.cashier).not.toContain('sales:price_override');
+    expect(ROLE_PERMISSIONS.cashier).not.toContain('sales:discount_override');
+    // managers override with evidence + approval thresholds
+    expect(hasPermission(['manager'], 'sales:price_override')).toBe(true);
+    expect(hasPermission(['manager'], 'sales:discount_override')).toBe(true);
+    expect(hasPermission(['manager'], 'tax:manage')).toBe(true);
+    // auditors read the financial evidence, never configure it
+    expect(hasPermission(['auditor'], 'gl:read')).toBe(true);
+    expect(hasPermission(['auditor'], 'tax:manage')).toBe(false);
+    expect(hasPermission(['cashier'], 'gl:read')).toBe(false);
+  });
+
   it('fails closed for unknown roles', () => {
     expect(hasPermission(['superuser'], 'warehouse:read')).toBe(false);
     expect(hasPermission([], 'warehouse:read')).toBe(false);

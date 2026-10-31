@@ -28,6 +28,8 @@ export const PERMISSIONS = [
   'sales:read',
   'sales:write',      // create orders/quotations, price override visibility
   'sales:pos',        // commit POS/counter sales (cashier core action)
+  'sales:price_override',    // Phase 3 hardening: charge a non-server price (evidence + thresholds)
+  'sales:discount_override', // Phase 3 hardening: grant an order discount (evidence + thresholds)
   'payment:read',
   'payment:write',    // receive payments, deposits, apply credit
   'shift:read',
@@ -35,6 +37,9 @@ export const PERMISSIONS = [
   'shift:approve',    // supervisor: review variance closes
   'sequence:manage',  // sequence/booklet management + spoilage
   'sync:device',      // offline device push/pull
+  // Phase 3 hardening — financial configuration & evidence
+  'tax:manage',       // configure effective-dated tax profiles/versions/components
+  'gl:read',          // chart of accounts, control mappings, journal evidence
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -62,6 +67,8 @@ const MANAGER_PERMISSIONS: readonly Permission[] = [
   'sales:read',
   'sales:write',
   'sales:pos',
+  'sales:price_override',
+  'sales:discount_override',
   'payment:read',
   'payment:write',
   'shift:read',
@@ -69,6 +76,8 @@ const MANAGER_PERMISSIONS: readonly Permission[] = [
   'shift:approve',
   'sequence:manage',
   'sync:device',
+  'tax:manage',
+  'gl:read',
 ];
 
 const CASHIER_PERMISSIONS: readonly Permission[] = [
@@ -80,7 +89,9 @@ const CASHIER_PERMISSIONS: readonly Permission[] = [
   'inventory:read',
   'stockcount:read',
   'stockcount:count',
-  // Phase 3 — the POS core: sell, accept money, run a shift, sync offline
+  // Phase 3 — the POS core: sell, accept money, run a shift, sync offline.
+  // Deliberately WITHOUT price/discount override powers: a cashier charges
+  // the server-resolved price; overrides need a manager (Phase 3 hardening).
   'sales:read',
   'sales:pos',
   'payment:read',
@@ -102,6 +113,7 @@ const AUDITOR_PERMISSIONS: readonly Permission[] = [
   'sales:read',
   'payment:read',
   'shift:read',
+  'gl:read',
 ];
 
 export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {

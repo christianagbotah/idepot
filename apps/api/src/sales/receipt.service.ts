@@ -155,6 +155,26 @@ export class ReceiptService {
     );
     const due = dueRes.rows[0]!.due;
 
+    // tax evidence as charged (finding #1): per-component lines + the share
+    // that was ADDED to the payable (exclusive components)
+    const taxRes = await ctx.query<Record<string, unknown>>(
+      `SELECT component_name, rate::text AS rate, tax_amount::text AS tax_amount, inclusive
+       FROM invoice_tax_component WHERE invoice_id = $1
+       ORDER BY inclusive, component_name`,
+      [invoiceId],
+    );
+    const taxComponents = taxRes.rows.map((t) => ({
+      name: String(t.component_name),
+      rate: String(t.rate),
+      amount: String(t.tax_amount),
+    }));
+    const taxAddedRes = await ctx.query<{ tax_added: string }>(
+      `SELECT (tax_total - tax_inclusive_total)::text AS tax_added
+       FROM invoice WHERE id = $1 AND tenant_id = $2`,
+      [invoiceId, ctx.tenantId],
+    );
+    const taxAdded = taxAddedRes.rows[0]?.tax_added ?? '0.0000';
+
     const header = await this.tenantHeader(ctx);
     return {
       kind: 'receipt',
@@ -174,6 +194,8 @@ export class ReceiptService {
       subtotal: String(h.subtotal),
       orderDiscount: String(h.order_discount),
       total: String(h.total),
+      taxComponents,
+      taxAdded,
       tenders,
       changeGiven: String(h.change_given),
       amountDue: due !== '0.0000' ? due : String('0.0000'),
@@ -246,6 +268,8 @@ export class ReceiptService {
       subtotal: String(h.amount),
       orderDiscount: '0.0000',
       total: String(h.amount),
+      taxComponents: [],
+      taxAdded: '0.0000',
       tenders,
       changeGiven: String(h.change_given),
       amountDue: '0.0000',

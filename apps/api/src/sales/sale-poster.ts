@@ -5,6 +5,7 @@ import type {
   CreditApplicationDto,
   InvoiceDto,
   InvoiceLineDto,
+  InvoiceTaxComponentDto,
   PaymentDto,
   SaleLineInput,
   StockMovementDto,
@@ -17,6 +18,8 @@ import {
   NotFoundError,
   ValidationError,
   addScaled,
+  allocateOrderDiscount,
+  computeTaxEvidence,
   convertToBaseExact,
   derivePaymentStatus,
   formatMoney,
@@ -25,7 +28,12 @@ import {
   parseQuantity,
   subScaled,
   validateTenderSet,
+  TENDER_GL_PURPOSE,
+  type GlPurpose,
+  type JournalLineSpec,
+  type TaxComponentRule,
 } from '@idepot/domain';
+import { hasPermission } from '@idepot/auth';
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork, type UowContext } from '../db/unit-of-work.js';
@@ -34,6 +42,8 @@ import { assertTenantRefs } from '../inventory/inventory-refs.js';
 import { StockPoster } from '../inventory/stock-poster.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { PricingRepository } from '../pricing/pricing.repository.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
 
 import type { SequencePrincipal } from './document-sequence.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
@@ -82,31 +92,53 @@ interface ResolvedLine {
   resolvedPrice: string;
   priceSource: string;
   priceOverridden: boolean;
-  costAtSale: string | null;
+  /** line-level OR product-level exemption (finding #1) */
+  taxExempt: boolean;
   note: string | null;
   movementBase: string;
 }
 
 /**
- * The atomic sale commit (ROADMAP Phase 3 posting rule). ONE UnitOfWork
- * transaction commits:
+ * The atomic sale commit (ROADMAP Phase 3 posting rule + hardening round
+ * findings #1–#4). ONE UnitOfWork transaction commits:
  *
- *   invoice + lines (server-computed totals, C-1/C-2)
+ *   invoice + lines (server-computed totals, C-1/C-2, tax identity
+ *     total = subtotal − order_discount + tax_total − tax_inclusive_total)
+ *   → TAX EVIDENCE (#1): the effective-dated profile version is resolved
+ *     SERVER-SIDE by the transaction date; named components with
+ *     inclusive/exclusive treatment and exempt applicability are computed
+ *     in exact decimals and stored as immutable transaction-time evidence
+ *     (invoice_tax_component rows + per-line basis) — a later configuration
+ *     change can never rewrite a committed invoice
  *   → stock issue movements via StockPoster (Phase 2 conversion authority
  *     applies: the configured factor is resolved server-side and stored as
  *     evidence; stale/tampered expectations are rejected)
- *   → COGS snapshot per line (cost_at_sale = purchase-price snapshot; the
- *     configurable cost basis arrives with the Phase 4 posting engine)
+ *   → COGS snapshot per line (#3, ADR-0004): AVCO evidence resolved from
+ *     the locked cost state inside the SAME posting (method + policy
+ *     version + unit cost + line COGS stored on the line)
  *   → money tenders as a payment document + explicit allocation (C-6/C-17)
  *   → credit tenders as credit applications consuming deposits oldest-first
  *     (C-20: credit is a tender against a normal sale; totals never include
  *     credit)
+ *   → GL JOURNAL (#2): one balanced entry (Σ debits == Σ credits, enforced
+ *     by the domain builder AND the database constraint trigger) covering
+ *     revenue, tax payable, tender control accounts, change, AR, deposits
+ *     consumed and COGS — committed in the SAME transaction
  *   → audit event + outbox (InvoicePosted / PaymentReceived / CreditApplied /
  *     StockMoved / SaleBackorderException) — outbox events represent
  *     committed facts only.
  *
+ * PRICE AUTHORITY (#4): the client's unitPrice is an EXPECTATION — the
+ * server-resolved price is authoritative. A mismatch is a 409 stale-price
+ * unless the principal holds sales:price_override and supplies override
+ * evidence; a material override (beyond the tenant threshold) additionally
+ * requires a supervisor whose credentials are verified server-side inside
+ * this transaction. Order discounts require sales:discount_override +
+ * evidence under the same threshold rule.
+ *
  * Any throw rolls the WHOLE set back (zero partial state — proven by the
- * kill-mid-post atomicity test). The oversell policy is tenant-configurable
+ * kill-mid-post atomicity tests, both before-any-write and
+ * after-deepest-writes). The oversell policy is tenant-configurable
  * (offline-sync §5b): 'reject' (default) fails the sale with 409;
  * 'allow_backorder' lets the ledger arithmetic apply and raises a prominent
  * exception task.
@@ -118,6 +150,7 @@ export class SalePoster {
     private readonly poster: StockPoster,
     private readonly sequences: DocumentSequenceService,
     private readonly pricing: PricingRepository,
+    private readonly finance: FinancialConfigurationService,
   ) {}
 
   commitSale(principal: SalePrincipal, input: SaleInput): Promise<PostedSale> {
@@ -129,12 +162,13 @@ export class SalePoster {
   /** The posting path itself — shared verbatim by the online command and the
    *  offline sync apply (offline-sync §4.4: sync never bypasses posting). */
   async postSale(ctx: UowContext, principal: SalePrincipal, input: SaleInput): Promise<PostedSale> {
-    // ---- 0. tenant oversell policy --------------------------------------
+    // ---- 0. tenant oversell policy + override thresholds ---------------
     const policyRes = await ctx.query<{ oversell_policy: string }>(
       `SELECT oversell_policy FROM tenant_config WHERE tenant_id = $1`,
       [ctx.tenantId],
     );
     const policy = (policyRes.rows[0]?.oversell_policy as 'reject' | 'allow_backorder') ?? 'reject';
+    const thresholds = await this.finance.overrideThresholds(ctx);
 
     // ---- 1. references (RLS-filtered; cross-tenant == 404) --------------
     await assertTenantRefs(ctx, 'warehouse', 'warehouse', [input.warehouseId]);
@@ -142,14 +176,68 @@ export class SalePoster {
     await assertTenantRefs(ctx, 'product', 'product', input.lines.map((l) => l.productId));
     if (input.shiftId) await this.assertOpenShift(ctx, input.shiftId, principal.userId);
 
-    // ---- 2. resolve lines (units server-authoritative, money server-computed)
-    const resolved = await this.resolveLines(ctx, input.customerId ?? null, input.lines);
+    // the transaction date is SERVER time (offline business time is recorded
+    // as occurred_at evidence; tax and cost resolve by the server business
+    // date — never a client-supplied date)
+    const todayRes = await ctx.query<{ today: string }>(`SELECT CURRENT_DATE::text AS today`);
+    const businessDate = todayRes.rows[0]!.today;
+
+    // ---- 2. resolve lines (units server-authoritative, money server-computed,
+    //         price authority enforced — finding #4) ------------------------
+    const resolved = await this.resolveLines(ctx, principal, input.customerId ?? null, input.lines, {
+      priceThreshold: thresholds.price,
+    });
 
     const subtotal = resolved.reduce((acc, l) => addScaled(acc, MONEY_SCALE, l.lineNet, MONEY_SCALE).value, 0n);
     const discount = parseMoney(input.orderDiscount ?? '0');
     if (discount < 0n) throw new ValidationError('order discount must be >= 0');
     if (discount > subtotal) throw new ConflictError('order discount exceeds the invoice subtotal');
-    const total = subScaled(subtotal, MONEY_SCALE, discount, MONEY_SCALE).value;
+
+    // ---- 2b. order-discount authorization (finding #4) -------------------
+    if (discount > 0n) {
+      const evidence = input.discountOverride ?? null;
+      if (!hasPermission(principal.roles ?? [], 'sales:discount_override') || !evidence) {
+        throw new ForbiddenError(
+          'an order discount requires the sales:discount_override permission and recorded evidence (reason)',
+        );
+      }
+      if (thresholds.discount > 0n && discount > thresholds.discount && !evidence.approver) {
+        throw new ConflictError(
+          `a discount of ${formatMoney(discount)} exceeds the tenant materiality threshold ${formatMoney(thresholds.discount)} — supervisor approval is required`,
+        );
+      }
+      if (evidence.approver) {
+        await this.finance.verifyOverrideApprover(ctx, {
+          username: evidence.approver.username,
+          password: evidence.approver.password,
+          requiredPermission: 'sales:discount_override',
+        });
+      }
+    }
+
+    // ---- 2c. TAX PARTICIPANT (finding #1): server-side resolution by the
+    //      transaction date + immutable evidence, computed BEFORE any write
+    const discountShares = allocateOrderDiscount(resolved.map((l) => l.lineNet), discount);
+    const lineBasis = resolved.map((l, i) => subScaled(l.lineNet, MONEY_SCALE, discountShares[i]!, MONEY_SCALE).value);
+    let taxableBasis = 0n;
+    for (let i = 0; i < resolved.length; i++) {
+      if (!resolved[i]!.taxExempt) {
+        taxableBasis = addScaled(taxableBasis, MONEY_SCALE, lineBasis[i]!, MONEY_SCALE).value;
+      }
+    }
+    const tax = await this.finance.resolveTaxRules(ctx, businessDate);
+    const taxRules: TaxComponentRule[] = tax.rules;
+    const taxEvidence = computeTaxEvidence(taxRules, formatMoney(taxableBasis));
+    const taxTotal = taxEvidence.taxTotal;
+    const taxInclusiveTotal = taxEvidence.taxInclusiveTotal;
+    const taxAdded = taxEvidence.taxAdded;
+    const taxInclusive = taxRules.some((r) => r.inclusive);
+    const total = addScaled(subScaled(subtotal, MONEY_SCALE, discount, MONEY_SCALE).value, MONEY_SCALE, taxAdded, MONEY_SCALE).value;
+
+    // atomicity-test hook: fail INSIDE the tax participant, BEFORE any write
+    if (input.simulateTaxParticipantFailure) {
+      throw new Error('simulated failure inside the tax participant (atomicity test)');
+    }
 
     // ---- 3. tenders (C-6) + credit waterfall (C-20) ----------------------
     const tenders = input.tenders ?? [];
@@ -184,19 +272,16 @@ export class SalePoster {
       deviceId: input.deviceId ?? null,
     });
 
-    // ---- 5. invoice + lines ---------------------------------------------
-    const costTotal = resolved.reduce(
-      (acc, l) => (l.costAtSale != null ? addScaled(acc, MONEY_SCALE, lineNet(l.quantity, l.costAtSale), MONEY_SCALE).value : acc),
-      0n,
-    );
+    // ---- 5. invoice (cost_total lands after the AVCO issues below) ------
     let invoiceId: string;
     try {
       const invRes = await ctx.query<Record<string, unknown>>(
         `INSERT INTO invoice
            (tenant_id, code, customer_id, warehouse_id, shift_id, status,
-            subtotal, order_discount, total, cost_total, change_given, source,
-            client_doc_id, business_date, occurred_at, note, created_by)
-         VALUES ($1,$2,$3,$4,$5,'posted',$6,$7,$8,$9,$10,$11,$12,CURRENT_DATE,$13,$14,$15)
+            subtotal, order_discount, total, change_given, source,
+            client_doc_id, business_date, occurred_at, note, created_by,
+            tax_profile_version_id, tax_inclusive, tax_total, tax_inclusive_total, tax_profile_code)
+         VALUES ($1,$2,$3,$4,$5,'posted',$6,$7,$8,$9,$10,$11,CURRENT_DATE,$12,$13,$14,$15,$16,$17,$18,$19)
          RETURNING id`,
         [
           ctx.tenantId,
@@ -207,13 +292,17 @@ export class SalePoster {
           formatMoney(subtotal),
           formatMoney(discount),
           formatMoney(total),
-          resolved.some((l) => l.costAtSale != null) ? formatMoney(costTotal) : null,
           formatMoney(changeDue),
           input.source ?? 'pos',
           input.clientDocId ?? null,
           input.occurredAt ?? null,
           input.note ?? null,
           principal.userId,
+          tax.versionId,
+          taxInclusive,
+          formatMoney(taxTotal),
+          formatMoney(taxInclusiveTotal),
+          tax.profileCode,
         ],
       );
       invoiceId = String(invRes.rows[0]!.id);
@@ -227,34 +316,29 @@ export class SalePoster {
       throw err;
     }
 
-    for (let i = 0; i < resolved.length; i++) {
-      const l = resolved[i]!;
-      await ctx.query<Record<string, unknown>>(
-        `INSERT INTO invoice_line
-           (tenant_id, invoice_id, product_id, unit_id, quantity, quantity_base,
-            unit_price, line_net, resolved_price, price_source, price_overridden,
-            cost_at_sale, note, sort_order)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+    // ---- 5b. immutable tax evidence rows (append-only) -------------------
+    for (const c of taxEvidence.components) {
+      await ctx.query(
+        `INSERT INTO invoice_tax_component
+           (tenant_id, invoice_id, component_id, component_name, rate, inclusive, taxable_basis, tax_amount)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [
           ctx.tenantId,
           invoiceId,
-          l.productId,
-          l.unitId,
-          l.quantity,
-          l.quantityBase,
-          l.unitPrice,
-          formatMoney(l.lineNet),
-          l.resolvedPrice,
-          l.priceSource,
-          l.priceOverridden,
-          l.costAtSale,
-          l.note,
-          i,
+          c.componentId,
+          c.name,
+          c.rate,
+          c.inclusive,
+          formatMoney(c.taxableBasis),
+          formatMoney(c.taxAmount),
         ],
       );
     }
 
     // ---- 6. stock: issue movements through the coordinator's poster ------
+    // (the poster locks the AVCO cost state in the same critical section and
+    // returns per-movement transaction-time cost evidence — finding #3)
+    const costPolicy = await this.finance.resolveCostPolicy(ctx, businessDate);
     const movements = await this.poster.post(
       ctx,
       resolved.map((l) => ({
@@ -274,11 +358,49 @@ export class SalePoster {
       },
     );
 
-    // ---- 6b. atomicity-test hook: fail AFTER the deepest partial state ---
-    // (a plain Error — an INTERNAL failure, mapped to 'rejected' by the sync
-    // engine and to 500 by the HTTP filter; a conflict is a BUSINESS outcome)
-    if (input.simulateFailureAfterWrites) {
-      throw new Error('simulated failure after partial writes (atomicity test)');
+    // ---- 6b. invoice lines with AVCO cost + tax basis evidence -----------
+    let cogsTotal = 0n;
+    const anyCost = movements.some((m) => m.costValue != null);
+    for (let i = 0; i < resolved.length; i++) {
+      const l = resolved[i]!;
+      const movement = movements[i]!;
+      const cogs = movement.costValue != null ? parseMoney(movement.costValue) : null;
+      if (cogs != null) cogsTotal = addScaled(cogsTotal, MONEY_SCALE, cogs, MONEY_SCALE).value;
+      await ctx.query<Record<string, unknown>>(
+        `INSERT INTO invoice_line
+           (tenant_id, invoice_id, product_id, unit_id, quantity, quantity_base,
+            unit_price, line_net, resolved_price, price_source, price_overridden,
+            cost_at_sale, note, sort_order,
+            tax_exempt, tax_basis, cost_method, cost_policy_version_id, cogs)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+        [
+          ctx.tenantId,
+          invoiceId,
+          l.productId,
+          l.unitId,
+          l.quantity,
+          l.quantityBase,
+          l.unitPrice,
+          formatMoney(l.lineNet),
+          l.resolvedPrice,
+          l.priceSource,
+          l.priceOverridden,
+          movement.unitCost,
+          l.note,
+          i,
+          l.taxExempt,
+          formatMoney(lineBasis[i]!),
+          movement.costValue != null ? costPolicy.method : null,
+          movement.costValue != null ? costPolicy.versionId : null,
+          cogs != null ? formatMoney(cogs) : null,
+        ],
+      );
+    }
+    if (anyCost) {
+      await ctx.query(
+        `UPDATE invoice SET cost_total = $3 WHERE tenant_id = $1 AND id = $2`,
+        [ctx.tenantId, invoiceId, formatMoney(cogsTotal)],
+      );
     }
 
     // ---- 7. backorder detection (policy allow_backorder) -----------------
@@ -356,7 +478,26 @@ export class SalePoster {
       );
     }
 
-    // ---- 10. audit + outbox ----------------------------------------------
+    // ---- 10. GL JOURNAL (finding #2): one balanced entry in the SAME tx --
+    // the receivable leg is what money AND credit have NOT settled
+    const arRemaining = remainingDue > creditTotal ? remainingDue - creditTotal : 0n;
+    const journal = await this.postSaleJournal(ctx, principal, {
+      invoiceId,
+      code,
+      occurredAt: input.occurredAt ?? null,
+      moneyTenders,
+      changeDue,
+      creditTotal,
+      remainingDue: arRemaining,
+      revenue: subScaled(subScaled(subtotal, MONEY_SCALE, discount, MONEY_SCALE).value, MONEY_SCALE, taxInclusiveTotal, MONEY_SCALE).value,
+      taxComponents: taxEvidence.components.map((c) => ({
+        componentId: c.componentId,
+        amount: c.taxAmount,
+      })),
+      cogs: cogsTotal,
+    });
+
+    // ---- 11. audit + outbox ----------------------------------------------
     const amountPaid = allocatable + creditTotal;
     await ctx.audit.record({
       tenantId: ctx.tenantId,
@@ -371,12 +512,20 @@ export class SalePoster {
         customerId: input.customerId ?? null,
         subtotal: formatMoney(subtotal),
         discount: formatMoney(discount),
+        taxProfileCode: tax.profileCode,
+        taxTotal: formatMoney(taxTotal),
+        taxAdded: formatMoney(taxAdded),
+        taxComponents: taxEvidence.components.length,
+        cogsTotal: formatMoney(cogsTotal),
+        costMethod: costPolicy.method,
+        journalId: journal?.id ?? null,
         total: formatMoney(total),
         amountPaid: formatMoney(amountPaid),
         changeDue: formatMoney(changeDue),
         paymentStatus: derivePaymentStatus(total, amountPaid),
         lines: resolved.length,
         movements: movements.length,
+        priceOverrides: resolved.filter((l) => l.priceOverridden).length,
         offline: input.source === 'sync',
       },
     });
@@ -388,6 +537,10 @@ export class SalePoster {
       paymentStatus: derivePaymentStatus(total, amountPaid),
       movementIds: movements.map((m) => m.id),
       clientDocId: input.clientDocId ?? null,
+      taxTotal: formatMoney(taxTotal),
+      taxAdded: formatMoney(taxAdded),
+      cogsTotal: formatMoney(cogsTotal),
+      journalId: journal?.id ?? null,
     });
     if (payment) {
       await ctx.outbox.emit('PaymentReceived', {
@@ -410,8 +563,111 @@ export class SalePoster {
       movementIds: movements.map((m) => m.id),
     });
 
+    // ---- 11b. atomicity-test hook: fail AFTER the deepest partial writes --
+    // (a plain Error — an INTERNAL failure, mapped to 'rejected' by the sync
+    // engine and to 500 by the HTTP filter; a conflict is a BUSINESS outcome)
+    if (input.simulateFailureAfterWrites) {
+      throw new Error('simulated failure after partial writes (atomicity test)');
+    }
+
     const invoice = await this.loadInvoice(ctx, invoiceId);
-    return { invoice, payment, creditApplications, movements, backorder, priceSources: [] };
+    return {
+      invoice,
+      payment,
+      creditApplications,
+      movements,
+      backorder,
+      priceSources: resolved.map((l) => ({
+        productId: l.productId,
+        source: l.priceSource,
+        overridden: l.priceOverridden,
+      })),
+    };
+  }
+
+  /**
+   * The sale journal (finding #2) — one balanced entry covering the whole
+   * posting set, committed in the caller's transaction:
+   *
+   *   DR  tender control accounts (gross money tenders)
+   *   DR  customer deposits (credit consumed)      CR  sales revenue (net)
+   *   DR  accounts receivable (remaining due)      CR  tax payable (per component)
+   *   DR  cost of goods sold                       CR  cash (change given)
+   *                                                CR  inventory (AVCO COGS)
+   *
+   * Algebraic identity: Σ debits = moneyPaid + creditTotal + arRemaining =
+   * max(total, moneyPaid) and Σ credits = revenue + taxTotal + changeDue +
+   * COGS-side inventory = total + changeDue + COGS — equal in both the exact
+   * and the overpaid case (arRemaining = total − allocatable − creditTotal,
+   * the share settled by NEITHER money nor deposit credit).
+   */
+  private async postSaleJournal(
+    ctx: UowContext,
+    principal: SalePrincipal,
+    args: {
+      invoiceId: string;
+      code: string;
+      occurredAt: string | null;
+      moneyTenders: TenderDto[];
+      changeDue: bigint;
+      creditTotal: bigint;
+      remainingDue: bigint;
+      revenue: bigint;
+      taxComponents: Array<{ componentId: string | null; amount: bigint }>;
+      cogs: bigint;
+    },
+  ): Promise<{ id: string; totalDebit: string; totalCredit: string } | null> {
+    const purposes: GlPurpose[] = [
+      'sales_revenue', 'tax_payable', 'accounts_receivable', 'customer_deposit_liability', 'cogs', 'inventory', 'cash',
+    ];
+    for (const t of args.moneyTenders) {
+      const purpose = TENDER_GL_PURPOSE[t.method];
+      if (purpose && !purposes.includes(purpose)) purposes.push(purpose);
+    }
+    const accounts = await this.finance.resolveGlAccounts(ctx, purposes);
+    const componentOverrides = await this.finance.componentAccountOverrides(
+      ctx,
+      args.taxComponents.map((c) => c.componentId),
+    );
+
+    // aggregate tax legs per payable account (components may share one)
+    const taxLegs = new Map<string, bigint>();
+    for (const c of args.taxComponents) {
+      const account =
+        (c.componentId != null ? componentOverrides.get(c.componentId) : undefined) ??
+        accounts.get('tax_payable')!;
+      taxLegs.set(account, addScaled(taxLegs.get(account) ?? 0n, MONEY_SCALE, c.amount, MONEY_SCALE).value);
+    }
+
+    const lines: JournalLineSpec[] = [];
+    for (const t of args.moneyTenders) {
+      const purpose = TENDER_GL_PURPOSE[t.method];
+      if (!purpose) throw new ValidationError(`tender method "${t.method}" has no GL control account`);
+      lines.push({
+        accountId: accounts.get(purpose)!,
+        debit: formatMoney(parseMoney(t.amount)),
+        memo: `sale ${args.code} tender ${t.method}`,
+      });
+    }
+    lines.push({ accountId: accounts.get('customer_deposit_liability')!, debit: formatMoney(args.creditTotal), memo: `sale ${args.code} deposits consumed` });
+    lines.push({ accountId: accounts.get('accounts_receivable')!, debit: formatMoney(args.remainingDue), memo: `sale ${args.code} receivable` });
+    lines.push({ accountId: accounts.get('sales_revenue')!, credit: formatMoney(args.revenue), memo: `sale ${args.code} net revenue` });
+    for (const [accountId, amount] of taxLegs) {
+      lines.push({ accountId, credit: formatMoney(amount), memo: `sale ${args.code} tax` });
+    }
+    lines.push({ accountId: accounts.get('cash')!, credit: formatMoney(args.changeDue), memo: `sale ${args.code} change given` });
+    lines.push({ accountId: accounts.get('cogs')!, debit: formatMoney(args.cogs), memo: `sale ${args.code} COGS` });
+    lines.push({ accountId: accounts.get('inventory')!, credit: formatMoney(args.cogs), memo: `sale ${args.code} inventory issued` });
+
+    return this.finance.postJournal(ctx, {
+      sourceKind: 'invoice',
+      sourceId: args.invoiceId,
+      event: 'sale_posted',
+      description: `Sale ${args.code}`,
+      occurredAt: args.occurredAt,
+      createdBy: principal.userId,
+      lines,
+    });
   }
 
   /**
@@ -587,7 +843,24 @@ export class SalePoster {
 
   /* ------------------------------ resolution ------------------------------ */
 
-  private async resolveLines(ctx: UowContext, customerId: string | null, lines: SaleLineInput[]): Promise<ResolvedLine[]> {
+  /**
+   * Resolves every sale line with SERVER authority:
+   * - units/conversions resolved from configuration (Phase 2 semantics);
+   * - the server price is AUTHORITATIVE (finding #4): a client price that
+   *   disagrees is a 409 stale-price unless the principal holds
+   *   sales:price_override AND supplies override evidence; a material
+   *   override (|Δ| beyond the tenant threshold) additionally requires a
+   *   supervisor whose credentials verify server-side in this transaction;
+   * - product-level tax exemption ORs with the line-level flag (finding #1).
+   */
+  private async resolveLines(
+    ctx: UowContext,
+    principal: SalePrincipal,
+    customerId: string | null,
+    lines: SaleLineInput[],
+    opts: { priceThreshold: bigint },
+  ): Promise<ResolvedLine[]> {
+    const canOverride = hasPermission(principal.roles ?? [], 'sales:price_override');
     const out: ResolvedLine[] = [];
     for (const line of lines) {
       const hasUnit = line.unitId != null && line.unitId !== '';
@@ -600,7 +873,7 @@ export class SalePoster {
 
       // RLS-filtered product load
       const prodRes = await ctx.query<Record<string, unknown>>(
-        `SELECT id, base_unit_id, purchase_price::text AS purchase_price
+        `SELECT id, base_unit_id, tax_exempt
          FROM product WHERE id = $1`,
         [line.productId],
       );
@@ -656,7 +929,7 @@ export class SalePoster {
       }
 
       const quantityBase = hasUnit ? convertToBaseExact(quantity, factor) : quantity;
-      const net = lineNet(quantity, line.unitPrice);
+      const clientPrice = parseMoney(line.unitPrice);
 
       // resolved price evidence (same precedence as the pricing module)
       const priceUnit = unitId ?? baseUnitId;
@@ -665,7 +938,32 @@ export class SalePoster {
         unitId: priceUnit,
         customerId: customerId ?? undefined,
       });
-      const overridden = parseMoney(line.unitPrice) !== parseMoney(resolvedPrice.price);
+      const serverPrice = parseMoney(resolvedPrice.price);
+      const overridden = clientPrice !== serverPrice;
+
+      if (overridden) {
+        // PRICE AUTHORITY (finding #4): without the permission + evidence a
+        // mismatched price is a stale-price conflict, never a posted override
+        const evidence = line.priceOverride ?? null;
+        if (!canOverride || !evidence) {
+          throw new ConflictError(
+            `stale price: client sent ${line.unitPrice} but the server-resolved price is ${resolvedPrice.price} for product ${line.productId} (reload; overriding requires the sales:price_override permission and recorded evidence)`,
+          );
+        }
+        const delta = clientPrice > serverPrice ? clientPrice - serverPrice : serverPrice - clientPrice;
+        if (opts.priceThreshold > 0n && delta > opts.priceThreshold && !evidence.approver) {
+          throw new ConflictError(
+            `price override of ${formatMoney(delta)} exceeds the tenant materiality threshold ${formatMoney(opts.priceThreshold)} — supervisor approval is required`,
+          );
+        }
+        if (evidence.approver) {
+          await this.finance.verifyOverrideApprover(ctx, {
+            username: evidence.approver.username,
+            password: evidence.approver.password,
+            requiredPermission: 'sales:price_override',
+          });
+        }
+      }
 
       out.push({
         productId: line.productId,
@@ -673,11 +971,11 @@ export class SalePoster {
         quantity,
         quantityBase,
         unitPrice: line.unitPrice,
-        lineNet: net,
+        lineNet: lineNet(quantity, line.unitPrice),
         resolvedPrice: resolvedPrice.price,
         priceSource: resolvedPrice.source,
         priceOverridden: overridden,
-        costAtSale: product.purchase_price != null ? String(product.purchase_price) : null,
+        taxExempt: Boolean(product.tax_exempt) || Boolean(line.taxExempt),
         note: line.note ?? null,
         movementBase: quantityBase,
       });
@@ -733,7 +1031,9 @@ export class SalePoster {
               i.warehouse_id, i.status, i.subtotal::text AS subtotal,
               i.order_discount::text AS order_discount, i.total::text AS total,
               i.cost_total::text AS cost_total, i.change_given::text AS change_given,
-              i.shift_id, i.source, i.client_doc_id, i.note, i.created_by, i.created_at
+              i.shift_id, i.source, i.client_doc_id, i.note, i.created_by, i.created_at,
+              i.tax_profile_code, i.tax_inclusive,
+              i.tax_total::text AS tax_total, i.tax_inclusive_total::text AS tax_inclusive_total
        FROM invoice i
        LEFT JOIN customer c ON c.id = i.customer_id
        WHERE i.id = $1 AND i.tenant_id = $2`,
@@ -746,7 +1046,8 @@ export class SalePoster {
               quantity_base::text AS quantity_base, unit_price::text AS unit_price,
               line_net::text AS line_net, resolved_price::text AS resolved_price,
               price_source, price_overridden, cost_at_sale::text AS cost_at_sale,
-              note, sort_order
+              note, sort_order, tax_exempt, tax_basis::text AS tax_basis,
+              cost_method, cogs::text AS cogs
        FROM invoice_line WHERE invoice_id = $1 ORDER BY sort_order, id`,
       [invoiceId],
     );
@@ -763,6 +1064,28 @@ export class SalePoster {
       priceOverridden: Boolean(r.price_overridden),
       costAtSale: r.cost_at_sale != null ? String(r.cost_at_sale) : null,
       note: r.note ? String(r.note) : null,
+      taxExempt: Boolean(r.tax_exempt),
+      taxBasis: r.tax_basis != null ? String(r.tax_basis) : null,
+      costMethod: r.cost_method ? String(r.cost_method) : null,
+      cogs: r.cogs != null ? String(r.cogs) : null,
+    }));
+
+    // immutable transaction-time tax evidence (finding #1)
+    const taxRes = await ctx.query<Record<string, unknown>>(
+      `SELECT id, component_id, component_name, rate::text AS rate, inclusive,
+              taxable_basis::text AS taxable_basis, tax_amount::text AS tax_amount
+       FROM invoice_tax_component WHERE invoice_id = $1
+       ORDER BY inclusive, component_name`,
+      [invoiceId],
+    );
+    const taxComponents: InvoiceTaxComponentDto[] = taxRes.rows.map((r) => ({
+      id: String(r.id),
+      componentId: r.component_id ? String(r.component_id) : null,
+      name: String(r.component_name),
+      rate: String(r.rate),
+      inclusive: Boolean(r.inclusive),
+      taxableBasis: String(r.taxable_basis),
+      taxAmount: String(r.tax_amount),
     }));
 
     // AR subledger derivation (C-16/C-17): paid = Σ allocations + Σ credits
@@ -775,6 +1098,8 @@ export class SalePoster {
     const amountPaid = parseMoney(allocRes.rows[0]!.paid);
     const total = parseMoney(String(h.total));
     const amountDue = total > amountPaid ? total - amountPaid : 0n;
+    const taxTotal = parseMoney(String(h.tax_total));
+    const taxInclusiveTotal = parseMoney(String(h.tax_inclusive_total));
 
     return {
       id: String(h.id),
@@ -796,6 +1121,11 @@ export class SalePoster {
       source: String(h.source),
       clientDocId: h.client_doc_id ? String(h.client_doc_id) : null,
       note: h.note ? String(h.note) : null,
+      taxProfileCode: h.tax_profile_code ? String(h.tax_profile_code) : null,
+      taxInclusive: Boolean(h.tax_inclusive),
+      taxTotal: String(h.tax_total),
+      taxAdded: formatMoney(taxTotal - taxInclusiveTotal),
+      taxComponents,
       lines,
       createdBy: h.created_by ? String(h.created_by) : null,
       createdAt: new Date(h.created_at as string).toISOString(),
