@@ -20,7 +20,12 @@ export type TenantRefTable =
   | 'product_unit'
   | 'stock_count'
   | 'stock_adjustment'
-  | 'transfer';
+  | 'transfer'
+  // Phase 3 — sales references
+  | 'customer'
+  | 'device'
+  | 'customer_deposit'
+  | 'invoice';
 
 export async function assertTenantRef(
   ctx: UowContext,

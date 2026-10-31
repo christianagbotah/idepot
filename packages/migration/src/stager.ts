@@ -86,6 +86,9 @@ export async function stageTable(
 }
 
 function textCell(v: LegacyCell | undefined): string {
-  if (v === null) return '\\N';
-  return (v ?? '').replace(/\\/g, '\\\\').replace(/\t/g, '\\t').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+  // undefined (column absent from the staged row) must stage as SQL NULL —
+  // the checksum treats a missing cell as null, so staging has to agree or
+  // extended-column specs would never verify (staging '' ≠ legacy_raw NULL)
+  if (v === null || v === undefined) return '\\N';
+  return String(v).replace(/\\/g, '\\\\').replace(/\t/g, '\\t').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
 }

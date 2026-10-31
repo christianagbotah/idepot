@@ -257,3 +257,22 @@ export interface TransferDto {
   lines: TransferLineDto[];
   createdAt: string;
 }
+
+/* ================================ Phase 3 ================================= */
+
+export interface ReceiptLinePayload {
+  name: string; quantity: string; unitCode: string | null; unitPrice: string; lineNet: string;
+}
+export interface ReceiptPayloadDto {
+  kind: 'receipt' | 'invoice_a4';
+  businessName: string; businessPhone: string | null; businessAddress: string | null;
+  code: string; occurredAt: string;
+  customerName: string | null; customerPhone: string | null;
+  cashierName: string | null;
+  lines: ReceiptLinePayload[];
+  subtotal: string; orderDiscount: string; total: string;
+  tenders: Array<{ method: string; amount: string; detail: string | null }>;
+  changeGiven: string; amountDue: string;
+  balanceOwedThisInvoice: string;
+  note: string | null;
+}

@@ -94,7 +94,12 @@ import { z } from 'zod';
 const OpeningStockSchema = z.object({
   warehouseId: z.string().uuid(),
   lines: z
-    .array(z.object({ productId: z.string().uuid(), quantityBase: z.string().regex(/^-?\d{1,14}(\.\d{1,6})?$/) }))
+    .array(z.object({
+      productId: z.string().uuid(),
+      quantityBase: z.string().regex(/^-?\d{1,14}(\.\d{1,6})?$/),
+      /** optional AVCO cost layer seed (ADR-0004), decimal(18,4) */
+      unitCost: z.string().regex(/^\d{1,14}(\.\d{1,4})?$/).nullish(),
+    }))
     .min(1)
     .max(2000),
   authority: z.enum(['physical_count', 'legacy_quantity', 'system_entry']).default('physical_count'),

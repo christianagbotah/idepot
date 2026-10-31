@@ -10,7 +10,7 @@ import { createApiFixture } from './helpers.js';
 interface MatrixCase {
   role: keyof ApiFixture['tenantA']['users'];
   method: 'get' | 'post' | 'patch';
-  path: 'warehouses' | 'internal/change-feed' | 'auth/devices' | 'sample-documents';
+  path: 'warehouses' | 'internal/change-feed' | 'auth/devices' | 'sample-documents' | 'tax/profiles' | 'gl/journals' | 'gl/accounts';
   body?: Record<string, unknown>;
   expect: number;
 }
@@ -39,6 +39,19 @@ const MATRIX: MatrixCase[] = [
   { role: 'manager', method: 'post', path: 'sample-documents', body: { code: 'SD-M', totalAmount: '10.0000' }, expect: 201 },
   { role: 'cashier', method: 'post', path: 'sample-documents', body: { code: 'SD-C', totalAmount: '10.0000' }, expect: 403 },
   { role: 'auditor', method: 'post', path: 'sample-documents', body: { code: 'SD-V', totalAmount: '10.0000' }, expect: 403 },
+  // tax:manage (Phase 3 hardening — financial configuration is manager+)
+  { role: 'owner', method: 'get', path: 'tax/profiles', expect: 200 },
+  { role: 'admin', method: 'get', path: 'tax/profiles', expect: 200 },
+  { role: 'manager', method: 'get', path: 'tax/profiles', expect: 200 },
+  { role: 'cashier', method: 'get', path: 'tax/profiles', expect: 403 },
+  { role: 'auditor', method: 'get', path: 'tax/profiles', expect: 403 },
+  // gl:read (auditor reads the financial evidence)
+  { role: 'owner', method: 'get', path: 'gl/journals', expect: 200 },
+  { role: 'manager', method: 'get', path: 'gl/journals', expect: 200 },
+  { role: 'auditor', method: 'get', path: 'gl/journals', expect: 200 },
+  { role: 'cashier', method: 'get', path: 'gl/journals', expect: 403 },
+  { role: 'auditor', method: 'get', path: 'gl/accounts', expect: 200 },
+  { role: 'cashier', method: 'get', path: 'gl/accounts', expect: 403 },
 ];
 
 describe('RBAC authorization matrix', () => {
@@ -48,7 +61,9 @@ describe('RBAC authorization matrix', () => {
     fx = await createApiFixture();
   }, 120_000);
   afterAll(async () => {
-    await fx.close();
+    // beforeAll may have failed before assigning fx (e.g. embedded PG boot);
+    // teardown must not turn a failed setup into a crash on undefined.
+    await fx?.close();
   });
 
   it.each(MATRIX)('$role $method /$path -> $expect', async (c) => {
@@ -100,7 +115,9 @@ describe('cross-tenant access impossibility (RLS + scoping)', () => {
     warehouseAId = (res.body as { id: string }).id;
   }, 120_000);
   afterAll(async () => {
-    await fx.close();
+    // beforeAll may have failed before assigning fx (e.g. embedded PG boot);
+    // teardown must not turn a failed setup into a crash on undefined.
+    await fx?.close();
   });
 
   it('tenant B cannot read tenant A warehouse (404 semantics)', async () => {

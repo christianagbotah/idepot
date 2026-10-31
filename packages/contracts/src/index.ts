@@ -119,6 +119,9 @@ export const CreateProductSchema = z.object({
   soldInUnits: z.boolean().optional(),
   sellingPrice: money(),
   purchasePrice: money().nullish(),
+  /** product-level tax exemption default (Phase 3 hardening, finding #1);
+   *  a line may still flag exemption explicitly */
+  taxExempt: z.boolean().optional(),
   status: ProductStatusSchema.optional(),
 });
 export type CreateProduct = z.infer<typeof CreateProductSchema>;
@@ -133,6 +136,7 @@ export const UpdateProductSchema = z.object({
   soldInUnits: z.boolean().optional(),
   sellingPrice: money().optional(),
   purchasePrice: money().nullish(),
+  taxExempt: z.boolean().optional(),
   status: ProductStatusSchema.optional(),
 });
 export type UpdateProduct = z.infer<typeof UpdateProductSchema>;
@@ -273,6 +277,9 @@ export type StockMovementDto = {
   unitId: string | null; quantityTransacted: string | null; conversionFactor: string | null;
   reason: string | null; sourceDocumentType: string | null; sourceDocumentId: string | null;
   transferId: string | null; reversalOf: string | null; occurredAt: string;
+  /** ADR-0004 AVCO transaction-time cost evidence on the ledger row
+   *  (receipts: layer unit cost; issues: resolved average). */
+  unitCost: string | null; costValue: string | null;
 };
 
 export const MovementEntrySchema = z.object({
@@ -364,6 +371,9 @@ export const CreateStockAdjustmentSchema = z.object({
     unitId: uuid().nullish(),
     quantityTransacted: qty().nullish(),
     conversionFactor: qty().nullish(),
+    /** optional AVCO cost layer for RECEIVING adjustments (ADR-0004,
+     *  decimal(18,4)) — issues never take a caller cost */
+    unitCost: money().nullish(),
     note: z.string().max(500).nullish(),
   })).min(1).max(2000),
 });
@@ -413,4 +423,505 @@ export interface TransferDto {
   dispatchedAt: string | null; dispatchedBy: string | null;
   receivedAt: string | null; receivedBy: string | null;
   note: string | null; lines: TransferLineDto[]; createdAt: string;
+}
+
+/* ================================ Phase 3 ================================= */
+/* Sales & POS. Money is decimal(18,4) as string; quantities decimal(18,6).   */
+
+/* ---------------------------- document sequences -------------------------- */
+
+export const CreateSequenceSchema = z.object({
+  docType: z.enum(['QUOTATION', 'SALE_ORDER', 'INVOICE', 'RECEIPT', 'WAYBILL', 'DEPOSIT']),
+  prefix: z.string().min(1).max(16),
+  branchId: uuid().nullish(),
+  padding: z.number().int().min(1).max(12).optional(),
+});
+export type CreateSequence = z.infer<typeof CreateSequenceSchema>;
+export interface DocumentSequenceDto {
+  id: string; docType: string; prefix: string; branchId: string | null;
+  nextValue: number; padding: number;
+}
+
+/** Pre-printed booklet import (document-numbering §2): codes are imported
+ *  verbatim, kept unique, allocated in order with locking, spoilage keeps
+ *  the reason — the legacy booklet workflow preserved without the races. */
+export const ImportBookletSchema = z.object({
+  docType: z.enum(['INVOICE', 'WAYBILL']),
+  codes: z.array(z.string().min(1).max(40)).min(1).max(5000),
+  codeRange: z.string().max(80).optional(),
+});
+export type ImportBooklet = z.infer<typeof ImportBookletSchema>;
+export interface BookletDto {
+  id: string; docType: string; codeRange: string | null; codeCount: number;
+  openCount: number; createdBy: string | null; createdAt: string;
+}
+export interface BookletCodeDto {
+  id: string; bookletId: string; code: string;
+  status: 'open' | 'allocated' | 'not_used'; reason: string | null;
+}
+
+export const SpoilCodeSchema = z.object({ reason: z.string().min(10).max(500) });
+export type SpoilCode = z.infer<typeof SpoilCodeSchema>;
+
+/** Offline device lease: a contiguous numeric range a terminal may number
+ *  offline sales with; reconciliation happens at sync (offline-sync §3). */
+export const IssueLeaseSchema = z.object({
+  deviceId: uuid(),
+  docType: z.enum(['INVOICE', 'RECEIPT', 'SALE_ORDER', 'WAYBILL']),
+  size: z.number().int().min(1).max(1000).optional(),
+});
+export type IssueLease = z.infer<typeof IssueLeaseSchema>;
+export interface SequenceLeaseDto {
+  id: string; deviceId: string; docType: string;
+  startValue: number; endValue: number; prefix: string;
+  issuedAt: string; expiresAt: string;
+}
+
+/* -------------------------------- shifts ---------------------------------- */
+
+export const OpenShiftSchema = z.object({
+  warehouseId: uuid(),
+  deviceId: uuid().nullish(),
+  openingFloat: money(),
+});
+export type OpenShift = z.infer<typeof OpenShiftSchema>;
+
+export const ShiftCashMovementSchema = z.object({
+  direction: z.enum(['in', 'out']),
+  amount: money(),
+  reason: z.string().min(3).max(300),
+});
+export type ShiftCashMovement = z.infer<typeof ShiftCashMovementSchema>;
+
+export const CloseShiftSchema = z.object({
+  countedCash: money(),
+  note: z.string().max(2000).nullish(),
+});
+export type CloseShift = z.infer<typeof CloseShiftSchema>;
+
+export interface ShiftCashMovementDto {
+  id: string; shiftId: string; direction: 'in' | 'out';
+  amount: string; reason: string; createdAt: string;
+}
+export interface ShiftDto {
+  id: string; code: string; userId: string; userName: string | null;
+  deviceId: string | null; warehouseId: string;
+  status: 'open' | 'closed'; openingFloat: string;
+  openedAt: string; closedAt: string | null;
+  expectedCash: string | null; countedCash: string | null; variance: string | null;
+  note: string | null; movements: ShiftCashMovementDto[]; createdAt: string;
+}
+
+/* ------------------------------ sale / invoice ----------------------------- */
+
+export const SaleLineSchema = z.object({
+  productId: uuid(),
+  quantityBase: qty().nullish(),
+  /** cross-unit evidence: the server resolves the configured factor
+   *  authoritatively (Phase 2 review fix 3 semantics apply to sales too) */
+  unitId: uuid().nullish(),
+  quantityTransacted: qty().nullish(),
+  conversionFactor: qty().nullish(),
+  /** the client's EXPECTED price for one transacted unit. The server price
+   *  is AUTHORITATIVE: a mismatch is a 409 stale-price unless the principal
+   *  holds sales:price_override and supplies override evidence (Phase 3
+   *  hardening — a cashier can no longer submit an arbitrary price). */
+  unitPrice: money(),
+  /** line-level tax exemption flag (ORs with product.tax_exempt) */
+  taxExempt: z.boolean().nullish(),
+  /** required when unitPrice differs from the server-resolved price */
+  priceOverride: z.object({
+    reason: z.string().min(4).max(500),
+    /** supervisor approval for material overrides (threshold-configured) */
+    approver: z.object({
+      username: z.string().min(3).max(200),
+      password: z.string().min(6).max(200),
+    }).optional(),
+  }).nullish(),
+  note: z.string().max(300).nullish(),
+});
+export type SaleLineInput = z.infer<typeof SaleLineSchema>;
+
+export const TenderSchema = z.object({
+  method: z.enum(['cash', 'momo', 'cheque', 'bank_transfer', 'credit']),
+  amount: money(),
+  depositId: uuid().nullish(),
+  momoProvider: z.enum(['MTN', 'Vodafone', 'AirtelTigo']).nullish(),
+  momoPhone: z.string().max(25).nullish(),
+  momoTransactionId: z.string().max(80).nullish(),
+  chequeBank: z.string().max(120).nullish(),
+  chequeBranch: z.string().max(120).nullish(),
+  chequeNumber: z.string().max(80).nullish(),
+  reference: z.string().max(120).nullish(),
+});
+export type TenderDto = z.infer<typeof TenderSchema>;
+
+/** The atomic POS/counter sale: invoice + stock issues + tenders (+ credit
+ *  applications) + audit + outbox commit in ONE transaction (ROADMAP Phase 3
+ *  posting rule). clientDocId makes an offline capture replay-safe. */
+export const CommitSaleSchema = z.object({
+  warehouseId: uuid(),
+  customerId: uuid().nullish(),
+  shiftId: uuid().nullish(),
+  note: z.string().max(2000).nullish(),
+  orderDiscount: money().optional(),
+  /** required when orderDiscount > 0 (sales:discount_override + reason;
+   *  Phase 3 hardening: an unauthorized discount is a 403) */
+  discountOverride: z.object({
+    reason: z.string().min(4).max(500),
+    approver: z.object({
+      username: z.string().min(3).max(200),
+      password: z.string().min(6).max(200),
+    }).optional(),
+  }).nullish(),
+  lines: z.array(SaleLineSchema).min(1).max(2000).refine(
+    (lines) => new Set(lines.map((l) => l.productId)).size === lines.length,
+    { message: 'duplicate productId in sale lines: each product may appear at most once' },
+  ),
+  tenders: z.array(TenderSchema).max(10).default([]),
+  /** offline capture identity (UUIDv7, client-generated) */
+  clientDocId: uuid().nullish(),
+  /** offline-leased document number (invoice); server-allocated when absent */
+  docNumber: z.string().min(1).max(40).nullish(),
+  /** offline business time — recorded, server received_at authoritative */
+  occurredAt: z.string().datetime().nullish(),
+  /** injects a failure inside the tax participant (BEFORE any write) —
+   *  proves the whole posting set rolls back (atomicity test) */
+  simulateTaxParticipantFailure: z.boolean().optional(),
+  /** injects a failure AFTER the deepest partial writes (invoice+lines+tax
+   *  evidence+stock+COGS+tenders+allocations+journal) — proves the whole
+   *  posting set rolls back (atomicity test) */
+  simulateFailureAfterWrites: z.boolean().optional(),
+});
+export type CommitSale = z.infer<typeof CommitSaleSchema>;
+
+export interface InvoiceLineDto {
+  id: string; productId: string; unitId: string | null;
+  quantity: string; quantityBase: string;
+  unitPrice: string; lineNet: string;
+  resolvedPrice: string | null; priceSource: string | null; priceOverridden: boolean;
+  costAtSale: string | null; note: string | null;
+  taxExempt: boolean; taxBasis: string | null;
+  costMethod: string | null; cogs: string | null;
+}
+/** Immutable transaction-time tax evidence (Phase 3 hardening): a snapshot
+ *  of the component name/rate/basis/amount as resolved at sale time — a
+ *  later configuration change can never rewrite a historical invoice. */
+export interface InvoiceTaxComponentDto {
+  id: string; componentId: string | null; name: string;
+  rate: string; inclusive: boolean;
+  taxableBasis: string; taxAmount: string;
+}
+export interface InvoiceDto {
+  id: string; code: string; salesOrderId: string | null;
+  customerId: string | null; customerName: string | null; warehouseId: string;
+  status: 'posted' | 'voided';
+  paymentStatus: 'unpaid' | 'part_paid' | 'paid' | 'over_paid';
+  subtotal: string; orderDiscount: string; total: string;
+  amountPaid: string; amountDue: string; costTotal: string | null;
+  changeGiven: string; shiftId: string | null; source: string;
+  clientDocId: string | null; note: string | null;
+  taxProfileCode: string | null; taxInclusive: boolean;
+  taxTotal: string; taxAdded: string; taxComponents: InvoiceTaxComponentDto[];
+  lines: InvoiceLineDto[]; createdBy: string | null; createdAt: string;
+}
+
+/* --------------------- tax configuration (Phase 3 hardening) --------------------- */
+
+/** decimal(9,6) rate as a FRACTION (0.075000 = 7.5%) — never a percentage. */
+const rate = () => z.string().regex(/^(0|[0-9]{0,5})\.\d{1,6}$/, 'decimal(9,6) fraction as string, e.g. "0.075000"');
+
+export const TaxComponentInputSchema = z.object({
+  name: z.string().min(2).max(60),
+  rate: rate(),
+  /** true = embedded in the charged price; false = added on top */
+  inclusive: z.boolean(),
+  /** deterministic evaluation order */
+  seq: z.number().int().min(0).max(999).optional(),
+  /** optional per-component payable account override */
+  glAccountCode: z.string().min(1).max(20).nullish(),
+});
+export type TaxComponentInput = z.infer<typeof TaxComponentInputSchema>;
+
+export const CreateTaxProfileSchema = z.object({
+  code: z.string().min(2).max(40),
+  name: z.string().min(2).max(120),
+  isDefault: z.boolean().optional(),
+});
+export type CreateTaxProfile = z.infer<typeof CreateTaxProfileSchema>;
+
+export const CreateTaxVersionSchema = z.object({
+  /** defaults to max(version)+1 — the lawful way rates change */
+  version: z.number().int().min(1).max(10000).optional(),
+  effectiveFrom: isoDate(),
+  effectiveTo: isoDate().nullish(),
+  note: z.string().max(500).nullish(),
+  components: z.array(TaxComponentInputSchema).max(20),
+});
+export type CreateTaxVersion = z.infer<typeof CreateTaxVersionSchema>;
+
+export interface TaxComponentDto {
+  id: string; name: string; rate: string; inclusive: boolean; seq: number;
+  glAccountCode: string | null;
+}
+export interface TaxProfileVersionDto {
+  id: string; version: number; effectiveFrom: string; effectiveTo: string | null;
+  note: string | null; components: TaxComponentDto[];
+}
+export interface TaxProfileDto {
+  id: string; code: string; name: string; isActive: boolean; isDefault: boolean;
+  versions: TaxProfileVersionDto[];
+}
+
+/* --------------------------- GL primitives (minimum) --------------------------- */
+
+export interface GlAccountDto {
+  id: string; code: string; name: string;
+  accountType: 'asset' | 'liability' | 'equity' | 'revenue' | 'expense';
+  isActive: boolean;
+}
+export interface GlMappingDto {
+  purpose: string; accountCode: string; accountName: string; accountId: string;
+}
+export interface JournalLineDto {
+  id: string; accountId: string; accountCode: string; accountName: string;
+  debit: string; credit: string; memo: string | null;
+}
+export interface JournalEntryDto {
+  id: string; sourceKind: string; sourceId: string; event: string;
+  description: string | null; occurredAt: string;
+  totalDebit: string; totalCredit: string;
+  lines: JournalLineDto[];
+}
+
+/* -------------------------------- payments --------------------------------- */
+
+export const ReceivePaymentSchema = z.object({
+  customerId: uuid(),
+  invoiceId: uuid().nullish(),
+  amount: money(),
+  tenders: z.array(TenderSchema.omit({ depositId: true })).min(1).max(10),
+  /** explicit allocation targets; when empty the receipt auto-allocates
+   *  oldest-invoice-first (legacy FIFO preserved, but with explicit rows) */
+  allocations: z.array(z.object({ invoiceId: uuid(), amount: money() })).max(200).optional(),
+  shiftId: uuid().nullish(),
+  clientDocId: uuid().nullish(),
+  occurredAt: z.string().datetime().nullish(),
+}).refine(
+  (dto) => {
+    const tenderSum = dto.tenders.reduce((acc, t) => acc + Number(t.amount), 0);
+    return Math.abs(tenderSum - Number(dto.amount)) < 5e-5;
+  },
+  { message: 'Σ tenders must equal the payment amount' },
+);
+export type ReceivePayment = z.infer<typeof ReceivePaymentSchema>;
+
+export interface PaymentTenderDto {
+  id: string; method: 'cash' | 'momo' | 'cheque' | 'bank_transfer' | 'credit';
+  amount: string; momoProvider: string | null; momoPhone: string | null;
+  momoTransactionId: string | null; chequeBank: string | null; chequeBranch: string | null;
+  chequeNumber: string | null; reference: string | null;
+}
+export interface PaymentAllocationDto {
+  id: string; invoiceId: string; invoiceCode: string | null; amount: string;
+}
+export interface PaymentDto {
+  id: string; code: string; customerId: string | null; customerName: string | null;
+  amount: string; changeGiven: string; unapplied: string;
+  shiftId: string | null; clientDocId: string | null; source: string;
+  tenders: PaymentTenderDto[]; allocations: PaymentAllocationDto[];
+  createdBy: string | null; createdAt: string;
+}
+
+/* -------------------------- deposits / credits ----------------------------- */
+
+export const CreateDepositSchema = z.object({
+  customerId: uuid(),
+  amount: money(),
+  tenders: z.array(TenderSchema.omit({ depositId: true }).extend({ method: z.enum(['cash', 'momo', 'cheque', 'bank_transfer']) })).min(1).max(10),
+  shiftId: uuid().nullish(),
+  note: z.string().max(500).nullish(),
+  clientDocId: uuid().nullish(),
+});
+export type CreateDeposit = z.infer<typeof CreateDepositSchema>;
+
+export const ApplyCreditSchema = z.object({
+  depositId: uuid(),
+  invoiceId: uuid(),
+  amount: money(),
+});
+export type ApplyCredit = z.infer<typeof ApplyCreditSchema>;
+
+export interface CustomerDepositDto {
+  id: string; code: string; customerId: string; customerName: string | null;
+  amount: string; appliedAmount: string; remainingAmount: string;
+  paymentId: string | null; status: 'active' | 'exhausted';
+  note: string | null; createdBy: string | null; createdAt: string;
+}
+export interface CreditApplicationDto {
+  id: string; depositId: string; depositCode: string | null;
+  invoiceId: string; invoiceCode: string | null; amount: string; createdAt: string;
+}
+
+/* -------------------------- quotations / orders ---------------------------- */
+
+export const CreateQuotationSchema = z.object({
+  warehouseId: uuid(),
+  customerId: uuid().nullish(),
+  note: z.string().max(2000).nullish(),
+  validUntil: isoDate().nullish(),
+  lines: z.array(z.object({
+    productId: uuid(),
+    unitId: uuid().nullish(),
+    quantityTransacted: qty().nullish(),
+    quantityBase: qty().nullish(),
+    unitPrice: money(),
+  })).min(1).max(2000).refine(
+    (lines) => new Set(lines.map((l) => l.productId)).size === lines.length,
+    { message: 'duplicate productId in quotation lines' },
+  ),
+});
+export type CreateQuotation = z.infer<typeof CreateQuotationSchema>;
+export interface QuotationLineDto {
+  id: string; productId: string; unitId: string | null;
+  quantity: string; quantityBase: string; unitPrice: string; lineNet: string;
+}
+export interface QuotationDto {
+  id: string; code: string; warehouseId: string; customerId: string | null;
+  customerName: string | null; status: 'draft' | 'converted' | 'cancelled';
+  subtotal: string; total: string; validUntil: string | null;
+  convertedOrderId: string | null; note: string | null;
+  lines: QuotationLineDto[]; createdBy: string | null; createdAt: string;
+}
+
+export const CreateSalesOrderSchema = z.object({
+  warehouseId: uuid(),
+  customerId: uuid().nullish(),
+  quotationId: uuid().nullish(),
+  note: z.string().max(2000).nullish(),
+  orderDiscount: money().optional(),
+  lines: z.array(z.object({
+    productId: uuid(),
+    unitId: uuid().nullish(),
+    quantityTransacted: qty().nullish(),
+    quantityBase: qty().nullish(),
+    unitPrice: money(),
+  })).min(1).max(2000).refine(
+    (lines) => new Set(lines.map((l) => l.productId)).size === lines.length,
+    { message: 'duplicate productId in order lines' },
+  ),
+});
+export type CreateSalesOrder = z.infer<typeof CreateSalesOrderSchema>;
+
+export const ConfirmSalesOrderSchema = z.object({
+  tenders: z.array(TenderSchema).max(10).default([]),
+  shiftId: uuid().nullish(),
+});
+export type ConfirmSalesOrder = z.infer<typeof ConfirmSalesOrderSchema>;
+
+export interface SalesOrderLineDto {
+  id: string; productId: string; unitId: string | null;
+  quantity: string; quantityBase: string; unitPrice: string; lineNet: string;
+  fulfilledQuantityBase: string;
+}
+export interface SalesOrderDto {
+  id: string; code: string; warehouseId: string; customerId: string | null;
+  customerName: string | null;
+  status: 'draft' | 'confirmed' | 'partially_fulfilled' | 'fulfilled' | 'closed' | 'cancelled';
+  subtotal: string; orderDiscount: string; total: string;
+  invoiceId: string | null; invoiceCode: string | null;
+  quotationId: string | null; note: string | null;
+  lines: SalesOrderLineDto[]; createdBy: string | null; createdAt: string;
+  confirmedAt: string | null;
+}
+
+/* ------------------------------ fulfillments ------------------------------- */
+
+export const CreateFulfillmentSchema = z.object({
+  salesOrderId: uuid(),
+  code: z.string().min(2).max(40).optional(),
+  note: z.string().max(2000).nullish(),
+  lines: z.array(z.object({
+    orderLineId: uuid(),
+    quantityBase: qty(),
+  })).min(1).max(2000),
+});
+export type CreateFulfillment = z.infer<typeof CreateFulfillmentSchema>;
+
+export interface FulfillmentLineDto {
+  id: string; orderLineId: string; productId: string; quantityBase: string;
+}
+export interface FulfillmentDto {
+  id: string; code: string; salesOrderId: string; salesOrderCode: string | null;
+  warehouseId: string; status: 'draft' | 'dispatched' | 'delivered' | 'cancelled';
+  dispatchedBy: string | null; dispatchedAt: string | null;
+  deliveredBy: string | null; deliveredAt: string | null;
+  note: string | null; lines: FulfillmentLineDto[]; createdBy: string | null; createdAt: string;
+}
+
+/* --------------------------------- sync ------------------------------------ */
+
+/** Offline push envelope (offline-sync §4): batched, dependency-ordered,
+ *  idempotent by eventId; the server applies each event in exactly one PG
+ *  transaction through the same posting coordinator as online commands. */
+export const SyncPushSchema = z.object({
+  deviceId: uuid(),
+  events: z.array(z.object({
+    eventId: uuid(),
+    idempotencyKey: z.string().min(8).max(120),
+    type: z.enum(['sale.create', 'payment.receive', 'deposit.create', 'customer.create']),
+    payload: z.unknown(),
+    occurredAt: z.string().datetime().nullish(),
+  })).min(1).max(200),
+});
+export type SyncPush = z.infer<typeof SyncPushSchema>;
+
+export type SyncEventOutcome =
+  | { eventId: string; status: 'applied'; result: Record<string, unknown> }
+  | { eventId: string; status: 'duplicate'; result: Record<string, unknown> }
+  | { eventId: string; status: 'conflict'; code: string; message: string }
+  | { eventId: string; status: 'rejected'; code: string; message: string };
+export interface SyncPushResponseDto {
+  outcomes: SyncEventOutcome[];
+  serverTime: string;
+}
+
+export const SyncPullQuerySchema = z.object({
+  cursor: z.string().uuid().optional(),
+  limit: z.string().regex(/^\d+$/).optional(),
+});
+/** Device-replica pull page (offline-sync §4 pull): resumable cursor over
+ *  the tenant's committed-fact stream. */
+export interface ChangeFeedEntryDto {
+  id: string; type: string; payload: Record<string, unknown>; occurredAt: string; status: string;
+}
+export interface SyncPullResponseDto {
+  entries: ChangeFeedEntryDto[];
+  cursor: string | null;
+  hasMore: boolean;
+}
+
+/* -------------------------------- receipts --------------------------------- */
+
+/** Print payload for the hardware bridge / browser print (pos-hardware §4).
+ *  Thermal and A4 templates render from the same payload. */
+export interface ReceiptLinePayload {
+  name: string; quantity: string; unitCode: string | null; unitPrice: string; lineNet: string;
+}
+export interface ReceiptPayloadDto {
+  kind: 'receipt' | 'invoice_a4';
+  businessName: string; businessPhone: string | null; businessAddress: string | null;
+  code: string; occurredAt: string;
+  customerName: string | null; customerPhone: string | null;
+  cashierName: string | null;
+  lines: ReceiptLinePayload[];
+  subtotal: string; orderDiscount: string; total: string;
+  /** tax evidence as charged (Phase 3 hardening): per-component lines and
+   *  the share that was ADDED to the payable (exclusive components). */
+  taxComponents: Array<{ name: string; rate: string; amount: string }>;
+  taxAdded: string;
+  tenders: Array<{ method: string; amount: string; detail: string | null }>;
+  changeGiven: string; amountDue: string;
+  balanceOwedThisInvoice: string;
+  note: string | null;
 }

@@ -36,6 +36,17 @@ const NAV: Array<{ group: string; links: NavLink[] }> = [
       { href: '/inventory/transfers', label: 'Transfers' },
     ],
   },
+  {
+    group: 'Sales & POS',
+    links: [
+      { href: '/pos', label: 'POS' },
+      { href: '/sales', label: 'Invoices' },
+      { href: '/sales-orders', label: 'Orders' },
+      { href: '/payments', label: 'Payments' },
+      { href: '/deposits', label: 'Deposits' },
+      { href: '/shifts', label: 'Shifts' },
+    ],
+  },
 ];
 
 /**

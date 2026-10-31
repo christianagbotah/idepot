@@ -214,6 +214,82 @@ export class PricingRepository {
     };
   }
 
+  /**
+   * Phase 3 sale-posting variant: same precedence (customer list → standard
+   * list → product default) but returns the stored decimal(18,4) price
+   * VERBATIM (no 2dp display rescale) so the sale poster's price-override
+   * comparison is exact at money scale. Also resolves the product's base
+   * unit when the caller passes the base unit explicitly.
+   */
+  async resolveRaw(query: ResolvePriceQuery): Promise<ResolvedPriceDto> {
+    const ctx = UnitOfWork.require();
+    const date = query.date ?? today();
+
+    if (query.customerId) {
+      const res = await ctx.query<Record<string, unknown>>(
+        `SELECT pli.id, pli.price_list_id, pli.price::text AS price, pli.effective_from::text AS effective_from
+         FROM price_list_item pli
+         JOIN price_list pl ON pl.id = pli.price_list_id
+         WHERE pl.tenant_id = $1 AND pl.kind = 'customer' AND pl.customer_id = $2
+           AND pl.is_active
+           AND pli.product_id = $3 AND pli.unit_id = $4
+           AND pli.effective_from <= $5::date
+           AND (pli.effective_to IS NULL OR pli.effective_to >= $5::date)
+         ORDER BY pli.effective_from DESC
+         LIMIT 1`,
+        [ctx.tenantId, query.customerId, query.productId, query.unitId, date],
+      );
+      const row = res.rows[0] as Record<string, unknown> | undefined;
+      if (row) {
+        return {
+          price: String(row.price),
+          source: 'customer_list',
+          priceListId: String(row.price_list_id),
+          priceListItemId: String(row.id),
+          effectiveFrom: String(row.effective_from),
+        };
+      }
+    }
+
+    const standard = await ctx.query<Record<string, unknown>>(
+      `SELECT pli.id, pli.price_list_id, pli.price::text AS price, pli.effective_from::text AS effective_from
+       FROM price_list_item pli
+       JOIN price_list pl ON pl.id = pli.price_list_id
+       WHERE pl.tenant_id = $1 AND pl.kind = 'standard'
+         AND pl.is_active
+         AND pli.product_id = $2 AND pli.unit_id = $3
+         AND pli.effective_from <= $4::date
+         AND (pli.effective_to IS NULL OR pli.effective_to >= $4::date)
+       ORDER BY pli.effective_from DESC
+       LIMIT 1`,
+      [ctx.tenantId, query.productId, query.unitId, date],
+    );
+    const stdRow = standard.rows[0] as Record<string, unknown> | undefined;
+    if (stdRow) {
+      return {
+        price: String(stdRow.price),
+        source: 'standard_list',
+        priceListId: String(stdRow.price_list_id),
+        priceListItemId: String(stdRow.id),
+        effectiveFrom: String(stdRow.effective_from),
+      };
+    }
+
+    const product = await ctx.query<Record<string, unknown>>(
+      `SELECT selling_price::text AS selling_price FROM product WHERE id = $1`,
+      [query.productId],
+    );
+    const productRow = product.rows[0] as Record<string, unknown> | undefined;
+    if (!productRow) throw new NotFoundError('product', query.productId);
+    return {
+      price: String(productRow.selling_price),
+      source: 'product_default',
+      priceListId: null,
+      priceListItemId: null,
+      effectiveFrom: null,
+    };
+  }
+
   /** RLS-filtered existence check for a referenced row (table is a code literal). */
   private async assertRef(table: string, id: string, entity: string): Promise<void> {
     const ctx = UnitOfWork.require();
