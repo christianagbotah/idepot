@@ -30,6 +30,8 @@ export const PERMISSIONS = [
   'sales:pos',        // commit POS/counter sales (cashier core action)
   'sales:price_override',    // Phase 3 hardening: charge a non-server price (evidence + thresholds)
   'sales:discount_override', // Phase 3 hardening: grant an order discount (evidence + thresholds)
+  'sales:tax_exempt_override', // Review hardening: exempt a line ad hoc (audited evidence)
+  'sales:reverse_invoice',   // Review hardening: post an invoice reversal correction document
   'payment:read',
   'payment:write',    // receive payments, deposits, apply credit
   'shift:read',
@@ -69,6 +71,8 @@ const MANAGER_PERMISSIONS: readonly Permission[] = [
   'sales:pos',
   'sales:price_override',
   'sales:discount_override',
+  'sales:tax_exempt_override',
+  'sales:reverse_invoice',
   'payment:read',
   'payment:write',
   'shift:read',
@@ -90,8 +94,10 @@ const CASHIER_PERMISSIONS: readonly Permission[] = [
   'stockcount:read',
   'stockcount:count',
   // Phase 3 — the POS core: sell, accept money, run a shift, sync offline.
-  // Deliberately WITHOUT price/discount override powers: a cashier charges
-  // the server-resolved price; overrides need a manager (Phase 3 hardening).
+  // Deliberately WITHOUT price/discount/tax-exempt override powers or
+  // invoice reversals: a cashier charges the server-resolved, server-taxed
+  // price; overrides and corrections need a manager (Phase 3 hardening +
+  // review hardening).
   'sales:read',
   'sales:pos',
   'payment:read',

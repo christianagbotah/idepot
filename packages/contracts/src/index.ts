@@ -431,7 +431,7 @@ export interface TransferDto {
 /* ---------------------------- document sequences -------------------------- */
 
 export const CreateSequenceSchema = z.object({
-  docType: z.enum(['QUOTATION', 'SALE_ORDER', 'INVOICE', 'RECEIPT', 'WAYBILL', 'DEPOSIT']),
+  docType: z.enum(['QUOTATION', 'SALE_ORDER', 'INVOICE', 'RECEIPT', 'WAYBILL', 'DEPOSIT', 'INVOICE_REVERSAL']),
   prefix: z.string().min(1).max(16),
   branchId: uuid().nullish(),
   padding: z.number().int().min(1).max(12).optional(),
@@ -527,8 +527,18 @@ export const SaleLineSchema = z.object({
    *  holds sales:price_override and supplies override evidence (Phase 3
    *  hardening — a cashier can no longer submit an arbitrary price). */
   unitPrice: money(),
-  /** line-level tax exemption flag (ORs with product.tax_exempt) */
+  /** the client's tax-exemption EXPECTATION (review hardening P0): the
+   *  server decides — product.tax_exempt, customer.tax_exempt or a
+   *  separately permissioned override. An expectation with no server
+   *  backing is a 409 (fail-closed: a client payload can never suppress
+   *  tax); it is never posted on its own. */
   taxExempt: z.boolean().nullish(),
+  /** exemption override evidence — REQUIRED (with the
+   *  sales:tax_exempt_override permission) when neither the product nor
+   *  the customer is configured tax-exempt but the line must be exempt */
+  taxExemptionOverride: z.object({
+    reason: z.string().min(10).max(500),
+  }).nullish(),
   /** required when unitPrice differs from the server-resolved price */
   priceOverride: z.object({
     reason: z.string().min(4).max(500),
@@ -602,6 +612,10 @@ export interface InvoiceLineDto {
   resolvedPrice: string | null; priceSource: string | null; priceOverridden: boolean;
   costAtSale: string | null; note: string | null;
   taxExempt: boolean; taxBasis: string | null;
+  /** transaction-time exemption evidence (review hardening): which server
+   *  source exempted the line — 'product' | 'customer' | 'override' | null */
+  taxExemptionSource: 'product' | 'customer' | 'override' | null;
+  taxExemptionReason: string | null;
   costMethod: string | null; cogs: string | null;
 }
 /** Immutable transaction-time tax evidence (Phase 3 hardening): a snapshot
@@ -615,7 +629,7 @@ export interface InvoiceTaxComponentDto {
 export interface InvoiceDto {
   id: string; code: string; salesOrderId: string | null;
   customerId: string | null; customerName: string | null; warehouseId: string;
-  status: 'posted' | 'voided';
+  status: 'posted' | 'voided' | 'reversed';
   paymentStatus: 'unpaid' | 'part_paid' | 'paid' | 'over_paid';
   subtotal: string; orderDiscount: string; total: string;
   amountPaid: string; amountDue: string; costTotal: string | null;
@@ -624,6 +638,27 @@ export interface InvoiceDto {
   taxProfileCode: string | null; taxInclusive: boolean;
   taxTotal: string; taxAdded: string; taxComponents: InvoiceTaxComponentDto[];
   lines: InvoiceLineDto[]; createdBy: string | null; createdAt: string;
+  reversedAt: string | null;
+}
+
+/* ----------------- invoice reversal (review hardening P0) ------------------ */
+
+/** Append-only correction document: inverses stock/AVCO/AR/revenue/tax/GL
+ *  of a posted invoice inside ONE transaction. Reason is mandatory
+ *  (10–500 chars); clientDocId makes the command idempotent. */
+export const ReverseInvoiceSchema = z.object({
+  reason: z.string().min(10).max(500),
+  clientDocId: uuid().nullish(),
+});
+export type ReverseInvoice = z.infer<typeof ReverseInvoiceSchema>;
+export interface InvoiceReversalDto {
+  id: string; code: string;
+  invoiceId: string; invoiceCode: string | null;
+  reason: string;
+  journalEntryId: string | null;
+  restoredDepositId: string | null;
+  clientDocId: string | null;
+  createdBy: string | null; createdAt: string;
 }
 
 /* --------------------- tax configuration (Phase 3 hardening) --------------------- */
@@ -788,11 +823,24 @@ export interface QuotationLineDto {
 }
 export interface QuotationDto {
   id: string; code: string; warehouseId: string; customerId: string | null;
-  customerName: string | null; status: 'draft' | 'converted' | 'cancelled';
+  customerName: string | null;
+  status: 'draft' | 'issued' | 'accepted' | 'rejected' | 'expired' | 'converted' | 'cancelled';
   subtotal: string; total: string; validUntil: string | null;
   convertedOrderId: string | null; note: string | null;
+  /** lifecycle evidence (review hardening): when the offer was issued /
+   *  accepted, and why a non-conversion outcome happened */
+  issuedAt: string | null; acceptedAt: string | null; statusReason: string | null;
   lines: QuotationLineDto[]; createdBy: string | null; createdAt: string;
 }
+
+/** Quotation lifecycle transitions (review hardening P1): draft → issued →
+ *  accepted → converted, with rejected | expired as documented dead ends
+ *  and a manual cancel possible any time before conversion. reject requires
+ *  a reason; expire accepts one (default: validity period elapsed). */
+export const QuotationTransitionSchema = z.object({
+  reason: z.string().min(4).max(500).optional(),
+});
+export type QuotationTransition = z.infer<typeof QuotationTransitionSchema>;
 
 export const CreateSalesOrderSchema = z.object({
   warehouseId: uuid(),

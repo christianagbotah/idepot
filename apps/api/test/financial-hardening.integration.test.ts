@@ -190,7 +190,9 @@ describe('financial hardening (tax / GL / AVCO / overrides / sync identity)', ()
     expect(inv.lines.find((l: { productId: string }) => l.productId === productE).taxExempt).toBe(true);
     expect(inv.lines.find((l: { productId: string }) => l.productId === productA).taxExempt).toBe(false);
 
-    // line-level exemption flag also excludes from the basis
+    // line-level exemption is now SERVER-AUTHORITATIVE (review hardening):
+    // the client flag alone can no longer suppress tax — a cashier sending
+    // taxExempt on a taxable line gets a fail-closed 409
     const res2 = await commitSale(cashier, {
       warehouseId: whA,
       customerId: customerC1,
@@ -199,8 +201,8 @@ describe('financial hardening (tax / GL / AVCO / overrides / sync identity)', ()
       ],
       tenders: [{ method: 'cash', amount: '50.0000' }],
     });
-    expect(res2.body.invoice.taxTotal).toBe('0.0000');
-    expect(res2.body.invoice.total).toBe('50.0000');
+    expect(res2.status).toBe(409);
+    expect(res2.body.error).toMatch(/no server source applies/);
   });
 
   it('inclusive tax extracts from gross prices without changing the payable; mixed profiles levy on the net', async () => {

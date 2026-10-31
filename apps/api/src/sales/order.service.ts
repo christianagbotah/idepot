@@ -59,7 +59,11 @@ interface ResolvedOrderLine {
  * Quotations (legacy proforma), sales orders (state machine) and
  * fulfillments/waybills (sales-pos-lifecycle §5 target model).
  *
- * - A quotation is a non-binding document: draft → converted | cancelled.
+ * - A quotation follows the review-hardened lifecycle
+ *   draft → issued → accepted → converted, with rejected | expired as
+ *   documented dead ends and a manual cancel possible any time before
+ *   conversion. issued_at / accepted_at are recorded as evidence and every
+ *   non-conversion outcome carries a status_reason.
  * - An order is a promise: draft (no stock, no money) → CONFIRMED. The
  *   confirmation is the financial step: it posts the invoice for the FULL
  *   order (legacy semantics — full amount invoiced at sale creation), moves
@@ -109,11 +113,14 @@ export class OrderService {
     });
   }
 
-  cancelQuotation(principal: SalePrincipal, quotationId: string): Promise<QuotationDto> {
+  cancelQuotation(principal: SalePrincipal, quotationId: string, reason?: string): Promise<QuotationDto> {
     return this.uow.run({ tenantId: principal.tenantId, userId: principal.userId }, async (ctx) => {
       const q = await this.lockHeader(ctx, 'quotation', quotationId);
       assertQuotationTransition(q.status as QuotationDto['status'], 'cancelled');
-      await ctx.query(`UPDATE quotation SET status = 'cancelled' WHERE id = $1`, [quotationId]);
+      await ctx.query(
+        `UPDATE quotation SET status = 'cancelled', status_reason = $2 WHERE id = $1`,
+        [quotationId, reason ?? null],
+      );
       await ctx.audit.record({
         tenantId: ctx.tenantId,
         actorUserId: principal.userId,
@@ -121,17 +128,117 @@ export class OrderService {
         action: 'quotation.cancelled',
         entityType: 'quotation',
         entityId: quotationId,
-        details: { code: q.code },
+        details: { code: q.code, reason: reason ?? null },
       });
       return this.loadQuotation(ctx, quotationId);
     });
   }
 
-  /** Convert a draft quotation into a DRAFT sales order (no money moves). */
+  /** Issue the offer to the customer (draft → issued, issued_at evidence).
+   *  A quotation whose validity window already elapsed cannot be issued. */
+  issueQuotation(principal: SalePrincipal, quotationId: string): Promise<QuotationDto> {
+    return this.uow.run({ tenantId: principal.tenantId, userId: principal.userId }, async (ctx) => {
+      const q = await this.lockHeader(ctx, 'quotation', quotationId);
+      assertQuotationTransition(q.status as QuotationDto['status'], 'issued');
+      this.assertNotPastValidity(q);
+      await ctx.query(
+        `UPDATE quotation SET status = 'issued', issued_at = now() WHERE id = $1`,
+        [quotationId],
+      );
+      await ctx.audit.record({
+        tenantId: ctx.tenantId,
+        actorUserId: principal.userId,
+        actorDisplay: principal.displayName,
+        action: 'quotation.issued',
+        entityType: 'quotation',
+        entityId: quotationId,
+        details: { code: q.code, validUntil: q.valid_until ? String(q.valid_until) : null },
+      });
+      await ctx.outbox.emit('QuotationIssued', { quotationId, code: String(q.code) });
+      return this.loadQuotation(ctx, quotationId);
+    });
+  }
+
+  /** Customer accepts the issued offer (issued → accepted, accepted_at
+   *  evidence). An offer past its validity window can no longer be accepted
+   *  — it must be expired (or re-issued after correction). */
+  acceptQuotation(principal: SalePrincipal, quotationId: string): Promise<QuotationDto> {
+    return this.uow.run({ tenantId: principal.tenantId, userId: principal.userId }, async (ctx) => {
+      const q = await this.lockHeader(ctx, 'quotation', quotationId);
+      assertQuotationTransition(q.status as QuotationDto['status'], 'accepted');
+      this.assertNotPastValidity(q);
+      await ctx.query(
+        `UPDATE quotation SET status = 'accepted', accepted_at = now() WHERE id = $1`,
+        [quotationId],
+      );
+      await ctx.audit.record({
+        tenantId: ctx.tenantId,
+        actorUserId: principal.userId,
+        actorDisplay: principal.displayName,
+        action: 'quotation.accepted',
+        entityType: 'quotation',
+        entityId: quotationId,
+        details: { code: q.code },
+      });
+      await ctx.outbox.emit('QuotationAccepted', { quotationId, code: String(q.code) });
+      return this.loadQuotation(ctx, quotationId);
+    });
+  }
+
+  /** Customer declines the issued offer (issued → rejected; reason mandatory). */
+  rejectQuotation(principal: SalePrincipal, quotationId: string, reason: string): Promise<QuotationDto> {
+    return this.uow.run({ tenantId: principal.tenantId, userId: principal.userId }, async (ctx) => {
+      const q = await this.lockHeader(ctx, 'quotation', quotationId);
+      assertQuotationTransition(q.status as QuotationDto['status'], 'rejected');
+      await ctx.query(
+        `UPDATE quotation SET status = 'rejected', status_reason = $2 WHERE id = $1`,
+        [quotationId, reason],
+      );
+      await ctx.audit.record({
+        tenantId: ctx.tenantId,
+        actorUserId: principal.userId,
+        actorDisplay: principal.displayName,
+        action: 'quotation.rejected',
+        entityType: 'quotation',
+        entityId: quotationId,
+        details: { code: q.code, reason },
+      });
+      return this.loadQuotation(ctx, quotationId);
+    });
+  }
+
+  /** Close an ISSUED offer whose validity elapsed (issued → expired — a
+   *  draft that was never sent is cancelled instead). Reason defaults to
+   *  the validity message. */
+  expireQuotation(principal: SalePrincipal, quotationId: string, reason?: string): Promise<QuotationDto> {
+    return this.uow.run({ tenantId: principal.tenantId, userId: principal.userId }, async (ctx) => {
+      const q = await this.lockHeader(ctx, 'quotation', quotationId);
+      assertQuotationTransition(q.status as QuotationDto['status'], 'expired');
+      const why = reason ?? 'validity period elapsed';
+      await ctx.query(
+        `UPDATE quotation SET status = 'expired', status_reason = $2 WHERE id = $1`,
+        [quotationId, why],
+      );
+      await ctx.audit.record({
+        tenantId: ctx.tenantId,
+        actorUserId: principal.userId,
+        actorDisplay: principal.displayName,
+        action: 'quotation.expired',
+        entityType: 'quotation',
+        entityId: quotationId,
+        details: { code: q.code, reason: why },
+      });
+      return this.loadQuotation(ctx, quotationId);
+    });
+  }
+
+  /** Convert an ACCEPTED quotation into a DRAFT sales order (no money moves). */
   convertQuotation(principal: SalePrincipal, quotationId: string): Promise<SalesOrderDto> {
     return this.uow.run({ tenantId: principal.tenantId, userId: principal.userId }, async (ctx) => {
       const q = await this.lockHeader(ctx, 'quotation', quotationId);
       assertQuotationTransition(q.status as QuotationDto['status'], 'converted');
+      // the accepted offer is still only convertible inside its validity window
+      this.assertNotPastValidity(q);
       const lines = await ctx.query<Record<string, unknown>>(
         `SELECT product_id, unit_id, quantity::text AS quantity, quantity_base::text AS quantity_base, unit_price::text AS unit_price
          FROM quotation_line WHERE quotation_id = $1 ORDER BY sort_order, id`,
@@ -607,6 +714,25 @@ export class OrderService {
     return res.rows[0]!;
   }
 
+  /** An offer whose valid_until is in the past is dead: it can no longer be
+   *  issued, accepted or converted — expire it instead (review hardening).
+   *  NOTE: node-postgres returns the DATE column as a JS Date at UTC
+   *  midnight; both that and a plain string are handled. */
+  private assertNotPastValidity(q: Record<string, unknown>): void {
+    if (q.valid_until == null) return;
+    const until =
+      q.valid_until instanceof Date
+        ? q.valid_until
+        : new Date(`${String(q.valid_until).slice(0, 10)}T00:00:00.000Z`);
+    if (Number.isNaN(until.getTime())) return; // unparseable: fail open, the DB CHECK still holds the shape
+    if (Date.now() > until.getTime() + 86_399_999) {
+      const iso = until.toISOString().slice(0, 10);
+      throw new ConflictError(
+        `quotation ${String(q.code)} validity elapsed on ${iso} — expire it (a re-issued offer can be accepted again)`,
+      );
+    }
+  }
+
   private async lockFulfillment(ctx: UowContext, id: string): Promise<Record<string, unknown>> {
     const res = await ctx.query<Record<string, unknown>>(
       `SELECT * FROM fulfillment WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
@@ -619,7 +745,8 @@ export class OrderService {
   private async loadQuotation(ctx: UowContext, id: string): Promise<QuotationDto> {
     const res = await ctx.query<Record<string, unknown>>(
       `SELECT q.id, q.code, q.warehouse_id, q.customer_id, c.name AS customer_name, q.status,
-              q.valid_until::text AS valid_until, q.converted_order_id, q.note, q.created_by, q.created_at
+              q.valid_until::text AS valid_until, q.converted_order_id, q.note, q.created_by, q.created_at,
+              q.issued_at, q.accepted_at, q.status_reason
        FROM quotation q LEFT JOIN customer c ON c.id = q.customer_id
        WHERE q.id = $1 AND q.tenant_id = $2`,
       [id, ctx.tenantId],
@@ -648,6 +775,9 @@ export class OrderService {
       validUntil: h.valid_until ? String(h.valid_until) : null,
       convertedOrderId: h.converted_order_id ? String(h.converted_order_id) : null,
       note: h.note ? String(h.note) : null,
+      issuedAt: h.issued_at ? new Date(h.issued_at as string).toISOString() : null,
+      acceptedAt: h.accepted_at ? new Date(h.accepted_at as string).toISOString() : null,
+      statusReason: h.status_reason ? String(h.status_reason) : null,
       lines: lines.rows.map((r) => ({
         id: String(r.id),
         productId: String(r.product_id),

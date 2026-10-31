@@ -42,6 +42,7 @@ import { PaymentService } from './sales/payment.service.js';
 import { OrderService } from './sales/order.service.js';
 import { ShiftService } from './sales/shift.service.js';
 import { ReceiptService } from './sales/receipt.service.js';
+import { ReversalService } from './sales/reversal.service.js';
 import { SyncService } from './sales/sync.service.js';
 // Phase 3 hardening — financial configuration & evidence
 import { FinancialConfigurationService } from './finance/financial-configuration.service.js';
@@ -112,6 +113,7 @@ import { TaxController, GlController } from './finance/finance.controller.js';
     OrderService,
     ShiftService,
     ReceiptService,
+    ReversalService,
     SyncService,
     // Phase 3 hardening — tax/GL/cost configuration, override approval,
     // journals (all invoked INSIDE posting transactions)

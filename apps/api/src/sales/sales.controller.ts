@@ -13,7 +13,9 @@ import {
   ImportBookletSchema,
   IssueLeaseSchema,
   OpenShiftSchema,
+  QuotationTransitionSchema,
   ReceivePaymentSchema,
+  ReverseInvoiceSchema,
   ShiftCashMovementSchema,
   SpoilCodeSchema,
   SyncPushSchema,
@@ -23,6 +25,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RequirePermissions } from '../rbac/permissions.decorator.js';
 import { RbacGuard } from '../rbac/rbac.guard.js';
 import { parseBody } from '../parse-body.js';
+import { ValidationError } from '@idepot/domain';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { DocumentSequenceService } from './document-sequence.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
@@ -31,6 +34,8 @@ import { OrderService } from './order.service.js';
 import { PaymentService } from './payment.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { ReceiptService } from './receipt.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { ReversalService } from './reversal.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { SalePoster } from './sale-poster.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
@@ -52,6 +57,7 @@ export class SalesController {
   constructor(
     private readonly poster: SalePoster,
     private readonly receiptService: ReceiptService,
+    private readonly reversals: ReversalService,
   ) {}
 
   /** The atomic POS/counter sale commit (ROADMAP Phase 3 posting rule). */
@@ -91,6 +97,23 @@ export class SalesController {
   receipt(@Req() req: Request, @Param('id') id: string) {
     const p = principalOf(req);
     return this.receiptService.invoiceReceipt(p.tenantId, id);
+  }
+
+  /** Append-only correction document (review hardening): inverses
+   *  stock/AVCO/AR/revenue/tax/GL of a posted invoice in ONE transaction. */
+  @Post('invoices/:id/reverse')
+  @RequirePermissions('sales:reverse_invoice')
+  reverse(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const p = principalOf(req);
+    return this.reversals.reverseInvoice(p, id, parseBody(ReverseInvoiceSchema, body));
+  }
+
+  /** Reversal evidence read-back for one invoice. */
+  @Get('invoices/:id/reversal')
+  @RequirePermissions('sales:read')
+  reversal(@Req() req: Request, @Param('id') id: string) {
+    const p = principalOf(req);
+    return this.reversals.getReversal(p.tenantId, id);
   }
 }
 /* -------------------------------- payments --------------------------------- */
@@ -228,6 +251,37 @@ export class QuotationController {
     return this.orders.getQuotation(p.tenantId, id);
   }
 
+  @Post(':id/issue')
+  @RequirePermissions('sales:write')
+  issue(@Req() req: Request, @Param('id') id: string) {
+    const p = principalOf(req);
+    return this.orders.issueQuotation(p, id);
+  }
+
+  @Post(':id/accept')
+  @RequirePermissions('sales:write')
+  accept(@Req() req: Request, @Param('id') id: string) {
+    const p = principalOf(req);
+    return this.orders.acceptQuotation(p, id);
+  }
+
+  @Post(':id/reject')
+  @RequirePermissions('sales:write')
+  reject(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const p = principalOf(req);
+    const { reason } = parseBody(QuotationTransitionSchema, body ?? {});
+    if (!reason) throw new ValidationError('rejecting a quotation requires a reason');
+    return this.orders.rejectQuotation(p, id, reason);
+  }
+
+  @Post(':id/expire')
+  @RequirePermissions('sales:write')
+  expire(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const p = principalOf(req);
+    const { reason } = parseBody(QuotationTransitionSchema, body ?? {});
+    return this.orders.expireQuotation(p, id, reason);
+  }
+
   @Post(':id/convert')
   @RequirePermissions('sales:write')
   convert(@Req() req: Request, @Param('id') id: string) {
@@ -237,9 +291,10 @@ export class QuotationController {
 
   @Post(':id/cancel')
   @RequirePermissions('sales:write')
-  cancel(@Req() req: Request, @Param('id') id: string) {
+  cancel(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
     const p = principalOf(req);
-    return this.orders.cancelQuotation(p, id);
+    const { reason } = parseBody(QuotationTransitionSchema, body ?? {});
+    return this.orders.cancelQuotation(p, id, reason);
   }
 }
 

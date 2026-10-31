@@ -15,7 +15,7 @@ function pgCode(err: unknown): string | undefined {
   return undefined;
 }
 
-export type SequenceDocType = 'QUOTATION' | 'SALE_ORDER' | 'INVOICE' | 'RECEIPT' | 'WAYBILL' | 'DEPOSIT';
+export type SequenceDocType = 'QUOTATION' | 'SALE_ORDER' | 'INVOICE' | 'RECEIPT' | 'WAYBILL' | 'DEPOSIT' | 'INVOICE_REVERSAL';
 
 const DEFAULT_PREFIX: Record<SequenceDocType, string> = {
   QUOTATION: 'QT',
@@ -24,6 +24,7 @@ const DEFAULT_PREFIX: Record<SequenceDocType, string> = {
   RECEIPT: 'RCT',
   WAYBILL: 'WB',
   DEPOSIT: 'DEP',
+  INVOICE_REVERSAL: 'RVI',
 };
 
 const DEFAULT_PADDING: Record<SequenceDocType, number> = {
@@ -33,6 +34,7 @@ const DEFAULT_PADDING: Record<SequenceDocType, number> = {
   RECEIPT: 5,
   WAYBILL: 5,
   DEPOSIT: 5,
+  INVOICE_REVERSAL: 5,
 };
 
 export interface SequencePrincipal {

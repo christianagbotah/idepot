@@ -144,11 +144,26 @@ describe('allocations (C-17 + invariant 3/8)', () => {
 });
 
 describe('state machines', () => {
-  it('quotation', () => {
-    expect(() => assertQuotationTransition('draft', 'converted')).not.toThrow();
+  it('quotation (review hardening: draft → issued → accepted → converted)', () => {
+    // the lawful lifecycle
+    expect(() => assertQuotationTransition('draft', 'issued')).not.toThrow();
     expect(() => assertQuotationTransition('draft', 'cancelled')).not.toThrow();
+    expect(() => assertQuotationTransition('issued', 'accepted')).not.toThrow();
+    expect(() => assertQuotationTransition('issued', 'rejected')).not.toThrow();
+    expect(() => assertQuotationTransition('issued', 'expired')).not.toThrow();
+    expect(() => assertQuotationTransition('issued', 'cancelled')).not.toThrow();
+    expect(() => assertQuotationTransition('accepted', 'converted')).not.toThrow();
+    expect(() => assertQuotationTransition('accepted', 'cancelled')).not.toThrow();
+    // conversion now requires acceptance — a bare draft can no longer convert
+    expect(() => assertQuotationTransition('draft', 'converted')).toThrow(/illegal/);
+    expect(() => assertQuotationTransition('draft', 'accepted')).toThrow(/illegal/);
+    expect(() => assertQuotationTransition('draft', 'rejected')).toThrow(/illegal/);
+    // terminal states never leave
+    expect(() => assertQuotationTransition('rejected', 'accepted')).toThrow(/illegal/);
+    expect(() => assertQuotationTransition('expired', 'issued')).toThrow(/illegal/);
     expect(() => assertQuotationTransition('converted', 'draft')).toThrow(/illegal/);
     expect(() => assertQuotationTransition('cancelled', 'converted')).toThrow(/illegal/);
+    expect(() => assertQuotationTransition('accepted', 'rejected')).toThrow(/illegal/);
   });
 
   it('sales order', () => {

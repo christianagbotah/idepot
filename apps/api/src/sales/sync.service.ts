@@ -25,6 +25,7 @@ function conflictCodes(err: unknown): string | null {
     if (/stale price/.test(err.message)) return 'stale_price';
     if (/materiality threshold/.test(err.message)) return 'override_requires_approval';
     if (/credit/.test(err.message)) return 'credit_limit';
+    if (/no server source applies/.test(err.message)) return 'tax_exemption_unbacked';
     return 'business_conflict';
   }
   return null;

@@ -208,7 +208,9 @@ export function deriveAmountDue(total: bigint, allocated: bigint, credited: bigi
 
 /* ----------------------------- state machines ----------------------------- */
 
-export const QUOTATION_STATUSES = ['draft', 'converted', 'cancelled'] as const;
+export const QUOTATION_STATUSES = [
+  'draft', 'issued', 'accepted', 'rejected', 'expired', 'converted', 'cancelled',
+] as const;
 export type QuotationStatus = (typeof QUOTATION_STATUSES)[number];
 
 export const SALES_ORDER_STATUSES = [
@@ -222,9 +224,19 @@ export type FulfillmentStatus = (typeof FULFILLMENT_STATUSES)[number];
 export const SHIFT_STATUSES = ['open', 'closed'] as const;
 export type ShiftStatus = (typeof SHIFT_STATUSES)[number];
 
+/**
+ * Quotation machine (review hardening P1): draft → issued → accepted →
+ * converted. An ISSUED offer can be rejected or expire instead; a manual
+ * cancel is possible any time before conversion. Terminal states are
+ * rejected / expired / converted / cancelled.
+ */
 export function assertQuotationTransition(from: QuotationStatus, to: QuotationStatus): void {
   const allowed: Record<QuotationStatus, QuotationStatus[]> = {
-    draft: ['converted', 'cancelled'],
+    draft: ['issued', 'cancelled'],
+    issued: ['accepted', 'rejected', 'expired', 'cancelled'],
+    accepted: ['converted', 'cancelled'],
+    rejected: [],
+    expired: [],
     converted: [],
     cancelled: [],
   };

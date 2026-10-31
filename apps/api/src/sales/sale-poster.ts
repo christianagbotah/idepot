@@ -92,8 +92,10 @@ interface ResolvedLine {
   resolvedPrice: string;
   priceSource: string;
   priceOverridden: boolean;
-  /** line-level OR product-level exemption (finding #1) */
+  /** SERVER-resolved exemption decision (review hardening P0) */
   taxExempt: boolean;
+  taxExemptionSource: 'product' | 'customer' | 'override' | null;
+  taxExemptionReason: string | null;
   note: string | null;
   movementBase: string;
 }
@@ -371,8 +373,9 @@ export class SalePoster {
            (tenant_id, invoice_id, product_id, unit_id, quantity, quantity_base,
             unit_price, line_net, resolved_price, price_source, price_overridden,
             cost_at_sale, note, sort_order,
-            tax_exempt, tax_basis, cost_method, cost_policy_version_id, cogs)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+            tax_exempt, tax_exemption_source, tax_exemption_reason, tax_basis,
+            cost_method, cost_policy_version_id, cogs)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
         [
           ctx.tenantId,
           invoiceId,
@@ -389,6 +392,8 @@ export class SalePoster {
           l.note,
           i,
           l.taxExempt,
+          l.taxExemptionSource,
+          l.taxExemptionReason,
           formatMoney(lineBasis[i]!),
           movement.costValue != null ? costPolicy.method : null,
           movement.costValue != null ? costPolicy.versionId : null,
@@ -851,7 +856,13 @@ export class SalePoster {
    *   sales:price_override AND supplies override evidence; a material
    *   override (|Δ| beyond the tenant threshold) additionally requires a
    *   supervisor whose credentials verify server-side in this transaction;
-   * - product-level tax exemption ORs with the line-level flag (finding #1).
+   * - TAX APPLICABILITY IS SERVER-AUTHORITATIVE (review hardening P0):
+   *   exemption resolves from product.tax_exempt, customer.tax_exempt or a
+   *   separately permissioned + audited override
+   *   (sales:tax_exempt_override + recorded reason). The client taxExempt
+   *   flag is an EXPECTATION — with no server backing it is a 409
+   *   (fail-closed), never a posted exemption: a client payload can never
+   *   suppress tax.
    */
   private async resolveLines(
     ctx: UowContext,
@@ -861,6 +872,19 @@ export class SalePoster {
     opts: { priceThreshold: bigint },
   ): Promise<ResolvedLine[]> {
     const canOverride = hasPermission(principal.roles ?? [], 'sales:price_override');
+    const canExemptOverride = hasPermission(principal.roles ?? [], 'sales:tax_exempt_override');
+
+    // server-side customer exemption source (review hardening P0)
+    let customerExempt = false;
+    if (customerId) {
+      const custRes = await ctx.query<{ tax_exempt: boolean }>(
+        `SELECT tax_exempt FROM customer WHERE id = $1`,
+        [customerId],
+      );
+      if (custRes.rows.length === 0) throw new NotFoundError('customer', customerId);
+      customerExempt = Boolean(custRes.rows[0]!.tax_exempt);
+    }
+
     const out: ResolvedLine[] = [];
     for (const line of lines) {
       const hasUnit = line.unitId != null && line.unitId !== '';
@@ -965,6 +989,34 @@ export class SalePoster {
         }
       }
 
+      // ---- TAX APPLICABILITY (review hardening P0): the server decides --
+      const productExempt = Boolean(product.tax_exempt);
+      const overrideEvidence = line.taxExemptionOverride ?? null;
+      let exemptionSource: 'product' | 'customer' | 'override' | null = null;
+      let exemptionReason: string | null = null;
+      if (productExempt) {
+        exemptionSource = 'product';
+      } else if (customerExempt) {
+        exemptionSource = 'customer';
+      } else if (overrideEvidence) {
+        if (!canExemptOverride) {
+          throw new ForbiddenError(
+            'a tax-exemption override requires the sales:tax_exempt_override permission and recorded evidence (reason)',
+          );
+        }
+        exemptionSource = 'override';
+        exemptionReason = overrideEvidence.reason;
+      }
+      const taxExempt = exemptionSource != null;
+
+      // fail-closed: the client EXPECTED an exemption the server cannot
+      // back — refuse the sale rather than silently charging (or waiving) tax
+      if (line.taxExempt === true && !taxExempt) {
+        throw new ConflictError(
+          `tax exemption expected for product ${line.productId} but no server source applies: the product is not tax-exempt, the customer is not tax-exempt, and no permissioned override evidence was accepted (reload; an ad-hoc exemption requires the sales:tax_exempt_override permission)`,
+        );
+      }
+
       out.push({
         productId: line.productId,
         unitId,
@@ -975,7 +1027,9 @@ export class SalePoster {
         resolvedPrice: resolvedPrice.price,
         priceSource: resolvedPrice.source,
         priceOverridden: overridden,
-        taxExempt: Boolean(product.tax_exempt) || Boolean(line.taxExempt),
+        taxExempt,
+        taxExemptionSource: exemptionSource,
+        taxExemptionReason: exemptionReason,
         note: line.note ?? null,
         movementBase: quantityBase,
       });
@@ -1033,7 +1087,8 @@ export class SalePoster {
               i.cost_total::text AS cost_total, i.change_given::text AS change_given,
               i.shift_id, i.source, i.client_doc_id, i.note, i.created_by, i.created_at,
               i.tax_profile_code, i.tax_inclusive,
-              i.tax_total::text AS tax_total, i.tax_inclusive_total::text AS tax_inclusive_total
+              i.tax_total::text AS tax_total, i.tax_inclusive_total::text AS tax_inclusive_total,
+              i.reversed_at
        FROM invoice i
        LEFT JOIN customer c ON c.id = i.customer_id
        WHERE i.id = $1 AND i.tenant_id = $2`,
@@ -1047,6 +1102,7 @@ export class SalePoster {
               line_net::text AS line_net, resolved_price::text AS resolved_price,
               price_source, price_overridden, cost_at_sale::text AS cost_at_sale,
               note, sort_order, tax_exempt, tax_basis::text AS tax_basis,
+              tax_exemption_source, tax_exemption_reason,
               cost_method, cogs::text AS cogs
        FROM invoice_line WHERE invoice_id = $1 ORDER BY sort_order, id`,
       [invoiceId],
@@ -1066,6 +1122,8 @@ export class SalePoster {
       note: r.note ? String(r.note) : null,
       taxExempt: Boolean(r.tax_exempt),
       taxBasis: r.tax_basis != null ? String(r.tax_basis) : null,
+      taxExemptionSource: (r.tax_exemption_source ? String(r.tax_exemption_source) : null) as InvoiceLineDto['taxExemptionSource'],
+      taxExemptionReason: r.tax_exemption_reason ? String(r.tax_exemption_reason) : null,
       costMethod: r.cost_method ? String(r.cost_method) : null,
       cogs: r.cogs != null ? String(r.cogs) : null,
     }));
@@ -1129,6 +1187,7 @@ export class SalePoster {
       lines,
       createdBy: h.created_by ? String(h.created_by) : null,
       createdAt: new Date(h.created_at as string).toISOString(),
+      reversedAt: h.reversed_at ? new Date(h.reversed_at as string).toISOString() : null,
     };
   }
 

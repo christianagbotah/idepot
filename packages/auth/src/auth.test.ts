@@ -50,6 +50,22 @@ describe('RBAC decision function', () => {
     expect(hasPermission(['cashier'], 'gl:read')).toBe(false);
   });
 
+  it('review hardening: tax-exemption overrides and invoice reversals are manager+, never cashier/auditor', () => {
+    // a cashier never suppresses tax or reverses an invoice — both are
+    // manager corrections with recorded evidence
+    expect(hasPermission(['cashier'], 'sales:tax_exempt_override')).toBe(false);
+    expect(hasPermission(['cashier'], 'sales:reverse_invoice')).toBe(false);
+    expect(hasPermission(['auditor'], 'sales:tax_exempt_override')).toBe(false);
+    expect(hasPermission(['auditor'], 'sales:reverse_invoice')).toBe(false);
+    expect(ROLE_PERMISSIONS.cashier).not.toContain('sales:tax_exempt_override');
+    expect(ROLE_PERMISSIONS.cashier).not.toContain('sales:reverse_invoice');
+    expect(hasPermission(['manager'], 'sales:tax_exempt_override')).toBe(true);
+    expect(hasPermission(['manager'], 'sales:reverse_invoice')).toBe(true);
+    expect(hasPermission(['owner'], 'sales:tax_exempt_override')).toBe(true);
+    expect(hasPermission(['owner'], 'sales:reverse_invoice')).toBe(true);
+    expect(hasPermission(['admin'], 'sales:reverse_invoice')).toBe(true);
+  });
+
   it('fails closed for unknown roles', () => {
     expect(hasPermission(['superuser'], 'warehouse:read')).toBe(false);
     expect(hasPermission([], 'warehouse:read')).toBe(false);

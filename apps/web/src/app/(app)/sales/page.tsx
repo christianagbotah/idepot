@@ -17,7 +17,7 @@ export interface InvoiceLineDto {
 export interface InvoiceDto {
   id: string; code: string; salesOrderId: string | null;
   customerId: string | null; customerName: string | null; warehouseId: string;
-  status: 'posted' | 'voided';
+  status: 'posted' | 'voided' | 'reversed';
   paymentStatus: 'unpaid' | 'part_paid' | 'paid' | 'over_paid';
   subtotal: string; orderDiscount: string; total: string;
   amountPaid: string; amountDue: string; costTotal: string | null;
