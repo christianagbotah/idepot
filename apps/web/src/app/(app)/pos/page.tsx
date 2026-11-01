@@ -109,7 +109,7 @@ export default function PosPage() {
    *  Applied/duplicate → removed; conflict/rejected → kept with the reason
    *  surfaced (financial conflicts are never silently resolved). */
   const drainOutbox = useCallback(async () => {
-    if (!session || !deviceId) return;
+    if (!session || !deviceId || queued.length === 0) return;
     const items = await listQueuedSales();
     for (const item of items) {
       try {
@@ -151,11 +151,19 @@ export default function PosPage() {
       }
     }
     refreshQueued();
-  }, [session, deviceId, refreshQueued]);
+  }, [session, deviceId, queued.length, refreshQueued]);
+
+  // The reconnect effect must fire on connectivity/device changes ONLY — a
+  // queue mutation mid-drain must not restart it (double-push loops). The
+  // latest-ref pattern keeps those exact triggers while always draining
+  // with the CURRENT session/queue, so nothing is stale.
+  const drainLatest = useRef(drainOutbox);
+  useEffect(() => {
+    drainLatest.current = drainOutbox;
+  }, [drainOutbox]);
 
   useEffect(() => {
-    if (online && session && deviceId && queued.length > 0) void drainOutbox();
-    // drain on (re)connect; queued.length intentionally not a trigger
+    if (online && deviceId) void drainLatest.current();
   }, [online, deviceId]);
 
   function addProduct(productId: string) {

@@ -791,7 +791,12 @@ export class SalePoster {
        ORDER BY d.created_at, d.id`,
       [ctx.tenantId, customerId],
     );
-    // remaining per deposit = amount − Σ applications (committed + this tx)
+    // remaining per deposit = amount − Σ applications (committed + this tx).
+    // parseMoney (not BigInt): SUM(numeric)::text renders as "20.0000",
+    // which BigInt() cannot parse — the raw BigInt call here crashed every
+    // SECOND credit application from a previously-used deposit with a 500
+    // (first application: empty SUM → empty map → latent). Caught by the
+    // full-path posting benchmark.
     const applied = await ctx.query<{ deposit_id: string; applied: string }>(
       `SELECT deposit_id, COALESCE(SUM(amount),0)::text AS applied
        FROM credit_application
@@ -799,7 +804,7 @@ export class SalePoster {
        GROUP BY deposit_id`,
       [ctx.tenantId, deposits.rows.map((d) => String(d.id))],
     );
-    const appliedByDeposit = new Map(applied.rows.map((r) => [r.deposit_id, BigInt(r.applied)]));
+    const appliedByDeposit = new Map(applied.rows.map((r) => [r.deposit_id, parseMoney(r.applied)]));
 
     for (const d of deposits.rows) {
       if (remaining <= 0n) break;

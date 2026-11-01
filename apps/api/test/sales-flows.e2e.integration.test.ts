@@ -242,6 +242,52 @@ describe('sales & POS E2E (cash / credit / part payment / deposit→allocation)'
     expect(bad.status).toBe(400);
   });
 
+  it('REGRESSION (benchmark-found bug): a SECOND credit application from the same deposit succeeds — SUM(numeric) must parse, not BigInt()', async () => {
+    // The credit waterfall aggregates prior applications per deposit with
+    // SUM(amount)::text ("20.0000"). The first application from a deposit
+    // sees an EMPTY aggregate; the second one crashed with a 500 when the
+    // code parsed that decimal string with BigInt() — every repeat customer
+    // spending a deposit twice was broken. Found by the full-path posting
+    // benchmark; this is the pinned regression proof.
+    // A FRESH customer with exactly ONE deposit: the waterfall consumes
+    // deposits oldest-first, so the target deposit must be unambiguous.
+    const regCustomer = (
+      await request(app.getHttpServer()).post('/api/customers').set(owner).send({
+        name: 'Deposit Repeat Customer', phone: '0244000066',
+      })
+    ).body.id as string;
+    const dep = await request(app.getHttpServer()).post('/api/deposits').set(cashier).send({
+      customerId: regCustomer,
+      amount: '60.00',
+      tenders: [{ method: 'cash', amount: '60.00' }],
+    });
+    expect(dep.status).toBe(201);
+
+    const first = await commitSale(cashier, {
+      warehouseId: whA,
+      customerId: regCustomer,
+      lines: [{ productId: productB, quantityBase: '1', unitPrice: '20.00' }],
+      tenders: [{ method: 'credit', amount: '20.00', depositId: dep.body.id }],
+    });
+    expect(first.status).toBe(201);
+    expect(first.body.creditApplications).toHaveLength(1);
+
+    // the SECOND application from the SAME deposit is the regression line
+    const second = await commitSale(cashier, {
+      warehouseId: whA,
+      customerId: regCustomer,
+      lines: [{ productId: productB, quantityBase: '1', unitPrice: '20.00' }],
+      tenders: [{ method: 'credit', amount: '20.00', depositId: dep.body.id }],
+    });
+    expect(second.status).toBe(201);
+    expect(second.body.creditApplications).toHaveLength(1);
+    expect(second.body.creditApplications[0].depositId).toBe(dep.body.id);
+
+    const depAfter = await request(app.getHttpServer()).get(`/api/deposits/${dep.body.id}`).set(owner);
+    expect(depAfter.body.appliedAmount).toBe('40.0000');
+    expect(depAfter.body.remainingAmount).toBe('20.0000');
+  });
+
   it('posting atomicity: kill mid-post → ZERO partial rows (invoice, stock, tender, audit, outbox all-or-nothing)', async () => {
     const before = {
       invoices: await fx.admin.query(`SELECT count(*)::int AS n FROM invoice`),

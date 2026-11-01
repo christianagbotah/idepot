@@ -31,6 +31,42 @@ function conflictCodes(err: unknown): string | null {
   return null;
 }
 
+/** Advisory-lock key derivation (repo-wide idiom, see StockPoster): a
+ * deterministic 64-bit hash of the domain string. md5 is a documented,
+ * version-stable function; hash-named internals like hashtext_extended
+ * were renamed across major PostgreSQL releases. */
+const ADVISORY_KEY_SQL = `('x' || substr(md5($1::text), 1, 16))::bit(64)::bigint`;
+
+/** Claims the idempotency domain of one sync event inside the CALLER'S
+ * transaction: transaction-scoped advisory locks over BOTH registry
+ * identities — the event id (PK) and the (tenant, idempotency_key) pair
+ * (UNIQUE). Fixed acquisition order (event, then key) makes deadlock
+ * structurally impossible: every claimer takes them in this order and
+ * nothing outside the sync engine ever requests these lock domains.
+ * xact-scoped locks are released automatically at COMMIT/ROLLBACK — a
+ * crashed or failed transaction never leaks its claim (crash safety). */
+async function claimEventDomain(ctx: {
+  tenantId: string;
+  query: (sql: string, params: unknown[]) => Promise<unknown>;
+}, eventId: string, idempotencyKey: string): Promise<void> {
+  await ctx.query(`SELECT pg_advisory_xact_lock(${ADVISORY_KEY_SQL})`, [`sync-event:${eventId}`]);
+  await ctx.query(`SELECT pg_advisory_xact_lock(${ADVISORY_KEY_SQL})`, [`sync-idem:${ctx.tenantId}:${idempotencyKey}`]);
+}
+
+/** The registry row re-read under the claim. */
+type AppliedEventRow = {
+  outcome: string;
+  response: Record<string, unknown> | null;
+  payload_fingerprint: string | null;
+} & Record<string, unknown>;
+
+/** What the apply transaction decided (mapped to a SyncEventOutcome after
+ * the UnitOfWork boundary — the wire types never cross the tx edge). */
+type ApplyDecision =
+  | { kind: 'posted'; result: Record<string, unknown> }
+  | { kind: 'duplicate'; result: Record<string, unknown> }
+  | { kind: 'reuse'; message: string };
+
 interface SyncPrincipal extends SalePrincipal {
   deviceId: string;
 }
@@ -40,11 +76,19 @@ interface SyncPrincipal extends SalePrincipal {
  *
  * PUSH — each event is applied in EXACTLY ONE PG transaction through the
  * same posting coordinator as online commands (SalePoster / PaymentService).
- * The `sync_applied_event` registry row is written INSIDE that transaction:
- *  - kill mid-push → everything rolls back, nothing applied, retry safe;
- *  - duplicate delivery (same eventId or idempotencyKey) → the stored
- *    response is returned as `duplicate` with the ORIGINAL result — the
- *    device converges, the ledger never sees a second document;
+ * CONCURRENCY (final-review blocker #1): the transaction first CLAIMS the
+ * event's idempotency domain with transaction-scoped advisory locks over
+ * both registry identities (event id + tenant/idempotency-key), then
+ * re-reads `sync_applied_event` UNDER the claim, then posts. Two truly
+ * simultaneous deliveries of the same event/key therefore serialize at the
+ * transaction boundary and converge deterministically:
+ *  - kill/crash mid-apply → everything rolls back (claim included — xact
+ *    locks die with the transaction), nothing applied, retry safe;
+ *  - duplicate delivery (same eventId or idempotencyKey, same payload) →
+ *    the stored response is returned as `duplicate` with the ORIGINAL
+ *    result — the device converges, the ledger never sees a second
+ *    document, and NO caller ever surfaces a raw 23505/generic error;
+ *  - same key, DIFFERENT payload → `idempotency_key_reuse` conflict;
  *  - business conflicts (oversold stock, credit) per tenant policy →
  *    `conflict` outcome with a code; the event is recorded as conflicted
  *    and the device raises a review task — never a silent resolution.
@@ -79,39 +123,46 @@ export class SyncService {
     //    facts under a recycled idempotency key.
     const fingerprint = syncEventFingerprint(event.type, event.payload);
 
-    // 1. idempotency pre-check (fast path; the authoritative guarantee is
-    //    the registry INSERT inside the apply transaction below)
-    const seen = await this.uow.run({ tenantId: p.tenantId }, async (ctx) => {
-      const res = await ctx.query<Record<string, unknown>>(
-        `SELECT outcome, response, payload_fingerprint FROM sync_applied_event
-         WHERE event_id = $1 OR (tenant_id = $2 AND idempotency_key = $3)
-         LIMIT 1`,
-        [event.eventId, ctx.tenantId, event.idempotencyKey],
-      );
-      return res.rows[0] ?? null;
-    });
-    if (seen) {
-      // NULL fingerprint = a pre-hardening row: legacy duplicate semantics
-      // (compat). A present-but-different fingerprint = key reuse conflict.
-      if (seen.payload_fingerprint != null && String(seen.payload_fingerprint) !== fingerprint) {
-        return {
-          eventId: event.eventId,
-          status: 'conflict',
-          code: 'idempotency_key_reuse',
-          message:
-            'this idempotency key (or event id) was already used for a DIFFERENT payload — reusing it is a conflict, never a silent duplicate',
-        };
-      }
-      return {
-        eventId: event.eventId,
-        status: 'duplicate',
-        result: (seen.response ?? {}) as Record<string, unknown>,
-      };
-    }
-
-    // 2. apply inside one transaction; register the result atomically
+    // 1. CLAIM → RE-READ → POST → REGISTER, ALL inside ONE transaction
+    //    (final-review blocker #1: the old unlocked pre-check followed by a
+    //    bare INSERT let two simultaneous deliveries of the same key both
+    //    pass the SELECT; the loser then surfaced a raw 23505/generic
+    //    error instead of the deterministic idempotency outcome).
+    //    The claim is a transaction-scoped advisory lock over BOTH registry
+    //    identities (event id + tenant/idempotency-key), so every concurrent
+    //    delivery of the same event or key is SERIALIZED at the transaction
+    //    boundary; the re-read under the lock is the authoritative registry
+    //    read, and the registry row commits WITH the business documents.
     try {
-      const result = await this.uow.run({ tenantId: p.tenantId, userId: p.userId }, async (ctx) => {
+      const decision = await this.uow.run({ tenantId: p.tenantId, userId: p.userId }, async (ctx) => {
+        await claimEventDomain(ctx, event.eventId, event.idempotencyKey);
+
+        // 2. authoritative re-read UNDER THE CLAIM: whoever won the race has
+        //    either committed (row visible) or rolled back (no row) before
+        //    this transaction proceeds — there is no in-flight state.
+        const seen = await ctx.query<AppliedEventRow>(
+          `SELECT outcome, response, payload_fingerprint FROM sync_applied_event
+           WHERE event_id = $1 OR (tenant_id = $2 AND idempotency_key = $3)
+           LIMIT 1`,
+          [event.eventId, ctx.tenantId, event.idempotencyKey],
+        );
+        const prior = seen.rows[0] ?? null;
+        if (prior) {
+          // NULL fingerprint = a pre-hardening row: legacy duplicate
+          // semantics (compat). A present-but-different fingerprint = key
+          // reuse conflict.
+          if (prior.payload_fingerprint != null && prior.payload_fingerprint !== fingerprint) {
+            return {
+              kind: 'reuse',
+              message:
+                'this idempotency key (or event id) was already used for a DIFFERENT payload — reusing it is a conflict, never a silent duplicate',
+            } satisfies ApplyDecision;
+          }
+          return { kind: 'duplicate', result: (prior.response ?? {}) as Record<string, unknown> } satisfies ApplyDecision;
+        }
+
+        // 3. business posting through the SAME posting coordinator as
+        //    online commands — still inside the claimed transaction.
         let applied: Record<string, unknown>;
         switch (event.type) {
           case 'sale.create': {
@@ -140,15 +191,36 @@ export class SyncService {
           default:
             throw new ValidationError(`unknown sync event type`);
         }
+
+        // 4. registry row in the SAME transaction: durable only at COMMIT,
+        //    together with every business document above. The claim makes
+        //    this INSERT race-free (a 23505 here would indicate a lock-domain
+        //    bug, not a retriable race).
         await ctx.query(
           `INSERT INTO sync_applied_event
              (event_id, tenant_id, device_id, idempotency_key, event_type, outcome, response, payload_fingerprint, occurred_at)
            VALUES ($1,$2,$3,$4,$5,'applied',$6,$7,$8)`,
           [event.eventId, ctx.tenantId, p.deviceId, event.idempotencyKey, event.type, JSON.stringify(applied), fingerprint, event.occurredAt ?? null],
         );
-        return applied;
+
+        // 5. crash-safety hook (test-only): simulate a process death AFTER
+        //    the claim, the business writes AND the registry insert but
+        //    BEFORE COMMIT — proves none of it is durable until the commit
+        //    record hits the WAL (the retry must apply exactly once).
+        if ((event.payload as Record<string, unknown> | null | undefined)?.simulateCrashBeforeCommit === true) {
+          throw new Error('simulated crash after claim, writes and registration, before commit (crash-safety test)');
+        }
+        return { kind: 'posted', result: applied } satisfies ApplyDecision;
       });
-      return { eventId: event.eventId, status: 'applied', result };
+
+      switch (decision.kind) {
+        case 'posted':
+          return { eventId: event.eventId, status: 'applied', result: decision.result };
+        case 'duplicate':
+          return { eventId: event.eventId, status: 'duplicate', result: decision.result };
+        case 'reuse':
+          return { eventId: event.eventId, status: 'conflict', code: 'idempotency_key_reuse', message: decision.message };
+      }
     } catch (err) {
       const code = conflictCodes(err);
       const message = err instanceof Error ? err.message : 'sync apply failed';
@@ -158,18 +230,29 @@ export class SyncService {
         // `duplicate`, never a delayed second application of a
         // business-conflicting sale. The accountant/supervisor resolves it
         // from the review queue (offline-sync §5b).
-        await this.uow.run({ tenantId: p.tenantId }, async (ctx) => {
-          await ctx.query(
-            `INSERT INTO sync_applied_event
-               (event_id, tenant_id, device_id, idempotency_key, event_type, outcome, response, payload_fingerprint, occurred_at)
-             VALUES ($1,$2,$3,$4,$5,'conflict',$6,$7,$8)
-             ON CONFLICT (event_id) DO NOTHING`,
-            [
-              event.eventId, ctx.tenantId, p.deviceId, event.idempotencyKey, event.type,
-              JSON.stringify({ code, message }), fingerprint, event.occurredAt ?? null,
-            ],
-          );
-        });
+        //
+        // Recording happens in its own transaction (the apply rolled
+        // back) and takes the SAME claim first, so it cannot race a
+        // concurrent applier of the same event/key; the untargeted ON
+        // CONFLICT DO NOTHING makes it skip silently when the registry
+        // slot was legitimately taken in between (the business outcome is
+        // still returned to the device — evidence recording never turns a
+        // deterministic conflict into a raw 23505 or a generic error).
+        await this.uow
+          .run({ tenantId: p.tenantId }, async (ctx) => {
+            await claimEventDomain(ctx, event.eventId, event.idempotencyKey);
+            await ctx.query(
+              `INSERT INTO sync_applied_event
+                 (event_id, tenant_id, device_id, idempotency_key, event_type, outcome, response, payload_fingerprint, occurred_at)
+               VALUES ($1,$2,$3,$4,$5,'conflict',$6,$7,$8)
+               ON CONFLICT DO NOTHING`,
+              [
+                event.eventId, ctx.tenantId, p.deviceId, event.idempotencyKey, event.type,
+                JSON.stringify({ code, message }), fingerprint, event.occurredAt ?? null,
+              ],
+            );
+          })
+          .catch(() => undefined); // best-effort evidence: the conflict outcome itself is the answer
         return { eventId: event.eventId, status: 'conflict', code, message };
       }
       // REJECTED (validation/internal): the transaction rolled back to zero
