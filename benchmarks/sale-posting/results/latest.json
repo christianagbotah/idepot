@@ -1,0 +1,50 @@
+{
+  "benchmark": "sale-posting (full synchronous path)",
+  "generatedAt": "2026-11-01T00:55:21.931Z",
+  "environment": {
+    "node": "v24.22.1",
+    "platform": "linux x64",
+    "cpu": "2× Intel(R) Xeon(R) Processor",
+    "totalMemoryMb": 4042,
+    "postgres": "PostgreSQL 18.4",
+    "concurrency": "1 (sequential commits, as a single POS terminal posts)",
+    "mocked": "nothing — tax/AVCO/GL/audit/outbox all real and in-transaction"
+  },
+  "scenarios": {
+    "cashSale": {
+      "description": "2 lines, exclusive+inclusive tax, cash over-tender with change",
+      "samples": 50,
+      "warmup": 8,
+      "min": 11.772592000000259,
+      "p50": 13.387905000000046,
+      "p95": 33.68066200000021,
+      "max": 42.449081999999635,
+      "mean": 16.9,
+      "unit": "ms"
+    },
+    "creditSale": {
+      "description": "customer sale: deposit credit 20 + cash 20, remainder in AR",
+      "samples": 50,
+      "warmup": 8,
+      "min": 11.590835999999399,
+      "p50": 12.441689000000224,
+      "p95": 31.944237000000612,
+      "max": 69.85428899999988,
+      "mean": 17.09,
+      "unit": "ms"
+    }
+  },
+  "gate": "p50 < 1000ms per scenario (Phase 3: a normal local sale commit below 1 second)",
+  "p50ms": {
+    "cashSale": 13.387905000000046,
+    "creditSale": 12.441689000000224
+  },
+  "p95ms": {
+    "cashSale": 33.68066200000021,
+    "creditSale": 31.944237000000612
+  },
+  "sampleSize": {
+    "cashSale": 50,
+    "creditSale": 50
+  }
+}

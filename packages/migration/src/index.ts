@@ -5,6 +5,7 @@ export * from './validators.js';
 export * from './reconcile.js';
 export * from './transform.js';
 export * from './transform-phase2.js';
+export * from './transform-phase3.js';
 export * from './opening-stock.js';
 export * from './exact.js';
 export * from './engine.js';

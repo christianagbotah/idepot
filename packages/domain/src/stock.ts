@@ -51,6 +51,11 @@ export interface MovementEntry {
   sourceDocumentId?: string | null;
   transferId?: string | null;
   reversalOf?: string | null;
+  /** decimal(18,4) per-unit cost for RECEIPT layers (ADR-0004 AVCO):
+   *  opening stock, purchases (Phase 5) and other value-bearing receipts.
+   *  Issues never take a caller cost — the poster resolves AVCO evidence
+   *  from the locked cost state. Absent on receipts = zero-value layer. */
+  unitCost?: string | null;
 }
 
 const TRANSFER_TYPES: ReadonlySet<string> = new Set(['transfer_out', 'transfer_in']);

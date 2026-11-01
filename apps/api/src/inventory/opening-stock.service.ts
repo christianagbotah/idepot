@@ -10,7 +10,7 @@ import { StockCountService } from './stock-count.service.js';
 
 export interface OpeningStockInput {
   warehouseId: string;
-  lines: Array<{ productId: string; quantityBase: string }>;
+  lines: Array<{ productId: string; quantityBase: string; unitCost?: string | null }>;
   /** count-first authority per strategy doc §4; legacy_quantity requires risk acceptance */
   authority: 'physical_count' | 'legacy_quantity' | 'system_entry';
   acceptedMigrationRisk?: boolean;
@@ -57,12 +57,20 @@ export class OpeningStockService {
       ]);
 
       // 3. approve with receipt-type movements (reason opening_balance);
-      //    system balances are 0 pre-opening, so variances == the opening quantities
+      //    system balances are 0 pre-opening, so variances == the opening quantities.
+      //    Lines carrying a unitCost seed the AVCO cost layers (ADR-0004);
+      //    lines without one open as zero-value layers (cost basis may be
+      //    back-filled by a later counted receipt — migration sign-off).
       return this.counts.approveWithinCtx(ctx, principal, count.id, {
         movementType: 'receipt',
         movementReason: 'opening_balance',
         adjustmentReason: `opening stock entry (authority: ${input.authority}${input.acceptedMigrationRisk ? ', accepted migration risk' : ''})`,
         note: input.note ?? null,
+        costByProduct: new Map(
+          input.lines
+            .filter((l) => l.unitCost != null && l.unitCost !== '')
+            .map((l) => [l.productId, l.unitCost as string]),
+        ),
       });
     });
   }

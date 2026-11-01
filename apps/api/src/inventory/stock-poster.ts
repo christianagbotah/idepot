@@ -3,23 +3,43 @@ import type { StockMovementDto } from '@idepot/contracts';
 import {
   ConflictError,
   NotFoundError,
+  MONEY_SCALE,
   QTY_SCALE,
+  applyCostToState,
+  avcoIssueCost,
   convertToBaseExact,
   formatDecimal,
+  halfEvenDiv,
+  mulScaledRounded,
+  parseMoney,
   parseQuantity,
+  parseUnitCost,
   validateConversionFactor,
   validateMovementEntry,
+  type CostStateSnapshot,
   type MovementEntry,
 } from '@idepot/domain';
 
 import type { UowContext } from '../db/unit-of-work.js';
 
 import { assertTenantRefs } from './inventory-refs.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
 
 export interface PostMovementsMeta {
   sourceDocumentType?: string | null;
   sourceDocumentId?: string | null;
   createdBy?: string | null;
+  /**
+   * Oversell policy (offline-sync §5b, Phase 3): the tenant-level default is
+   * 'reject' (fail loud — identical to the Phase 2 behaviour). When the
+   * tenant configures 'allow_backorder', sale postings may drive the
+   * projection negative (the ledger always applies); the CALLER is
+   * responsible for raising the backorder exception task — the poster only
+   * permits the negative arithmetic. Inventory documents (transfers,
+   * adjustments, counts) never set this flag.
+   */
+  allowNegative?: boolean;
 }
 
 /** Postgres SQLSTATE of a driver error, when present (23505 unique, 23503 fk). */
@@ -46,6 +66,18 @@ interface ResolvedEntry {
   conversionFactor: string | null;
 }
 
+/** Transaction-time cost evidence resolved for one movement (ADR-0004). */
+interface CostEvidence {
+  unitCost: string | null;
+  costValue: string | null;
+}
+
+/** Running AVCO state for one (warehouse, product) inside the posting set. */
+interface CostStateRow extends CostStateSnapshot {
+  qtyScaled: bigint;
+  valueScaled: bigint;
+}
+
 /**
  * The single posting mechanism for every inventory-affecting authoritative
  * write (ADR-0001): inserts append-only ledger rows and updates the derived
@@ -70,21 +102,33 @@ interface ResolvedEntry {
  *
  * Conversion authority (review fix 3): product_unit configuration is the
  * ONLY authority for online cross-unit movements. The factor is resolved
- * server-side under the tenant, quantity_base is computed from
- * quantity_transacted × configured factor, and the client-supplied factor /
- * base quantity are treated purely as optimistic expectations — any
- * disagreement is rejected (409), never silently accepted. The resolved
- * factor is stored on the ledger row as historical evidence. The migration
- * engine keeps its own separate import path for legacy conversion evidence.
+ *   server-side under the tenant, quantity_base is computed from
+ *   quantity_transacted × configured factor, and the client-supplied factor /
+ *   base quantity are treated purely as optimistic expectations — any
+ *   disagreement is rejected (409), never silently accepted. The resolved
+ *   factor is stored on the ledger row as historical evidence. The migration
+ *   engine keeps its own separate import path for legacy conversion evidence.
+ *
+ * Cost layers (Phase 3 hardening, ADR-0004 — review finding #3): the SAME
+ * critical section that locks the balance rows also locks the per-(warehouse,
+ * product) AVCO cost state. Receipts add layers (value = round4(qty × unit
+ * cost), rounded once); issues remove value PROPORTIONALLY to the on-hand
+ * value (avcoIssueCost); reversals copy the original movement's evidence
+ * verbatim; transfer-ins carry the exact dispatched value (residual
+ * convention — Σ transfer-in values == transfer-out value, always). Every
+ * movement row stores its (unit_cost, cost_value) evidence, so the cost
+ * state is rebuildable from the append-only ledger.
  */
 @Injectable()
 export class StockPoster {
+  constructor(private readonly finance: FinancialConfigurationService) {}
+
   /**
-   * Post movements + update balances atomically within the open UoW context.
-   * Throws ConflictError on insufficient stock, stale conversion or an
-   * already-reversed movement; NotFoundError on cross-tenant/missing
-   * references; ValidationError on any conversion/quantity violation.
-   * Zero partial state on failure (single tx).
+   * Post movements + update balances + maintain the AVCO cost state
+   * atomically within the open UoW context. Throws ConflictError on
+   * insufficient stock, stale conversion or an already-reversed movement;
+   * NotFoundError on cross-tenant/missing references; ValidationError on any
+   * conversion/quantity/cost violation. Zero partial state on failure.
    */
   async post(ctx: UowContext, entries: MovementEntry[], meta: PostMovementsMeta = {}): Promise<StockMovementDto[]> {
     if (entries.length === 0) return [];
@@ -121,19 +165,20 @@ export class StockPoster {
       resolved.map((r) => r.entry.productId),
     );
 
-    // 3. create-and-lock every balance row of the posting set, in one
-    //    deterministic order shared by all writers (no lock-order cycles)
+    // 3. create-and-lock every balance row AND cost-state row of the posting
+    //    set, in one deterministic order shared by all writers
     const current = await this.lockBalances(ctx, resolved);
 
-    // 4. apply deltas (read under lock → compute → plain UPDATE) and append
-    //    the ledger rows with the server-resolved conversion evidence
+    // 4. apply deltas (read under lock → compute → plain UPDATE), maintain
+    //    the AVCO cost state, and append the ledger rows with the
+    //    server-resolved conversion + transaction-time cost evidence
     const out: StockMovementDto[] = [];
     for (const r of resolved) {
       const { entry } = r;
       const key = balanceKey(entry.warehouseId, entry.productId);
-      const currentQty = current.get(key)!;
+      const currentQty = current.balances.get(key)!;
       const next = currentQty + r.base;
-      if (next < 0n) {
+      if (next < 0n && !meta.allowNegative) {
         throw new ConflictError(
           `insufficient stock: product ${entry.productId} in warehouse ${entry.warehouseId} has ${formatDecimal(currentQty, QTY_SCALE)}, movement would make ${formatDecimal(next, QTY_SCALE)}`,
         );
@@ -144,7 +189,40 @@ export class StockPoster {
          WHERE tenant_id = $1 AND warehouse_id = $2 AND product_id = $3`,
         [ctx.tenantId, entry.warehouseId, entry.productId, nextStr],
       );
-      current.set(key, next);
+      current.balances.set(key, next);
+
+      // ---- cost evidence + state (same locked critical section) --------
+      const cost = await this.resolveCostEvidence(ctx, r, current.costs.get(key)!);
+      const state = current.costs.get(key)!;
+      const nextState = applyCostToState(
+        { quantityBase: formatDecimal(state.qtyScaled, QTY_SCALE), totalValue: formatDecimal(state.valueScaled, MONEY_SCALE) },
+        {
+          quantityBase: formatDecimal(r.base, QTY_SCALE),
+          unitCost: cost.unitCost,
+          issueCost: r.base < 0n && cost.costValue != null
+            ? { unitCost: cost.unitCost, costValue: cost.costValue, layered: true }
+            : null,
+          reversalCost: entry.reversalOf != null && cost.costValue != null
+            ? { unitCost: cost.unitCost, costValue: cost.costValue }
+            : null,
+          explicitCost: entry.reversalOf == null && r.base > 0n && cost.costValue != null
+            ? { unitCost: cost.unitCost, costValue: cost.costValue }
+            : null,
+        },
+      );
+      state.qtyScaled = parseQuantity(nextState.quantityBase);
+      state.valueScaled = parseMoney(nextState.totalValue);
+      await ctx.query(
+        `INSERT INTO stock_cost_state (tenant_id, warehouse_id, product_id, quantity_base, total_value, updated_at)
+         VALUES ($1,$2,$3,$4,$5,now())
+         ON CONFLICT (tenant_id, warehouse_id, product_id)
+         DO UPDATE SET quantity_base = EXCLUDED.quantity_base, total_value = EXCLUDED.total_value, updated_at = now()`,
+        [
+          ctx.tenantId, entry.warehouseId, entry.productId,
+          formatDecimal(state.qtyScaled, QTY_SCALE),
+          formatDecimal(state.valueScaled, MONEY_SCALE),
+        ],
+      );
 
       let res;
       try {
@@ -152,11 +230,13 @@ export class StockPoster {
           `INSERT INTO stock_movement
              (tenant_id, warehouse_id, product_id, movement_type, quantity_base,
               unit_id, quantity_transacted, conversion_factor, reason,
-              source_document_type, source_document_id, transfer_id, reversal_of, created_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+              source_document_type, source_document_id, transfer_id, reversal_of,
+              unit_cost, cost_value, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
            RETURNING id, warehouse_id, product_id, movement_type, quantity_base,
               unit_id, quantity_transacted, conversion_factor, reason,
-              source_document_type, source_document_id, transfer_id, reversal_of, occurred_at`,
+              source_document_type, source_document_id, transfer_id, reversal_of,
+              unit_cost, cost_value, occurred_at`,
           [
             ctx.tenantId,
             entry.warehouseId,
@@ -171,6 +251,8 @@ export class StockPoster {
             meta.sourceDocumentId ?? null,
             entry.transferId ?? null,
             entry.reversalOf ?? null,
+            cost.unitCost,
+            cost.costValue,
             meta.createdBy ?? ctx.userId,
           ],
         );
@@ -185,6 +267,102 @@ export class StockPoster {
       out.push(this.toMovementDto(res.rows[0] as Record<string, unknown>));
     }
     return out;
+  }
+
+  /**
+   * Resolves the transaction-time cost evidence for one movement:
+   *
+   *  - reversal: the ORIGINAL movement's (unit_cost, cost_value) are copied
+   *    verbatim, so a reversal restores both stock and value exactly;
+   *  - receipt with a caller unit cost (opening stock, future purchases):
+   *    a new layer valued round4(qty × unit);
+   *  - transfer-in: carries the exact dispatched AVCO value — proportional
+   *    share for a partial batch, exact residual on the completing batch —
+   *    so Σ transfer-in values == transfer-out value, always;
+   *  - issue: AVCO removal proportional to the on-hand value (the sub-cent
+   *    rounding residue of partial issues stays in inventory; an issue beyond
+   *    the tracked layers carries no cost).
+   */
+  private async resolveCostEvidence(
+    ctx: UowContext,
+    r: ResolvedEntry,
+    state: CostStateRow,
+  ): Promise<CostEvidence> {
+    const { entry } = r;
+
+    if (entry.reversalOf != null) {
+      const original = await ctx.query<{ unit_cost: string | null; cost_value: string | null }>(
+        `SELECT unit_cost::text AS unit_cost, cost_value::text AS cost_value
+         FROM stock_movement WHERE id = $1 AND tenant_id = $2`,
+        [entry.reversalOf, ctx.tenantId],
+      );
+      if (original.rows.length === 0) throw new NotFoundError('stock_movement (reversal target)', entry.reversalOf);
+      return { unitCost: original.rows[0]!.unit_cost, costValue: original.rows[0]!.cost_value };
+    }
+
+    if (r.base > 0n) {
+      if (entry.unitCost != null && entry.unitCost !== '') {
+        parseUnitCost(entry.unitCost); // validates ≥ 0, 4dp — fails loud
+        // layer value = round4(qty × unit) — the single rounding of the layer;
+        // stored on the row so a reversal copies it VERBATIM
+        const value = mulScaledRounded(r.base, QTY_SCALE, parseMoney(entry.unitCost), MONEY_SCALE, MONEY_SCALE);
+        return { unitCost: entry.unitCost, costValue: formatDecimal(value, MONEY_SCALE) };
+      }
+      if (entry.movementType === 'transfer_in' && entry.transferId != null) {
+        const carry = await this.transferCarryValue(ctx, entry.transferId, entry.productId, r.base);
+        if (carry != null) return carry;
+      }
+      return { unitCost: null, costValue: null }; // zero-value layer (un-costed receipt)
+    }
+
+    // issue: AVCO evidence against the CURRENT (locked, running) state
+    const issue = avcoIssueCost(formatDecimal(r.base < 0n ? -r.base : r.base, QTY_SCALE), {
+      quantityBase: formatDecimal(state.qtyScaled, QTY_SCALE),
+      totalValue: formatDecimal(state.valueScaled, MONEY_SCALE),
+    });
+    if (!issue.layered) return { unitCost: null, costValue: null };
+    return { unitCost: issue.unitCost, costValue: issue.costValue };
+  }
+
+  /**
+   * Exact value carry for a transfer-in batch: the dispatched (transfer-out)
+   * movements already recorded their AVCO cost on the ledger; this batch
+   * receives its proportional share, and the completing batch takes the
+   * exact residual — the invariant Σ transfer-in values == transfer-out value
+   * holds for ANY sequence of partial receives.
+   */
+  private async transferCarryValue(
+    ctx: UowContext,
+    transferId: string,
+    productId: string,
+    batchQty: bigint,
+  ): Promise<CostEvidence | null> {
+    const res = await ctx.query<{
+      out_value: string; in_value: string; out_qty: string; in_qty: string;
+    }>(
+      `SELECT
+         COALESCE(SUM(cost_value) FILTER (WHERE movement_type = 'transfer_out'), 0)::text AS out_value,
+         COALESCE(SUM(cost_value) FILTER (WHERE movement_type = 'transfer_in'), 0)::text AS in_value,
+         COALESCE(SUM(-quantity_base) FILTER (WHERE movement_type = 'transfer_out'), 0)::text AS out_qty,
+         COALESCE(SUM(quantity_base) FILTER (WHERE movement_type = 'transfer_in'), 0)::text AS in_qty
+       FROM stock_movement
+       WHERE tenant_id = $1 AND transfer_id = $2 AND product_id = $3`,
+      [ctx.tenantId, transferId, productId],
+    );
+    const row = res.rows[0]!;
+    const remainingValue = parseMoney(row.out_value) - parseMoney(row.in_value);
+    const remainingQty = parseQuantity(row.out_qty) - parseQuantity(row.in_qty);
+    if (remainingQty <= 0n || remainingValue <= 0n) return null; // dispatch carried no cost
+    const completes = remainingQty <= batchQty;
+    const value = completes
+      ? remainingValue // exact residual on the completing batch
+      : halfEvenDiv(remainingValue * batchQty, remainingQty); // proportional share
+    // per-unit display evidence (rounded once, 4dp)
+    const unit = halfEvenDiv(value * 10n ** BigInt(QTY_SCALE), batchQty);
+    return {
+      unitCost: formatDecimal(unit, MONEY_SCALE),
+      costValue: formatDecimal(value, MONEY_SCALE),
+    };
   }
 
   /**
@@ -264,17 +442,22 @@ export class StockPoster {
   }
 
   /**
-   * Creates (idempotently) and locks (FOR UPDATE) every balance row in the
-   * posting set, in deterministic sorted order, returning the locked current
-   * quantities. The INSERT … ON CONFLICT DO NOTHING waits out a concurrent
-   * creator of the same row, and guarantees the row exists for the lock
-   * statement that follows in the same transaction — closing the first-row
-   * race where two concurrent first postings both read "no row" and later
-   * clobber each other's projection.
+   * Creates (idempotently) and locks (FOR UPDATE) every balance row AND
+   * AVCO cost-state row in the posting set, in deterministic sorted order,
+   * returning the locked current quantities and cost states. The
+   * INSERT … ON CONFLICT DO NOTHING waits out a concurrent creator of the
+   * same row, and guarantees the row exists for the lock statement that
+   * follows in the same transaction — closing the first-row race where two
+   * concurrent first postings both read "no row" and later clobber each
+   * other's projection.
    */
-  private async lockBalances(ctx: UowContext, resolved: ResolvedEntry[]): Promise<Map<string, bigint>> {
+  private async lockBalances(
+    ctx: UowContext,
+    resolved: ResolvedEntry[],
+  ): Promise<{ balances: Map<string, bigint>; costs: Map<string, CostStateRow> }> {
     const keys = [...new Set(resolved.map((r) => balanceKey(r.entry.warehouseId, r.entry.productId)))].sort();
-    const current = new Map<string, bigint>();
+    const balances = new Map<string, bigint>();
+    const costs = new Map<string, CostStateRow>();
     for (const key of keys) {
       const sep = key.indexOf(':');
       const warehouseId = key.slice(0, sep);
@@ -282,6 +465,12 @@ export class StockPoster {
       await ctx.query(
         `INSERT INTO stock_balance (tenant_id, warehouse_id, product_id, quantity_base)
          VALUES ($1,$2,$3,0)
+         ON CONFLICT (tenant_id, warehouse_id, product_id) DO NOTHING`,
+        [ctx.tenantId, warehouseId, productId],
+      );
+      await ctx.query(
+        `INSERT INTO stock_cost_state (tenant_id, warehouse_id, product_id, quantity_base, total_value)
+         VALUES ($1,$2,$3,0,0)
          ON CONFLICT (tenant_id, warehouse_id, product_id) DO NOTHING`,
         [ctx.tenantId, warehouseId, productId],
       );
@@ -294,9 +483,23 @@ export class StockPoster {
         // unreachable after the ensure-insert above; kept as a hard guard
         throw new ConflictError(`stock balance row vanished while locking (${warehouseId}/${productId})`);
       }
-      current.set(key, parseQuantity(cur.rows[0]!.quantity_base));
+      const cost = await ctx.query<{ quantity_base: string; total_value: string }>(
+        `SELECT quantity_base, total_value::text AS total_value FROM stock_cost_state
+         WHERE tenant_id = $1 AND warehouse_id = $2 AND product_id = $3 FOR UPDATE`,
+        [ctx.tenantId, warehouseId, productId],
+      );
+      if (cost.rows.length === 0) {
+        throw new ConflictError(`stock cost state row vanished while locking (${warehouseId}/${productId})`);
+      }
+      balances.set(key, parseQuantity(cur.rows[0]!.quantity_base));
+      costs.set(key, {
+        quantityBase: cost.rows[0]!.quantity_base,
+        totalValue: cost.rows[0]!.total_value,
+        qtyScaled: parseQuantity(cost.rows[0]!.quantity_base),
+        valueScaled: parseMoney(cost.rows[0]!.total_value),
+      });
     }
-    return current;
+    return { balances, costs };
   }
 
   private toMovementDto(r: Record<string, unknown>): StockMovementDto {
@@ -315,6 +518,8 @@ export class StockPoster {
       transferId: r.transfer_id ? String(r.transfer_id) : null,
       reversalOf: r.reversal_of ? String(r.reversal_of) : null,
       occurredAt: new Date(r.occurred_at as string).toISOString(),
+      unitCost: r.unit_cost != null ? String(r.unit_cost) : null,
+      costValue: r.cost_value != null ? String(r.cost_value) : null,
     };
   }
 }

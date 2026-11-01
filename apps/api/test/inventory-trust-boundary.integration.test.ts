@@ -110,7 +110,9 @@ describe('inventory trust boundary (PR #3 review fixes)', () => {
   }, 180_000);
 
   afterAll(async () => {
-    await fx.close();
+    // beforeAll may have failed before assigning fx (e.g. embedded PG boot);
+    // teardown must not turn a failed setup into a crash on undefined.
+    await fx?.close();
   });
 
   /* ------------------------------ helpers ------------------------------- */

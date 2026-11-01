@@ -171,6 +171,9 @@ export class StockCountService {
       movementType?: 'count_variance' | 'receipt' | 'adjustment';
       movementReason?: string;
       adjustmentReason?: string;
+      /** opening-stock cost layers (ADR-0004): per-unit cost by product for
+       *  the RECEIVING variance direction */
+      costByProduct?: Map<string, string>;
     } = {},
   ): Promise<StockCountDto> {
     const count = await this.lockCount(ctx, id);
@@ -208,7 +211,16 @@ export class StockCountService {
           reason: opts.adjustmentReason ?? `stock count ${count.code} variance approval`,
           sourceCountId: id,
           note: opts.note ?? null,
-          lines: varianceLines.map((l) => ({ productId: l.productId, quantityBase: l.quantityBase, note: null })),
+          lines: varianceLines.map((l) => ({
+            productId: l.productId,
+            quantityBase: l.quantityBase,
+            note: null,
+            // cost layers attach to the RECEIVING direction only (issues
+            // resolve their AVCO evidence from the locked cost state)
+            ...(opts.costByProduct?.has(l.productId) && !l.quantityBase.startsWith('-')
+              ? { unitCost: opts.costByProduct.get(l.productId)! }
+              : {}),
+          })),
           movementType: opts.movementType ?? 'count_variance',
           movementReason: opts.movementReason ?? `stock count ${count.code} variance`,
         });
@@ -335,6 +347,7 @@ export class StockCountService {
           'conversionFactor' in l && l.conversionFactor != null ? String(l.conversionFactor) : null,
         reason: movementReason,
         reversalOf: 'reversalOf' in l && l.reversalOf != null ? String(l.reversalOf) : null,
+        unitCost: 'unitCost' in l && l.unitCost != null ? String(l.unitCost) : null,
       })),
       { sourceDocumentType: 'stock_adjustment', sourceDocumentId: adjustmentId, createdBy: principal.userId },
     );

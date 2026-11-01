@@ -4,7 +4,9 @@
  * Modes:
  * - IDEPOT_TEST_PG_ADMIN_URL  -> use an external PostgreSQL (admin connection string)
  * - IDEPOT_TEST_PG_START=0    -> refuse to self-boot (fail fast; CI must provide a server)
- * - default                   -> boot an embedded PostgreSQL singleton (random free port)
+ * - default                   -> boot an embedded PostgreSQL singleton (probed
+ *                               free port, retried when parallel workers lose
+ *                               the bind race)
  *
  * Roles: `postgres`/`postgres_test` is the admin role; `idepot_app`/`idepot_app_test`
  * is the least-privilege application role created idempotently (no TRUNCATE/CREATE).
@@ -80,6 +82,35 @@ async function getFreePort(): Promise<number> {
   });
 }
 
+/** How many probe -> initdb -> start attempts before giving up. */
+const MAX_START_ATTEMPTS = 5;
+
+/**
+ * Postgres itself refuses `port: 0` ("0 is outside the valid range for
+ * parameter \"port\" (1 .. 65535)"), so embedded-postgres cannot ask the OS
+ * for an atomic, collision-free port assignment. Probing a free port and
+ * closing the probe socket BEFORE postgres binds is therefore a classic
+ * TOCTOU race: parallel vitest forks (pool: 'forks', fileParallelism: true)
+ * can probe the very same port, and the loser dies with "FATAL: could not
+ * create any TCP/IP sockets". These stderr signatures identify that lost
+ * race so it can be retried on a fresh port instead of failing the run.
+ */
+const PORT_COLLISION =
+  /could not create any TCP\/IP sockets|address already in use|already running on port/i;
+
+/**
+ * embedded-postgres registers every constructed instance in a module-level
+ * set that its async exit hook stops on process exit. After a failed start()
+ * the child process is already gone but the registration is not — stop()
+ * would then await an 'exit' event that has already fired and hang the worker
+ * at exit. Clearing the dangling reference makes stop() short-circuit on its
+ * own "nothing to stop" guard, so discarded retry attempts stay invisible to
+ * the exit hook.
+ */
+function forgetFailedInstance(pg: EmbeddedPostgres): void {
+  (pg as unknown as { process?: unknown }).process = undefined;
+}
+
 async function bootEmbedded(): Promise<TestPostgres> {
   if (process.env.IDEPOT_TEST_PG_START === '0') {
     throw new Error(
@@ -91,21 +122,79 @@ async function bootEmbedded(): Promise<TestPostgres> {
   // IDEPOT_TEST_PG_DIR. CI runners check the repo out at an arbitrary path,
   // so this must be resolved at runtime, never hardcoded.
   const dataRoot = process.env.IDEPOT_TEST_PG_DIR ?? join(findMonorepoRoot(), '.pg-test');
-  const dataDir = join(dataRoot, `data-${randomUUID()}`);
-  mkdirSync(dataDir, { recursive: true });
-  const port = await getFreePort();
 
-  const pg = new EmbeddedPostgres({
-    databaseDir: dataDir,
-    user: ADMIN_USER,
-    password: ADMIN_PASSWORD,
-    port,
-    persistent: false,
-    onError: (msgOrErr: unknown) =>
-      process.stderr.write(`[embedded-pg] ${String(msgOrErr)}\n`),
-  });
-  await pg.initialise();
-  await pg.start();
+  // Postgres rejects port 0, so the OS cannot atomically assign us a port
+  // (see the note above PORT_COLLISION). Instead: probe a free port, start
+  // postgres on it, and if another worker grabbed the port in between, tear
+  // the attempt down and retry on a NEW port. Two simultaneously-starting
+  // instances thus converge on different ports instead of colliding.
+  let winner: { pg: EmbeddedPostgres; port: number; dataDir: string } | undefined;
+  let lastCollision: string | undefined;
+
+  for (let attempt = 1; attempt <= MAX_START_ATTEMPTS; attempt++) {
+    const port = await getFreePort();
+    const dataDir = join(dataRoot, `data-${randomUUID()}`);
+    mkdirSync(dataDir, { recursive: true });
+
+    // embedded-postgres funnels ALL child-process output (stdout AND stderr,
+    // initdb AND postgres) through onLog, and start() rejects with NO error
+    // object when the server exits early — which is why a bind failure used
+    // to surface as "Unknown Error: undefined". Buffering the output is the
+    // only way to recover the underlying "FATAL: ..." text for classification
+    // and for the error message of a genuine failure.
+    let output = '';
+    const pg = new EmbeddedPostgres({
+      databaseDir: dataDir,
+      user: ADMIN_USER,
+      password: ADMIN_PASSWORD,
+      port,
+      persistent: false,
+      onLog: (message: string) => {
+        output += message;
+        process.stderr.write(`[embedded-pg] ${message}`);
+      },
+      onError: (msgOrErr: unknown) =>
+        process.stderr.write(`[embedded-pg] ${String(msgOrErr)}\n`),
+    });
+
+    try {
+      await pg.initialise();
+      await pg.start();
+      winner = { pg, port, dataDir };
+      break;
+    } catch (err) {
+      // The child is already dead at this point (start() only rejects on
+      // early exit); detach it, then discard this attempt's data directory.
+      forgetFailedInstance(pg);
+      if (existsSync(dataDir)) rmSync(dataDir, { recursive: true, force: true });
+
+      // Prefer the buffered postgres output; fall back to the thrown error
+      // (initdb failures reject with a real Error, start() rejects with
+      // `undefined`). Either way the UNDERLYING message must survive.
+      const detail =
+        output.trim() ||
+        (err instanceof Error ? err.message : '') ||
+        'no diagnostics captured';
+      if (!PORT_COLLISION.test(output)) {
+        throw new Error(
+          `embedded PostgreSQL failed to start (attempt ${attempt}/${MAX_START_ATTEMPTS}, ` +
+            `port ${port}, data dir ${dataDir}): ${detail}`,
+        );
+      }
+      // Lost the port race to a parallel worker — retry on a fresh port.
+      lastCollision = `port ${port}: ${detail}`;
+    }
+  }
+
+  if (!winner) {
+    throw new Error(
+      `embedded PostgreSQL lost the ephemeral-port race ${MAX_START_ATTEMPTS} times in a ` +
+        `row (last: ${lastCollision ?? 'no diagnostics captured'}); ` +
+        'are parallel workers saturating the free-port range?',
+    );
+  }
+
+  const { pg, port, dataDir } = winner;
 
   const stop = async () => {
     if (stopped) return;

@@ -15,6 +15,8 @@
 
 export const QTY_SCALE = 6;
 export const MONEY_SCALE = 4;
+/** tax component rates are numeric(9,6) — fractions like 0.075000 */
+export const RATE_SCALE = 6;
 
 const DECIMAL_RE = /^[+-]?\d+(\.\d+)?$/;
 

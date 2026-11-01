@@ -14,7 +14,9 @@ describe('posting coordinator — all-or-nothing (ADR-0001)', () => {
     fx = await createApiFixture();
   }, 120_000);
   afterAll(async () => {
-    await fx.close();
+    // beforeAll may have failed before assigning fx (e.g. embedded PG boot);
+    // teardown must not turn a failed setup into a crash on undefined.
+    await fx?.close();
   });
 
   async function snapshot(): Promise<{ docs: number; audits: number; outbox: number }> {

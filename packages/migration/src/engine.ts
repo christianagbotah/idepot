@@ -28,6 +28,7 @@ import {
   type TransformReject,
 } from './transform-phase2.js';
 import { transformOpeningStock } from './opening-stock.js';
+import { transformSalesCycle } from './transform-phase3.js';
 
 export interface MigrationRunConfig {
   pgAdminUrl: string;
@@ -46,6 +47,9 @@ export interface MigrationRunResult {
 export async function runMigration(config: MigrationRunConfig): Promise<MigrationRunResult> {
   const specs = config.specs ?? FIXTURE_TABLES;
   const startedAt = new Date();
+  let phase3Stats: ReconciliationArtifact['phase3'] | undefined;
+  let phase3Records: ReconciliationRecord[] = [];
+  let phase3Warnings: Array<{ code: string; table: string; message: string }> = [];
 
   const pg = new Client({ connectionString: config.pgAdminUrl });
   await pg.connect();
@@ -189,6 +193,48 @@ export async function runMigration(config: MigrationRunConfig): Promise<Migratio
       );
       transformRejects.push(...openingResult.rejects);
 
+      // Phase 3 — sales cycle (orders/invoices/payments/deposits/proforma/
+      // booklets), D1-corrected payment reconstruction, R14/R8 records
+      const partyMaps = await pg.query<{ legacy_table: string; legacy_id: string; target_id: string }>(
+        `SELECT legacy_table, legacy_id, target_id FROM legacy_id_map
+         WHERE legacy_table = 'customers' AND target_table = 'customer'`,
+      );
+      const customerMap = new Map(
+        partyMaps.rows.filter((r) => r.legacy_table === 'customers').map((r) => [r.legacy_id, r.target_id]),
+      );
+      const storeMaps = await pg.query<{ legacy_id: string; target_id: string }>(
+        `SELECT legacy_id, target_id FROM legacy_id_map WHERE legacy_table = 'store' AND target_table = 'warehouse' ORDER BY legacy_id`,
+      );
+      const warehouseByStore = new Map(storeMaps.rows.map((r) => [r.legacy_id, r.target_id]));
+      const defaultWarehouseId = warehouseByStore.get('1') ?? storeMaps.rows[0]?.target_id ?? null;
+      if (!defaultWarehouseId) {
+        throw new Error('phase3 sales import requires at least one imported store/warehouse');
+      }
+      const salesResult = await transformSalesCycle(
+        pg,
+        clean('sales_order'),
+        clean('payment_with_goods'),
+        clean('invoice'),
+        clean('payment'),
+        clean('proforma_invoice'),
+        clean('proforma_invoice_order'),
+        clean('cash_deposit_disbursement'),
+        clean('invoice_code'),
+        clean('waybill_code'),
+        {
+          tenantId: config.tenantId,
+          runId,
+          maxFactorByItem: productsResult.info.maxFactorByItem,
+          productByItem: productsResult.info.productByItem,
+          customerByLegacy: customerMap,
+          defaultWarehouseId,
+          warehouseByStore,
+        },
+      );
+      phase3Stats = salesResult.stats;
+      phase3Records = salesResult.records;
+      phase3Warnings = salesResult.warnings;
+
       // transform-level rejects land in quarantine with reasons (never silent)
       for (const rej of transformRejects) {
         await pg.query(
@@ -237,7 +283,7 @@ export async function runMigration(config: MigrationRunConfig): Promise<Migratio
         (r) => !isQuarantined(outcome.findings, 'payment', r[paymentSpec.pk] ?? ''),
       );
       const recon = reconcile(invoiceRows, paymentRows);
-      const allRecords = [...recon.records, ...openingResult.records];
+      const allRecords = [...recon.records, ...openingResult.records, ...phase3Records];
       for (const rec of allRecords) {
         await pg.query(
           `INSERT INTO reconciliation_record
@@ -291,9 +337,11 @@ export async function runMigration(config: MigrationRunConfig): Promise<Migratio
           ...outcome.censusWarnings,
           ...recon.warnings.map((w) => ({ code: 'reconcile', table: '-', message: w })),
           ...productsResult.roundingWarnings.map((w) => ({ code: 'rounding_normalization', table: 'item', message: w })),
+          ...phase3Warnings,
         ],
         transform: transformStats,
         phase2: phase2Stats,
+        phase3: phase3Stats,
       };
 
       await pg.query(
@@ -364,6 +412,22 @@ function humanReport(a: ReconciliationArtifact): string {
     );
   } else {
     lines.push('- (no Phase 2 stats)');
+  }
+  lines.push('');
+  lines.push('## Sales cycle (Phase 3)');
+  lines.push('');
+  if (a.phase3) {
+    lines.push(
+      `- orders: ${a.phase3.ordersImported}/${a.phase3.ordersReused} (imported/reused); invoices: ${a.phase3.invoicesImported}/${a.phase3.invoicesReused}; receipts: ${a.phase3.paymentsImported}/${a.phase3.paymentsReused}`,
+    );
+    lines.push(
+      `- deposits: ${a.phase3.depositsImported}/${a.phase3.depositsReused}; credit applications: ${a.phase3.creditApplications}; quotations: ${a.phase3.quotationsImported}/${a.phase3.quotationsReused}; waybills: ${a.phase3.waybillsImported}/${a.phase3.waybillsReused}; booklet codes: ${a.phase3.bookletCodesImported}`,
+    );
+    lines.push(
+      `- correction detections: D1 multi-account ×${a.phase3.d1MultiaccountReconstructions}, R14 header divergence ×${a.phase3.r14Divergences}, R8 discount mismatch ×${a.phase3.r8DiscountMismatches}`,
+    );
+  } else {
+    lines.push('- (no Phase 3 stats)');
   }
   lines.push('');
   lines.push('## Correction-aware reconciliation');

@@ -18,7 +18,9 @@ describe('vertical slice: login → tenant context → CRUD → audit → change
     token = owner().token!;
   }, 120_000);
   afterAll(async () => {
-    await fx.close();
+    // beforeAll may have failed before assigning fx (e.g. embedded PG boot);
+    // teardown must not turn a failed setup into a crash on undefined.
+    await fx?.close();
   });
 
   it('1. login issues tokens and binds tenant context', async () => {

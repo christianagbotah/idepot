@@ -52,11 +52,11 @@ export class ProductRepository {
       const res = await ctx.query(
         `INSERT INTO product (tenant_id, code, name, description, category_id, supplier_id,
                               brand_id, base_unit_id, default_sale_unit_id, sold_in_units,
-                              selling_price, purchase_price, status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                              selling_price, purchase_price, tax_exempt, status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
          RETURNING id, code, name, description, category_id, supplier_id, brand_id,
                    base_unit_id, default_sale_unit_id, sold_in_units, selling_price,
-                   purchase_price, status, created_at`,
+                   purchase_price, tax_exempt, status, created_at`,
         [
           ctx.tenantId,
           input.code,
@@ -70,6 +70,7 @@ export class ProductRepository {
           input.soldInUnits ?? false,
           input.sellingPrice,
           input.purchasePrice ?? null,
+          input.taxExempt ?? false,
           input.status ?? 'active',
         ],
       );

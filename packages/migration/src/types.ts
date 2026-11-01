@@ -15,8 +15,18 @@ export interface TableSpec {
 export const FIXTURE_TABLES: TableSpec[] = [
   { table: 'store', columns: ['id', 'name', 'status'], pk: 'id' },
   { table: 'item', columns: ['id', 'item_code', 'name', 'quantity', 'status', 'created_date', 'store_id', 'category_id', 'supplier_id', 'selling_price', 'purchase_price', 'unit_quantity', 'barcode'], pk: 'id' },
-  { table: 'invoice', columns: ['id', 'invoice_code', 'amount', 'amount_paid', 'amount_due', 'status', 'created_date', 'store_id'], pk: 'id' },
-  { table: 'payment', columns: ['id', 'receipt_code', 'invoice_id', 'amount', 'pay_method', 'created_date', 'store_id'], pk: 'id' },
+  // Phase 3: invoice/payment specs extended with the sales-cycle columns
+  // (legacy rows without them stage as NULL — checksums stay self-consistent)
+  { table: 'invoice', columns: ['id', 'invoice_code', 'so_code', 'customer_id', 'amount', 'amount_paid', 'amount_due', 'status', 'created_date', 'store_id', 'date_timestamp', 'track_code', 'opening_entry'], pk: 'id' },
+  { table: 'payment', columns: ['id', 'receipt_code', 'invoice_id', 'amount', 'pay_method', 'created_date', 'store_id', 'payment_type', 'category', 'customer_id', 'invoice_code', 'so_code', 'method_account', 'bank_name', 'branch', 'cheque_number', 'momo_phone', 'momo_transaction_id', 'momo_type', 'track_code', 'cash_sales_in_payables', 'due'], pk: 'id' },
+  // Phase 3 sales cycle
+  { table: 'sales_order', columns: ['id', 'so_code', 'customer_id', 'item_id', 'quantity', 'quantity_picked', 'price', 'amount', 'grand_total', 'amount_paid', 'amount_due', 'status', 'type_of_sales', 'negative_or_goods', 'opening_entry', 'cost_price', 'item_balance', 'total_quantity', 'order_item_has_unit_sales', 'bundle_quantity', 'bundle_price', 'date_timestamp', 'track_code', 'created_by'], pk: 'id' },
+  { table: 'payment_with_goods', columns: ['id', 'so_code', 'customer_id', 'item_id', 'quantity', 'quantity_picked', 'quantity_due', 'price', 'amount', 'grand_total', 'amount_paid', 'amount_due', 'status', 'type_of_sales', 'waybill_code', 'invoice_code', 'date_timestamp', 'track_code'], pk: 'id' },
+  { table: 'proforma_invoice', columns: ['id', 'invoice_code', 'so_code', 'customer_id', 'amount', 'date_timestamp'], pk: 'id' },
+  { table: 'proforma_invoice_order', columns: ['id', 'so_code', 'item_id', 'quantity', 'price', 'amount', 'unit_or_package'], pk: 'id' },
+  { table: 'cash_deposit_disbursement', columns: ['id', 'so_code', 'invoice_code', 'deposit_code', 'amount', 'date_timestamp'], pk: 'id' },
+  { table: 'invoice_code', columns: ['id', 'code', 'status', 'reason', 'customer_id', 'code_range', 'created_by', 'created_date'], pk: 'id' },
+  { table: 'waybill_code', columns: ['id', 'code', 'status', 'reason', 'customer_id', 'code_range', 'created_by', 'created_date'], pk: 'id' },
   // Phase 2 master data & stock
   { table: 'item_main_category', columns: ['category_id', 'category_name'], pk: 'category_id' },
   { table: 'item_category', columns: ['category_id', 'main_id', 'category_name'], pk: 'category_id' },
@@ -84,6 +94,29 @@ export interface ReconciliationArtifact {
   transform: { storesImported: number; storesReused: number; legacyIdMapRows: number };
   /** Phase 2 master-data & opening-stock import stats (additive). */
   phase2?: Phase2TransformStats;
+  /** Phase 3 sales-cycle import stats (additive). */
+  phase3?: Phase3TransformStats;
+}
+
+export interface Phase3TransformStats {
+  ordersImported: number;
+  ordersReused: number;
+  invoicesImported: number;
+  invoicesReused: number;
+  paymentsImported: number;
+  paymentsReused: number;
+  depositsImported: number;
+  depositsReused: number;
+  creditApplications: number;
+  quotationsImported: number;
+  quotationsReused: number;
+  waybillsImported: number;
+  waybillsReused: number;
+  bookletCodesImported: number;
+  r14Divergences: number;
+  r8DiscountMismatches: number;
+  d1MultiaccountReconstructions: number;
+  legacyIdMapRowsPhase3: number;
 }
 
 export interface Phase2TransformStats {

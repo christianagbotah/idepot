@@ -64,7 +64,9 @@ describe('stock operations E2E (transfer / count / adjustment / pricing)', () =>
   }, 120_000);
 
   afterAll(async () => {
-    await fx.close();
+    // beforeAll may have failed before assigning fx (e.g. embedded PG boot);
+    // teardown must not turn a failed setup into a crash on undefined.
+    await fx?.close();
   });
 
   it('transfer: dispatch → partial receipt → completion, with over-receipt prevented', async () => {
