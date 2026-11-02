@@ -82,6 +82,11 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
     expect(tables.customers!.stagedRows).toBe(4);
     expect(tables.suppliers!.stagedRows).toBe(2);
     expect(tables.opening_stock_count!.stagedRows).toBe(4);
+    // Phase 4 extension: purchasing / AP / banking / journals
+    expect(tables.purchase_order!.stagedRows).toBe(3);
+    expect(tables.accounts_payable!.stagedRows).toBe(2);
+    expect(tables.accounts!.stagedRows).toBe(6);
+    expect(tables.general_journal!.stagedRows).toBe(4);
     for (const t of first.artifact.tables) {
       expect(t.checksumMatch, `checksum ${t.table}`).toBe(true);
     }
@@ -238,7 +243,9 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
       // 2 D1 (multi-invoice receipts) + 4 opening-stock (2 count variances +
       // 2 accepted-risk fallbacks) + 3 Phase 3 sales-cycle detections
       // (D1 multi-account ×1, R14 header divergence ×1, R8 discount ×1)
-      expect(Number(rr.rows[0]!.n)).toBe(9);
+      // + 7 Phase 4 records (4 legacy bank-balance snapshot drift, 1 R8
+      // purchase header vs lines, 1 journals-reference-only, 1 equity plug)
+      expect(Number(rr.rows[0]!.n)).toBe(16);
     } finally {
       await c.end();
     }
@@ -253,7 +260,7 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
       stagingBackend: string;
     };
     expect(artifact.runId).toBe(first.runId);
-    expect(artifact.reconciliation.summary.records).toBe(9);
+    expect(artifact.reconciliation.summary.records).toBe(16);
     expect(artifact.stagingBackend).toBe(backend);
   });
 
@@ -381,6 +388,108 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
       await c.end();
     }
   }, 60_000);
+
+  it('imports the Phase 4 purchasing/AP/banking model with an opening trial balance', async () => {
+    const c = new Client({ connectionString: adminUrl });
+    await c.connect();
+    try {
+      // banking master: 4 transferrable legacy accounts -> gl_account + bank_account
+      const banks = await c.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM bank_account WHERE tenant_id = $1`,
+        [tenantId],
+      );
+      expect(banks.rows[0]!.n).toBe('4');
+      const legacyGl = await c.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM gl_account WHERE tenant_id = $1 AND description LIKE 'imported from legacy%'`,
+        [tenantId],
+      );
+      expect(legacyGl.rows[0]!.n).toBe('4');
+
+      // purchase orders: PO-5001 (2 lines) + PO-5002 (1 line), closed
+      const pos = await c.query<{ code: string; status: string; lines: string }>(
+        `SELECT po.code, po.status, count(pol.id)::text AS lines
+         FROM purchase_order po LEFT JOIN purchase_order_line pol ON pol.purchase_order_id = po.id
+         WHERE po.tenant_id = $1 GROUP BY po.code, po.status ORDER BY po.code`,
+        [tenantId],
+      );
+      expect(pos.rows.map((r) => r.code).sort()).toEqual(['MIG-PO-5001', 'MIG-PO-5002']);
+      const po5001 = pos.rows.find((r) => r.code === 'MIG-PO-5001')!;
+      expect(po5001.status).toBe('closed');
+      expect(po5001.lines).toBe('2');
+
+      // supplier invoices: totals RECOMPUTED from lines (R8 evidence for
+      // PO-5002 whose legacy header said 335 vs Σ lines 340)
+      const invoices = await c.query<{ code: string; total: string; status: string; open: string }>(
+        `SELECT si.code, si.total::text AS total, si.status,
+                (si.total - COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
+                    JOIN supplier_payment sp ON sp.id = spa.payment_id
+                    WHERE spa.supplier_invoice_id = si.id), 0))::text AS open
+         FROM supplier_invoice si WHERE si.tenant_id = $1 ORDER BY si.code`,
+        [tenantId],
+      );
+      expect(invoices.rows.map((r) => r.code)).toEqual(['MSI-PO-5001', 'MSI-PO-5002']);
+      expect(invoices.rows[0]!.total).toBe('2050.0000');
+      expect(invoices.rows[0]!.open).toBe('0.0000'); // fully paid historically
+      expect(invoices.rows[1]!.total).toBe('340.0000'); // server-computed (not the 335 header)
+      expect(invoices.rows[1]!.open).toBe('140.0000'); // 340 − 200 legacy paid
+
+      // historical payment evidence with allocations
+      const payments = await c.query<{ code: string; amount: string }>(
+        `SELECT sp.code, sp.amount::text AS amount FROM supplier_payment sp WHERE sp.tenant_id = $1`,
+        [tenantId],
+      );
+      expect(payments.rows.length).toBe(2);
+      const alloc = await c.query<{ total: string }>(
+        `SELECT COALESCE(SUM(spa.amount), 0)::text AS total FROM supplier_payment_allocation spa
+         JOIN supplier_payment sp ON sp.id = spa.payment_id WHERE sp.tenant_id = $1`,
+        [tenantId],
+      );
+      expect(alloc.rows[0]!.total).toBe('2250.0000'); // 2050 + 200
+
+      // supplier opening balance document
+      const opening = await c.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM party_opening_balance
+         WHERE tenant_id = $1 AND party_type = 'supplier' AND source = 'migration'`,
+        [tenantId],
+      );
+      expect(opening.rows[0]!.n).toBe('1');
+
+      // opening trial balance: posted, balanced, with the EXPLICIT equity plug
+      const tb = await c.query<{ total_debit: string; total_credit: string }>(
+        `SELECT total_debit::text AS total_debit, total_credit::text AS total_credit
+         FROM journal_entry WHERE tenant_id = $1 AND source_kind = 'migration_opening'`,
+        [tenantId],
+      );
+      expect(tb.rows.length).toBe(1);
+      expect(tb.rows[0]!.total_debit).toBe(tb.rows[0]!.total_credit);
+      expect(Number(tb.rows[0]!.total_debit)).toBeGreaterThan(0);
+
+      // the plug + reference-only journals + snapshot drift are all recorded
+      const records = first.artifact.reconciliation.records;
+      const plug = records.find((r) => r.correction_reason === 'OPENING_TB_EQUITY_PLUG');
+      expect(plug).toBeDefined();
+      expect(plug!.requires_manual_approval).toBe(true);
+      expect(plug!.new_system_value.equityPlug).toBeDefined();
+      const journalsRef = records.find((r) => r.correction_reason === 'D8_D9_LEGACY_JOURNALS_REFERENCE_ONLY');
+      expect(journalsRef).toBeDefined();
+      expect(journalsRef!.new_system_value.referenceOnly).toBe(true);
+      const snapshotDrift = records.filter((r) => r.correction_reason === 'LEGACY_BANK_BALANCE_SNAPSHOT_DRIFT');
+      expect(snapshotDrift.length).toBe(4);
+      const r8 = records.filter((r) => r.correction_reason === 'R8_HEADER_TOTAL_VS_LINE_SUM_MISMATCH');
+      expect(r8.length).toBe(1); // PO-5002: 335 header vs 340 lines
+      expect(r8[0]!.legacy_stored_value.grandTotal).toBe('335.0000');
+
+      // accountant sign-off workflow on the plug (synthetic fixture approval)
+      const approved = await c.query(
+        `UPDATE reconciliation_record SET approved_by = 'accountant@fixture.test', approved_at = now()
+         WHERE run_id = $1 AND correction_reason = 'OPENING_TB_EQUITY_PLUG' RETURNING id`,
+        [first.runId],
+      );
+      expect(approved.rows.length).toBe(1);
+    } finally {
+      await c.end();
+    }
+  });
 
   it('is idempotent: re-run reuses mappings, never duplicates targets or evidence', async () => {
     const c = new Client({ connectionString: adminUrl });

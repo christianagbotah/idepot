@@ -33,7 +33,12 @@ export const FIXTURE_TABLES: TableSpec[] = [
   { table: 'units', columns: ['unit_id', 'unit_name'], pk: 'unit_id' },
   { table: 'units_items', columns: ['id', 'unit_id', 'item_id', 'unit_total', 'unit_price'], pk: 'id' },
   { table: 'customers', columns: ['customer_id', 'customer_name', 'contact_person', 'mobile', 'phone', 'email', 'customer_active', 'guest', 'address', 'created_date'], pk: 'customer_id' },
-  { table: 'suppliers', columns: ['supplier_id', 'supplier_name', 'contact_person', 'mobile', 'phone', 'email', 'address', 'created_date'], pk: 'supplier_id' },
+  { table: 'suppliers', columns: ['supplier_id', 'supplier_name', 'contact_person', 'mobile', 'phone', 'email', 'address', 'created_date', 'opening_balance', 'balance_due', 'opening_accounts_payable_id'], pk: 'supplier_id' },
+  // Phase 4: purchasing / AP / banking / journals (reference-only)
+  { table: 'purchase_order', columns: ['po_id', 'po_code', 'supplier_id', 'item_id', 'status', 'quantity', 'price', 'amount', 'grand_total', 'amount_paid', 'amount_due', 'track_code', 'item_balance', 'date_timestamp'], pk: 'po_id' },
+  { table: 'accounts_payable', columns: ['accounts_payable_id', 'supplier_id', 'po_code', 'amount', 'amount_paid', 'amount_due', 'payment_method', 'payment_details', 'account_id', 'status', 'track_code', 'p_prev_paid', 'prev_paid', 'date_timestamp'], pk: 'accounts_payable_id' },
+  { table: 'accounts', columns: ['account_id', 'name', 'account_type', 'opening_balance', 'current_balance', 'account_is_bank', 'account_is_transferrable'], pk: 'account_id' },
+  { table: 'general_journal', columns: ['journal_id', 'journal', 'reference', 'po_code', 'so_code', 'invoice_code', 'supplier_id', 'customer_id', 'payment_id', 'debit_amount', 'credit_amount', 'account_name', 'account_balance', 'date_timestamp'], pk: 'journal_id' },
   { table: 'opening_stock_count', columns: ['id', 'item_id', 'store_id', 'counted_quantity', 'counted_by', 'counted_date'], pk: 'id' },
 ];
 
@@ -96,6 +101,27 @@ export interface ReconciliationArtifact {
   phase2?: Phase2TransformStats;
   /** Phase 3 sales-cycle import stats (additive). */
   phase3?: Phase3TransformStats;
+  /** Phase 4 purchasing/AP/banking import stats (additive). */
+  phase4?: Phase4TransformStats;
+}
+
+export interface Phase4TransformStats {
+  purchaseOrdersImported: number;
+  purchaseOrdersReused: number;
+  supplierInvoicesImported: number;
+  supplierInvoicesReused: number;
+  supplierPaymentsImported: number;
+  supplierPaymentsReused: number;
+  bankAccountsImported: number;
+  bankAccountsReused: number;
+  supplierOpeningsImported: number;
+  journalReferenceRows: number;
+  r14Divergences: number;
+  openingTbPosted: boolean;
+  equityPlug: string;
+  openingTbDebit: string;
+  openingTbCredit: string;
+  legacyIdMapRowsPhase4: number;
 }
 
 export interface Phase3TransformStats {
