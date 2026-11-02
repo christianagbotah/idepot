@@ -231,6 +231,19 @@ describe('inventory trust boundary (PR #3 review fixes)', () => {
     expect(led.sum).toBe('10.000000');
     expect(led.count).toBe(10);
     expect(await invariantViolations(fx.tenantA.tenantId)).toBe(0);
+
+    // Regression (main CI run 41259782149 flake): the storm must also hand
+    // out 10 DISTINCT generated ADJ codes. The old 2-char base36 random
+    // suffix (1296 values) let same-millisecond adjustments collide on
+    // (tenant_id, code) and surface a 500; the crypto-random suffix makes
+    // that collision space ~4.3e9 per millisecond.
+    const codes = await fx.admin.query<{ code: string }>(
+      `SELECT code FROM stock_adjustment WHERE tenant_id = $1 AND warehouse_id = $2`,
+      [fx.tenantA.tenantId, whA2],
+    );
+    expect(codes.rows).toHaveLength(10);
+    expect(new Set(codes.rows.map((r) => r.code)).size).toBe(10);
+    for (const r of codes.rows) expect(r.code).toMatch(/^ADJ-/);
   });
 
   /* ------------------- fix 2: rebuild vs posting race -------------------- */

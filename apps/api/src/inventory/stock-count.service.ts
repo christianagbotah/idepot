@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import type {
   ApproveCount,
@@ -36,11 +37,18 @@ export interface PrincipalLike {
   roles: string[];
 }
 
+/**
+ * Human-readable document code: `PREFIX-<base36 timestamp><8 hex random>`.
+ * The random suffix is crypto-strong (32 bits per millisecond) so that
+ * concurrent adjustments/counts created in the SAME millisecond can never
+ * collide on the `(tenant_id, code)` unique key. The previous 2-char base36
+ * suffix (1296 values) collided in ~3.5% of 10-way same-ms storms — a
+ * deterministic-looking 500 for busy multi-terminal stores and a CI flake.
+ */
 function newCode(prefix: string): string {
-  return `${prefix}-${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 1296)
-    .toString(36)
-    .toUpperCase()
-    .padStart(2, '0')}`;
+  return `${prefix}-${Date.now().toString(36).toUpperCase()}${randomBytes(4)
+    .toString('hex')
+    .toUpperCase()}`;
 }
 
 /**
