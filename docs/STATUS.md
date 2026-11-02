@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Current phase** | Phase 3 — sales & POS (+ financial hardening + review hardening + final hardening rounds) — implemented on this branch |
+| **Current phase** | Phase 4 — purchasing & accounting (+ migration: AP & books) — implemented on this branch |
 | **Previous phases** | Phase 0 — forensic audit & architecture ✅ (merged); Phase 1 — monorepo foundation + migration engineering foundation ✅ (merged); Phase 2 — master data & inventory ✅ (merged) |
 | **Branch** | `phase-3/sales-pos` (from main @ `b07e80a6`) |
 | **Repo state** | Phase 3 complete through the final hardening round: corrected sale posting, payments/deposits/allocations, orders/fulfillments, shifts, receipts, offline sync engine with concurrency-safe idempotency, migration of the legacy sales cycle, effective-dated tax engine with server-authoritative exemptions, synchronous GL journals, AVCO costing, price authority, invoice reversal, full quotation lifecycle, composite tenant FKs (independent review findings 1–5, second-review blockers 1–4, final-review blockers 1–5) |
@@ -128,12 +128,135 @@ The last focused round on the same head, preserving every existing behaviour; NO
 - The change-feed projection with per-tenant monotonic seq stays on the outbox-cursor protocol until the first relay consumer needs compaction.
 - Quotation → order conversion imports proforma history; quotation printing (A4 proforma layout) arrives with the Phase 5 template gallery. Offline devices do not carry quotation lifecycle events (they are online counter workflows); the sync event set stays sale/payment/deposit/customer.
 
-## Next actions (Phase 4 — Purchasing & accounting)
+## Completed capabilities (Phase 4 — this branch)
 
-1. Phase 4 posting engine: chart-of-accounts administration, statements, closing; GL journals for non-sale inventory documents (adjustments/transfers/opening balances); back-fill GL + tax evidence for pre-hardening Phase 3 documents (identifiable by cost_method IS NULL with a purchase-price cost_at_sale).
-2. PO/GRN/supplier invoice 3-way match; debit notes; AP payments/allocations (mirroring the Phase 3 allocation engine).
-3. Banking (accounts, transfers, statement import + matching); AR/AP subledgers with control-account reconciliation job.
-4. Migration: POs, GRNs, AP, banking references, chart of accounts; opening balances + opening trial-balance tie-out with the accountant sign-off.
+**Accounting foundation.** Chart of accounts with statement classes
+(8 canonical classes), parent hierarchy with cycle guard, normal balance,
+posting/non-posting and control designations, effective dates and safe
+deactivation only (blocked while financial evidence references the
+account). Purpose catalog widened from 10 to 21 posting purposes — the
+posting engine resolves accounts by purpose, never by hard-coded ids.
+Accounting periods (fiscal monthly, overlap-guarded) with
+open/soft-closed/closed + audited reopen; the period lock is enforced at
+the single journal choke point so EVERY financially coupled document
+inherits it (corrections may post into soft-closed periods, never closed).
+Journal entries gained business date, document reference and append-only
+reversal linkage. GL inquiry with date/account/source/reference filters
+and pagination; account-ledger drilldown; approved manual journals with
+live balance preview and reversal-as-new-entry.
+
+**Purchasing.** Full corrected lifecycle: purchase orders (draft→submitted
+→approved→issued→partially_received→received→closed/cancelled) as pure
+commitment documents; GRNs as the stock authority (AVCO layers at receipt
+cost, Dr Inventory / Cr GR-IR in the same transaction, over-receipt
+tolerance with verified supervisor approval); supplier invoices as the AP
+authority with the PO↔GRN↔invoice 3-way match (price/quantity evidence,
+configurable tolerances, exception approval — never a silent invoice
+rewrite; invoice-before-receipt structurally prevented). PPV posts
+explicitly; inventory is never re-valued at invoice time. Recoverable vs
+non-recoverable purchase tax with transaction-time evidence.
+
+**AP subledger.** Supplier payments with tenders (cash/momo/cheque/bank via
+each bank account's own GL account) and explicit allocations serialized by
+per-invoice advisory locks; advances (unapplied remainders) and later
+application; append-only debit/credit notes (stock returns at AVCO cost in
+the same transaction); AP aging (current/1-30/31-60/61-90/90+) and supplier
+statements regenerated from documents with running balances. The open AP is
+always ledger/allocation-derived — never a mutable snapshot.
+
+**Banking.** Bank account master FK'd to the chart; transfers with explicit
+fees (balanced journals, duplicate client-doc protection); statement import
+treating uploads as untrusted input (5MB/20k-line bounds, strict per-field
+validation, parameterized SQL only) with file-sha256 + per-line identity
+dedupe; deterministic match suggestions (exact amount, opposite direction,
+±3-day window, reference-boosted confidence) that NEVER auto-post; manual
+match/unmatch with direction and amount guards and split support;
+reconciliation finalization recording explicit GL-vs-statement differences.
+
+**Financial statements.** Trial balance (opening + period + closing, ties to
+the BS by construction), accrual P&L (COGS reconciles with the AVCO stock
+ledger — never supplier payments), balance sheet (Assets = Liabilities +
+Equity with real equity accounts and current earnings), and the indirect
+cash flow with a documented canonical method
+(docs/accounting/cash-flow-method.md) asserting
+netCashFromOperations == netCashMovement (unexplained must be zero).
+AR/AP/deposit/advance/COGS control reconciliation surfaces differences
+explicitly — no plugs.
+
+**GL backfill (idempotent).** Journals for non-sale inventory documents
+(opening stock, adjustments, count variances), pre-hardening Phase 3
+invoices/payments/deposits/credit applications, and party opening
+balances — keyed by the journal unique constraint with pre-loaded skip
+sets (a second run posts nothing).
+
+**Migration workstream.** Legacy purchase orders (collapsed PO+GRN+
+invoice, R14 per-row duplication) → PO + lines + server-computed supplier
+invoices + historical payments/allocations; legacy accounts
+(chart-as-payment-methods) → the corrected banking master with
+snapshot-drift evidence; supplier opening balances → explicit documents;
+legacy journals counted and reconcined as REFERENCE ONLY (D8/D9); the
+opening trial balance posted from canonical documents with the explicit,
+quantified equity plug requiring accountant sign-off (workflow exercised
+on the fixture). Reruns are idempotent — one opening TB per tenant, ever.
+
+**Web UI.** Thirteen responsive screens: purchase orders, GRNs, supplier
+invoices with match review, supplier payments, debit/credit notes, AP
+aging + statements, chart of accounts, journal inquiry + manual journals,
+periods & close (+ backfill trigger), financial reports (P&L/BS/TB/CF),
+control reconciliation, bank accounts, transfers, statement import &
+matching — with ₵ money formatting and role-aware navigation (the server
+remains the authorization authority).
+
+**RBAC.** purchasing/receiving/ap/accounting/banking/financial-report
+permissions plus the accountant and procurement roles; 84-case
+authorization matrix including negative and cross-tenant cases.
+
+**Posting rules** for every document type are documented in
+docs/accounting/posting-rules.md.
+
+## Verification summary (Phase 4 — current head)
+
+- 114 unit tests + 246 integration tests green (16 purchasing E2E, 8
+  concurrency/atomicity with full-table snapshot proofs, 12 accounting
+  statements/periods/backfill, 8 banking, 11 migration smoke incl. rerun
+  idempotency, 84 RBAC matrix cases, plus all Phase 1–3 suites).
+- Deep atomicity: failures injected after the journal and after the
+  deepest counter writes prove ZERO partial state across 19 tables
+  (canonical row snapshots, not row counts).
+- Concurrency: simultaneous GRNs vs one PO (exactly one commits), duplicate
+  invoice submission, simultaneous AP allocations (deterministic
+  over-allocation conflict), duplicate transfer client-docs.
+- Benchmarks (local embedded PG, 30 samples each): GRN posting p50 6.9ms /
+  p95 23.0ms; supplier invoice p50 8.5ms / p95 27.1ms; AP payment p50
+  6.2ms / p95 19.7ms; trial balance p50 8.9ms / p95 9.6ms; AP aging p50
+  3.0ms / p95 4.1ms (benchmarks/phase4-posting/results/latest.json).
+- Financial invariants proven in tests: ΣD=ΣC (TB balanced), Assets =
+  Liabilities + Equity, COGS ↔ stock ledger, AR/AP/deposit/advance control
+  tie-outs, cash-flow unexplained == 0, period locks block posting.
+
+## Known limitations / deferred (deliberate)
+
+- Payment/receipt/deposit reversals and customer returns/credit notes
+  remain Phase 5 (invoice reversal is delivered).
+- Purchase requisitions are not implemented (the legacy app had none and
+  the audit register does not require them; POs support the full
+  draft→approval path).
+- Landed-cost/freight allocation on purchase lines is not implemented
+  (documented as a future posting rule; supplier invoice expense lines
+  cover direct charges today).
+- Period-close automated checklist execution (unrecon items blocking close)
+  is present as the reconciliation screen; a hard gate on close is a
+  policy decision left to the accountant (surfaced, not forced).
+- Bank statement import is CSV with a documented header; OFX/MT940 parsers
+  arrive with the Phase 6/7 integrations.
+
+## Next actions (Phase 5 — Returns, reporting, loyalty & administration)
+
+Per docs/ROADMAP.md Phase 5: return orders/credit notes/store credits/
+refunds with approvals + audit; the operational + financial report suite;
+KPI snapshots; loyalty (validate demand first); configuration UX; audit
+search/export. Migration: returns/refunds/store-credit import and
+reporting parity checks.
 
 ---
 
