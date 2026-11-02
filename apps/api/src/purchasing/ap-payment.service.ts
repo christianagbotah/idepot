@@ -49,6 +49,7 @@ import {
   lockApInvoiceDomain,
   lockRow,
   pgCode,
+  refreshInvoiceStatus,
   requireRow,
   type PurchasingPrincipal,
 } from './purchasing-common.js';
@@ -160,25 +161,11 @@ export class ApPaymentService {
           [ctx.tenantId, paymentId, a.supplierInvoiceId, a.amount, principal.userId],
         );
         allocatedTotal += a.scaled;
-        await ctx.query(
-          `UPDATE supplier_invoice SET status = 'paid'
-           WHERE id = $1 AND tenant_id = $2
-             AND $3 >= (
-               total + COALESCE((SELECT SUM(amount) FROM supplier_adjustment sa
-                   WHERE sa.supplier_invoice_id = supplier_invoice.id AND sa.kind = 'debit_note'), 0)
-               - COALESCE((SELECT SUM(amount) FROM supplier_adjustment sa
-                   WHERE sa.supplier_invoice_id = supplier_invoice.id AND sa.kind = 'credit_note'), 0)
-               - COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
-                   JOIN supplier_payment sp ON sp.id = spa.payment_id
-                   WHERE spa.supplier_invoice_id = supplier_invoice.id), 0))`,
-          [a.supplierInvoiceId, ctx.tenantId, a.amount],
-        );
-        await ctx.query(
-          `UPDATE supplier_invoice SET status = 'partially_paid'
-           WHERE id = $1 AND tenant_id = $2 AND status = 'posted'`,
-          [a.supplierInvoiceId, ctx.tenantId],
-        );
       }
+      // status recomputed from the canonical AP equation (paid ⟺ open ≤ 0;
+      // partially_paid otherwise) — regression: the previous inline UPDATE
+      // marked any allocation greater than HALF the open balance as 'paid'
+      for (const id of invoiceIds) await refreshInvoiceStatus(ctx, id);
 
       // ---- GL journal -----------------------------------------------------
       const purposes: GlPurpose[] = ['accounts_payable', 'supplier_advance'];
@@ -280,6 +267,9 @@ export class ApPaymentService {
         );
         allocated += scaled;
       }
+      // the invoice's status must reflect the newly applied share (fully
+      // settled via advance → paid; partly → partially_paid)
+      for (const id of invoiceIds) await refreshInvoiceStatus(ctx, id);
 
       // GL: move the newly applied share from the advance to AP
       const appliedNow = dto.allocations.reduce((s, a) => s + parseMoney(a.amount), 0n);

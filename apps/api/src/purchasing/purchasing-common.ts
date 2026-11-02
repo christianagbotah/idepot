@@ -50,6 +50,42 @@ export async function lockApInvoiceDomain(ctx: UowContext, invoiceId: string): P
   );
 }
 
+/** Recomputes a supplier invoice's payment status from the CANONICAL AP
+ *  equation — the same one openApForInvoice derives:
+ *
+ *    open = total + Σ debit notes − Σ credit notes − Σ allocations
+ *
+ *  open ≤ 0 → 'paid'; otherwise 'partially_paid' (called only from paths
+ *  that have just created an allocation or an adjustment against the
+ *  invoice, so 'partially_paid' is always truthful in those contexts).
+ *  Cancelled invoices are never touched.
+ *
+ *  Regression background: the previous inline updates marked an invoice
+ *  'paid' when `allocation >= open-after-this-allocation` — i.e. for any
+ *  allocation greater than HALF the remaining balance (paying 60 of 100
+ *  left status 'paid' with 40 open), and the advance-application flow
+ *  never refreshed the status at all.
+ */
+export async function refreshInvoiceStatus(ctx: UowContext, invoiceId: string): Promise<void> {
+  await ctx.query(
+    `UPDATE supplier_invoice si
+        SET status = CASE
+              WHEN (si.total
+                    + COALESCE((SELECT SUM(sa.amount) FROM supplier_adjustment sa
+                        WHERE sa.supplier_invoice_id = si.id AND sa.kind = 'debit_note'), 0)
+                    - COALESCE((SELECT SUM(sa.amount) FROM supplier_adjustment sa
+                        WHERE sa.supplier_invoice_id = si.id AND sa.kind = 'credit_note'), 0)
+                    - COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
+                        WHERE spa.supplier_invoice_id = si.id), 0)) <= 0
+              THEN 'paid'
+              ELSE 'partially_paid'
+            END
+      WHERE si.id = $1 AND si.tenant_id = $2
+        AND si.status IN ('posted','partially_paid','paid')`,
+    [invoiceId, ctx.tenantId],
+  );
+}
+
 /**
  * Resolves a transacted quantity to its server-authoritative BASE
  * quantity using the product_unit configuration (mirrors StockPoster's

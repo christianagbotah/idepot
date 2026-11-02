@@ -37,6 +37,7 @@ import {
   dateCol,
   lockApInvoiceDomain,
   pgCode,
+  refreshInvoiceStatus,
   requireRow,
   type PurchasingPrincipal,
 } from './purchasing-common.js';
@@ -192,6 +193,12 @@ export class SupplierAdjustmentService {
         allowSoftClosedPeriod: true, // correction document
         lines: journalLines,
       });
+
+      // a credit note can settle an invoice (paid) and a debit note can
+      // re-open a paid one (partially_paid) — recompute from the equation
+      if (dto.supplierInvoiceId != null && dto.supplierInvoiceId !== '') {
+        await refreshInvoiceStatus(ctx, dto.supplierInvoiceId);
+      }
 
       await ctx.audit.record({
         tenantId: ctx.tenantId,

@@ -36,6 +36,7 @@ import {
   evaluatePriceMatch,
   formatDecimal,
   formatMoney,
+  grnLineValue,
   parseMoney,
   parseQuantity,
   parseTolerancePct,
@@ -453,11 +454,20 @@ export class SupplierInvoiceService {
           `UPDATE goods_receipt_line SET invoiced_quantity_base = $3 WHERE id = $1 AND tenant_id = $2`,
           [String(gl.id), ctx.tenantId, formatDecimal(alreadyInvoiced + qty, QTY_SCALE)],
         );
-        const grnValue = parseMoney(String(gl.line_value));
+        // GR/IR clears the BILLED PROPORTION of the receipt only — the
+        // receipt value attributable to this invoice line, on the exact
+        // same basis and rounding the GRN accrued it (round4(qty × cost)).
+        // Regression: this used the FULL GRN line value, so a
+        // partial-quantity (progress-billed) invoice cleared the whole
+        // accrual and booked the uninvoiced remainder as a fictitious
+        // favourable price variance.
+        const billedReceiptValue = parseMoney(
+          grnLineValue(String(l.quantity_base), String(gl.unit_cost)),
+        );
         const lineNet = parseMoney(String(l.line_net));
-        grniDebit += grnValue;
-        if (lineNet > grnValue) ppvDebit += lineNet - grnValue;
-        else ppvCredit += grnValue - lineNet;
+        grniDebit += billedReceiptValue;
+        if (lineNet > billedReceiptValue) ppvDebit += lineNet - billedReceiptValue;
+        else ppvCredit += billedReceiptValue - lineNet;
       } else {
         const key = l.expense_account_id ? String(l.expense_account_id) : 'purchase_expense';
         expenseLegs.set(key, (expenseLegs.get(key) ?? 0n) + parseMoney(String(l.line_net)));

@@ -35,6 +35,15 @@ ALTER TABLE bank_account
   ADD CONSTRAINT fk_bank_account_gl_tenant
   FOREIGN KEY (tenant_id, gl_account_id) REFERENCES gl_account (tenant_id, id);
 
+-- supplier payments may reference the bank account they were paid from;
+-- 0010 could not declare this FK (bank_account did not exist yet).
+-- Composite tenant form, the house pattern for every cross-document
+-- reference — a payment can never point at another tenant's bank account.
+ALTER TABLE supplier_payment
+  ADD CONSTRAINT fk_supplier_payment_bank_tenant
+  FOREIGN KEY (tenant_id, bank_account_id)
+  REFERENCES bank_account (tenant_id, id);
+
 -- ------------------------------------------------------------
 -- 2. Bank transfers (atomic, balanced, duplicate-protected)
 -- ------------------------------------------------------------

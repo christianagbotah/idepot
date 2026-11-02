@@ -216,10 +216,29 @@ docs/accounting/posting-rules.md.
 
 ## Verification summary (Phase 4 — current head)
 
-- 114 unit tests + 246 integration tests green (16 purchasing E2E, 8
+- 114 unit tests + 258 integration tests green (16 purchasing E2E, 8
   concurrency/atomicity with full-table snapshot proofs, 12 accounting
   statements/periods/backfill, 8 banking, 11 migration smoke incl. rerun
-  idempotency, 84 RBAC matrix cases, plus all Phase 1–3 suites).
+  idempotency, 84 RBAC matrix cases, 6 independent-review regressions,
+  plus all Phase 1–3 suites).
+- Independent final review round (blockers fixed at head):
+  - **AP status truthfulness** — the payment status is recomputed from
+    the canonical AP equation (`paid ⟺ open ≤ 0`) by one shared
+    `refreshInvoiceStatus` helper used by payments, advance application
+    and debit/credit notes. Previously an allocation greater than HALF
+    the open balance marked the invoice `paid` prematurely (60 of 100 →
+    `paid` with 40 open), advance application never refreshed the status,
+    and adjustments never re-evaluated it (pinned by 4 regression tests).
+  - **GR/IR proration** — a partial-quantity (progress-billed) supplier
+    invoice clears only the BILLED PROPORTION of the receipt accrual
+    (`round4(billed qty × receipt cost)`, the exact GRN basis) and PPV
+    is measured on that proportion; previously the FULL GRN line value
+    was debited, destroying the accrual for uninvoiced goods and booking
+    a fictitious favourable price variance (pinned by 2 regression tests).
+  - **`supplier_payment.bank_account_id`** now carries the composite
+    tenant FK to `bank_account` (house pattern; previously the only
+    cross-document reference without one), and the bank-tendered payment
+    path (bank's OWN GL account, inactive-account refusal) is tested.
 - Deep atomicity: failures injected after the journal and after the
   deepest counter writes prove ZERO partial state across 19 tables
   (canonical row snapshots, not row counts).
