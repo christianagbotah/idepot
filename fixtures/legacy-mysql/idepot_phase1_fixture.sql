@@ -4,6 +4,10 @@ SET NAMES utf8mb4;
 
 DROP TABLE IF EXISTS opening_stock_count;
 DROP TABLE IF EXISTS suppliers;
+DROP TABLE IF EXISTS accounts;
+DROP TABLE IF EXISTS purchase_order;
+DROP TABLE IF EXISTS accounts_payable;
+DROP TABLE IF EXISTS general_journal;
 DROP TABLE IF EXISTS customers;
 DROP TABLE IF EXISTS units_items;
 DROP TABLE IF EXISTS units;
