@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import type {
   CreateTransfer,
@@ -27,11 +28,15 @@ export interface PrincipalLike {
   roles?: string[];
 }
 
+/**
+ * Human-readable transfer code: `TR-<base36 timestamp><8 hex random>`.
+ * Crypto-strong random suffix (see stock-count.service.ts) so concurrent
+ * transfers in the same millisecond cannot collide on (tenant_id, code).
+ */
 function newCode(): string {
-  return `TR-${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 1296)
-    .toString(36)
-    .toUpperCase()
-    .padStart(2, '0')}`;
+  return `TR-${Date.now().toString(36).toUpperCase()}${randomBytes(4)
+    .toString('hex')
+    .toUpperCase()}`;
 }
 
 /** Rejects duplicated product lines (review fix 6): duplicate lines in a
