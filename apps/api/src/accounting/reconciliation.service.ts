@@ -38,7 +38,7 @@ export class ReconciliationService {
          i.total
          - COALESCE((SELECT SUM(pa.amount) FROM payment_allocation pa
              JOIN payment p ON p.id = pa.payment_id
-             WHERE pa.invoice_id = i.id AND p.status <> 'cancelled' AND p.business_date <= $2::date), 0)
+             WHERE pa.invoice_id = i.id AND p.business_date <= $2::date), 0)
          - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca
              JOIN customer_deposit cd ON cd.id = ca.deposit_id
              WHERE ca.invoice_id = i.id AND cd.business_date <= $2::date), 0)
@@ -70,7 +70,7 @@ export class ReconciliationService {
              WHERE sa.supplier_invoice_id = si.id AND sa.kind = 'credit_note' AND sa.business_date <= $2::date), 0)
          - COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
              JOIN supplier_payment sp ON sp.id = spa.payment_id
-             WHERE spa.supplier_invoice_id = si.id AND sp.status <> 'cancelled' AND sp.business_date <= $2::date), 0)
+             WHERE spa.supplier_invoice_id = si.id AND sp.business_date <= $2::date), 0)
        ), 0)::text AS total
        FROM supplier_invoice si
        WHERE si.tenant_id = $1 AND si.status <> 'cancelled' AND si.business_date <= $2::date`,

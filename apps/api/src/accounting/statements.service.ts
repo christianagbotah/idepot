@@ -218,17 +218,20 @@ export class FinancialStatementsService {
     return this.uow.run({ tenantId }, async (ctx) => {
       const res = await ctx.query<{
         code: string; name: string; account_class: string; purpose: string | null;
+        is_bank_account: boolean;
         debit: string; credit: string;
       }>(
         `SELECT a.code, a.name, a.account_class, m.purpose,
+                (ba.id IS NOT NULL) AS is_bank_account,
                 COALESCE(SUM(l.debit), 0)::text AS debit,
                 COALESCE(SUM(l.credit), 0)::text AS credit
          FROM gl_account a
          JOIN journal_line l ON l.account_id = a.id AND l.tenant_id = a.tenant_id
          JOIN journal_entry e ON e.id = l.entry_id AND e.tenant_id = a.tenant_id
          LEFT JOIN gl_mapping m ON m.account_id = a.id AND m.tenant_id = a.tenant_id
+         LEFT JOIN bank_account ba ON ba.gl_account_id = a.id AND ba.tenant_id = a.tenant_id
          WHERE a.tenant_id = $1 AND COALESCE(e.business_date, e.occurred_at::date) >= $2::date AND COALESCE(e.business_date, e.occurred_at::date) <= $3::date
-         GROUP BY a.code, a.name, a.account_class, m.purpose
+         GROUP BY a.code, a.name, a.account_class, m.purpose, ba.id
          ORDER BY a.code`,
         [ctx.tenantId, args.from, args.to],
       );
@@ -246,9 +249,9 @@ export class FinancialStatementsService {
         const debit = parseMoney(r.debit);
         const credit = parseMoney(r.credit);
         const net = debit - credit;
-        if (r.purpose != null && CASH_PURPOSES.has(r.purpose)) {
+        if ((r.purpose != null && CASH_PURPOSES.has(r.purpose)) || r.is_bank_account) {
           netCashMovement += net;
-          continue; // cash accounts are the target, not a reconciliation item
+          continue; // cash/bank accounts are the target, not a reconciliation item
         }
         if (net === 0n) continue;
         switch (r.account_class) {
@@ -266,9 +269,11 @@ export class FinancialStatementsService {
             });
             break;
           case 'equity':
+            // capital injections are credits (cash inflow) — present as
+            // positive financing, distributions (debits) as negative
             equityFinancing.push({
               accountCode: r.code, accountName: r.name, accountClass: r.account_class,
-              amount: formatMoney(net),
+              amount: formatMoney(-net),
             });
             break;
           default:

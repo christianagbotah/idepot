@@ -22,11 +22,12 @@ import { ConflictError, NotFoundError, ValidationError, formatMoney, parseMoney 
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork, type UowContext } from '../db/unit-of-work.js';
-import type { DocumentSequenceService } from '../sales/document-sequence.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { DocumentSequenceService } from '../sales/document-sequence.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
 import { assertTenantRefs } from '../inventory/inventory-refs.js';
-import { pgCode, requireRow, type PurchasingPrincipal } from '../purchasing/purchasing-common.js';
+import { dateCol, dateColNull, pgCode, requireRow, type PurchasingPrincipal } from '../purchasing/purchasing-common.js';
 
 const MAX_STATEMENT_BYTES = 5 * 1024 * 1024; // 5 MB bound on untrusted input
 const MAX_STATEMENT_LINES = 20_000;
@@ -146,7 +147,7 @@ export class BankService {
       glAccountId: String(b.gl_account_id),
       glAccountCode: gl.rows[0]?.code ?? null,
       isActive: Boolean(b.is_active),
-      openedOn: b.opened_on ? String(b.opened_on).slice(0, 10) : null,
+      openedOn: dateColNull(b.opened_on),
       glBalance: gl.rows[0]?.balance ?? '0',
     };
   }
@@ -155,6 +156,9 @@ export class BankService {
 
   async transfer(principal: PurchasingPrincipal, dto: BankTransferRequest): Promise<BankTransferDto> {
     return this.uow.run({ tenantId: principal.tenantId, userId: principal.userId }, async (ctx) => {
+      if (dto.fromBankAccountId === dto.toBankAccountId) {
+        throw new ValidationError('source and destination bank accounts must differ');
+      }
       const from = await requireRow<Record<string, unknown>>(ctx, 'bank_account', dto.fromBankAccountId);
       const to = await requireRow<Record<string, unknown>>(ctx, 'bank_account', dto.toBankAccountId);
       if (!Boolean(from.is_active) || !Boolean(to.is_active)) {
@@ -197,7 +201,9 @@ export class BankService {
         event: 'transfer_posted',
         description: `Bank transfer ${code}`,
         businessDate: dto.businessDate,
-        reference: code,
+        // prefer the human bank reference — it is what statement
+        // matching compares against (fallback: the document code)
+        reference: dto.reference ?? code,
         createdBy: principal.userId,
         lines: [
           { accountId: String(to.gl_account_id), debit: formatMoney(amount), memo: `transfer ${code} received` },
@@ -260,7 +266,7 @@ export class BankService {
       fromAccountCode: from.rows[0]?.code ?? null,
       toBankAccountId: String(t.to_bank_account_id),
       toAccountCode: to.rows[0]?.code ?? null,
-      businessDate: String(t.business_date).slice(0, 10),
+      businessDate: dateCol(t.business_date),
       amount: String(t.amount),
       fee: String(t.fee),
       reference: t.reference ? String(t.reference) : null,
@@ -435,7 +441,7 @@ export class BankService {
       `SELECT code FROM bank_account WHERE id = $1`, [String(s.bank_account_id)],
     );
     const lines = await ctx.query<Record<string, unknown>>(
-      `SELECT l.*, COALESCE((SELECT SUM(bm.amount) FROM bank_match bm WHERE bm.bank_statement_line_id = l.id), 0)::text AS matched_amount
+      `SELECT l.*, COALESCE((SELECT SUM(bm.amount) FROM bank_match bm WHERE bm.bank_statement_line_id = l.id), 0)::numeric(18,4)::text AS matched_amount
        FROM bank_statement_line l WHERE l.bank_statement_id = $1 ORDER BY l.line_no`,
       [statementId],
     );
@@ -443,7 +449,7 @@ export class BankService {
       id: String(s.id),
       bankAccountId: String(s.bank_account_id),
       bankAccountCode: bank.rows[0]?.code ?? null,
-      statementDate: String(s.statement_date).slice(0, 10),
+      statementDate: dateCol(s.statement_date),
       filename: String(s.filename),
       fileSha256: String(s.file_sha256),
       rowCount: Number(s.row_count),
@@ -451,8 +457,8 @@ export class BankService {
       lines: lines.rows.map((l) => ({
         id: String(l.id),
         lineNo: Number(l.line_no),
-        valueDate: String(l.value_date).slice(0, 10),
-        transactionDate: l.transaction_date ? String(l.transaction_date).slice(0, 10) : null,
+        valueDate: dateCol(l.value_date),
+        transactionDate: dateColNull(l.transaction_date),
         reference: l.reference ? String(l.reference) : null,
         description: l.description ? String(l.description) : null,
         direction: String(l.direction),
@@ -502,7 +508,7 @@ export class BankService {
          WHERE l.tenant_id = $1 AND l.account_id = $2
            AND COALESCE(e.business_date, e.occurred_at::date) BETWEEN ($3::date - 3) AND ($3::date + 3)
          ORDER BY e.occurred_at DESC LIMIT 200`,
-        [ctx.tenantId, String(bank.gl_account_id), String(line.value_date)],
+        [ctx.tenantId, String(bank.gl_account_id), dateCol(line.value_date)],
       );
       const out: BankMatchSuggestionDto[] = [];
       for (const c of candidates.rows) {
@@ -516,8 +522,8 @@ export class BankService {
         let confidence = 0.5;
         if (c.reference != null && line.reference != null && c.reference === line.reference) confidence += 0.4;
         const days = Math.abs(
-          Date.parse(`${String(c.business_date ?? String(c.occurred_at).slice(0, 10))}T00:00:00Z`) -
-            Date.parse(`${String(line.value_date)}T00:00:00Z`),
+          Date.parse(`${dateCol(c.business_date ?? c.occurred_at)}T00:00:00Z`) -
+            Date.parse(`${dateCol(line.value_date)}T00:00:00Z`),
         ) / 86_400_000;
         confidence += Math.max(0, 0.1 - days * 0.02);
         out.push({
@@ -706,7 +712,7 @@ export class BankService {
       id: String(r.id),
       bankAccountId: String(r.bank_account_id),
       bankAccountCode: bank.rows[0]?.code ?? null,
-      asOf: String(r.as_of).slice(0, 10),
+      asOf: dateCol(r.as_of),
       statementClosingBalance: r.statement_closing_balance != null ? String(r.statement_closing_balance) : null,
       glClosingBalance: String(r.gl_closing_balance),
       difference: String(r.difference),

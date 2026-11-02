@@ -12,14 +12,16 @@
  */
 import { Injectable } from '@nestjs/common';
 import type { CreatePurchaseOrder, PurchaseOrderDto, PurchaseOrderLineDto } from '@idepot/contracts';
-import { ConflictError, ValidationError, parseMoney, parseQuantity } from '@idepot/domain';
+import { ConflictError, ValidationError } from '@idepot/domain';
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork, type UowContext } from '../db/unit-of-work.js';
-import type { DocumentSequenceService } from '../sales/document-sequence.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { DocumentSequenceService } from '../sales/document-sequence.service.js';
 import { assertTenantRefs } from '../inventory/inventory-refs.js';
 import {
   assertStatus,
+  dateColNull,
   lockRow,
   pgCode,
   requireRow,
@@ -110,7 +112,6 @@ export class PurchaseOrderService {
         details: {
           code, supplierId: dto.supplierId, warehouseId: dto.warehouseId,
           lineCount: dto.lines.length,
-          total: resolved.reduce((s, r) => s + parseMoney(r.line.unitPrice) * parseQuantity(r.quantityBase) / 10n ** 6n, 0n),
           submitted: dto.submit === true,
         },
       });
@@ -221,7 +222,7 @@ export class PurchaseOrderService {
       orderedQuantityBase: String(l.ordered_quantity_base),
       unitPrice: String(l.unit_price),
       lineDiscount: String(l.line_discount),
-      expectedDate: l.expected_date ? String(l.expected_date).slice(0, 10) : null,
+      expectedDate: dateColNull(l.expected_date),
       receivedQuantityBase: String(l.received_quantity_base),
       invoicedQuantityBase: String(l.invoiced_quantity_base),
     }));
@@ -232,7 +233,7 @@ export class PurchaseOrderService {
       supplierName: supplier.rows[0]?.name ?? null,
       warehouseId: String(po.warehouse_id),
       status: String(po.status),
-      expectedDate: po.expected_date ? String(po.expected_date).slice(0, 10) : null,
+      expectedDate: dateColNull(po.expected_date),
       notes: po.notes ? String(po.notes) : null,
       approvedBy: po.approved_by ? String(po.approved_by) : null,
       approvedAt: po.approved_at ? new Date(po.approved_at as string).toISOString() : null,

@@ -19,6 +19,7 @@ import type { CreateGrn, GrnDto, GrnLineDto } from '@idepot/contracts';
 import {
   ConflictError,
   ValidationError,
+  formatDecimal,
   formatMoney,
   grnLineValue,
   parseMoney,
@@ -29,15 +30,19 @@ import {
   type JournalLineSpec,
   type MovementEntry,
 } from '@idepot/domain';
+import { QTY_SCALE } from '@idepot/domain';
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork, type UowContext } from '../db/unit-of-work.js';
-import type { DocumentSequenceService } from '../sales/document-sequence.service.js';
-import type { StockPoster } from '../inventory/stock-poster.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { DocumentSequenceService } from '../sales/document-sequence.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { StockPoster } from '../inventory/stock-poster.js';
 import { assertTenantRefs } from '../inventory/inventory-refs.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
 import {
+  dateCol,
   lockRow,
   pgCode,
   requireRow,
@@ -234,7 +239,7 @@ export class ReceivingService {
         const now = prev + parseQuantity(r.quantityBase);
         await ctx.query(
           `UPDATE purchase_order_line SET received_quantity_base = $3 WHERE id = $1 AND tenant_id = $2`,
-          [polId, ctx.tenantId, String(now)],
+          [polId, ctx.tenantId, formatDecimal(now, QTY_SCALE)],
         );
         if (now >= ordered) anyReceived = true;
         else anyOpen = true;
@@ -276,6 +281,11 @@ export class ReceivingService {
           createdBy: principal.userId,
           lines,
         });
+      }
+
+      // ---- 8b. TEST ONLY: deterministic failure injection ----------------
+      if (dto.simulateFailure === 'after_journal' || dto.simulateFailure === 'after_writes') {
+        throw new Error(`simulated failure after ${dto.simulateFailure === 'after_journal' ? 'journal' : 'writes'} (atomicity test)`);
       }
 
       // ---- 9. audit + outbox -------------------------------------------
@@ -374,7 +384,7 @@ export class ReceivingService {
       supplierId: String(grn.supplier_id),
       supplierName: supplier.rows[0]?.name ?? null,
       warehouseId: String(grn.warehouse_id),
-      businessDate: String(grn.business_date).slice(0, 10),
+      businessDate: dateCol(grn.business_date),
       supplierDeliveryRef: grn.supplier_delivery_ref ? String(grn.supplier_delivery_ref) : null,
       notes: grn.notes ? String(grn.notes) : null,
       status: String(grn.status),

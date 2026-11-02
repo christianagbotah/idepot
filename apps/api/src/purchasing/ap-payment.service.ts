@@ -39,11 +39,13 @@ import {
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork, type UowContext } from '../db/unit-of-work.js';
-import type { DocumentSequenceService } from '../sales/document-sequence.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { DocumentSequenceService } from '../sales/document-sequence.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
 import { assertTenantRefs } from '../inventory/inventory-refs.js';
 import {
+  dateCol,
   lockApInvoiceDomain,
   lockRow,
   pgCode,
@@ -168,7 +170,7 @@ export class ApPaymentService {
                    WHERE sa.supplier_invoice_id = supplier_invoice.id AND sa.kind = 'credit_note'), 0)
                - COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
                    JOIN supplier_payment sp ON sp.id = spa.payment_id
-                   WHERE spa.supplier_invoice_id = supplier_invoice.id AND sp.status <> 'cancelled'), 0))`,
+                   WHERE spa.supplier_invoice_id = supplier_invoice.id), 0))`,
           [a.supplierInvoiceId, ctx.tenantId, a.amount],
         );
         await ctx.query(
@@ -212,6 +214,10 @@ export class ApPaymentService {
         lines: journalLines,
       });
 
+      // TEST ONLY: deterministic failure injection at two depths
+      if (dto.simulateFailure != null) {
+        throw new Error(`simulated failure after ${dto.simulateFailure} (atomicity test)`);
+      }
       await ctx.audit.record({
         tenantId: ctx.tenantId,
         actorUserId: principal.userId,
@@ -284,7 +290,7 @@ export class ApPaymentService {
         sourceId: dto.paymentId,
         event: 'advance_applied',
         description: `Advance application on payment ${String(payment.code)}`,
-        businessDate: String(payment.business_date).slice(0, 10),
+        businessDate: dateCol(payment.business_date),
         reference: String(payment.code),
         createdBy: principal.userId,
         lines: [
@@ -351,7 +357,7 @@ export class ApPaymentService {
       code: String(p.code),
       supplierId: String(p.supplier_id),
       supplierName: supplier.rows[0]?.name ?? null,
-      businessDate: String(p.business_date).slice(0, 10),
+      businessDate: dateCol(p.business_date),
       amount: String(p.amount),
       method: String(p.method),
       reference: p.reference ? String(p.reference) : null,
@@ -378,7 +384,7 @@ export class ApPaymentService {
             WHERE supplier_invoice_id = si.id AND kind = 'credit_note'), 0)::text AS credit_total,
          COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
             JOIN supplier_payment sp ON sp.id = spa.payment_id
-            WHERE spa.supplier_invoice_id = si.id AND sp.status <> 'cancelled'), 0)::text AS allocated
+            WHERE spa.supplier_invoice_id = si.id), 0)::text AS allocated
        FROM supplier_invoice si WHERE si.id = $1`,
       [invoiceId],
     );
@@ -409,7 +415,7 @@ export class ApPaymentService {
                        WHERE sa.supplier_invoice_id = si.id AND sa.kind = 'credit_note'), 0)
                    - COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
                        JOIN supplier_payment sp ON sp.id = spa.payment_id
-                       WHERE spa.supplier_invoice_id = si.id AND sp.status <> 'cancelled'), 0)) AS open
+                       WHERE spa.supplier_invoice_id = si.id), 0)) AS open
            FROM supplier_invoice si
            WHERE si.tenant_id = $1 AND si.status IN ('posted','partially_paid','paid')
              AND si.business_date <= $2::date
@@ -481,7 +487,7 @@ export class ApPaymentService {
       const lines: SupplierStatementLineDto[] = events.rows.map((e) => {
         running += parseMoney(e.debit) - parseMoney(e.credit);
         return {
-          businessDate: String(e.business_date).slice(0, 10),
+          businessDate: dateCol(e.business_date),
           documentCode: String(e.code),
           documentType: String(e.doc_type),
           detail: e.detail ?? null,
@@ -515,7 +521,7 @@ export class ApPaymentService {
                WHERE sa.supplier_invoice_id = si.id AND sa.kind = 'credit_note'), 0)
            - COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
                JOIN supplier_payment sp ON sp.id = spa.payment_id
-               WHERE spa.supplier_invoice_id = si.id AND sp.status <> 'cancelled'), 0))::text AS open
+               WHERE spa.supplier_invoice_id = si.id), 0))::text AS open
          FROM supplier_invoice si JOIN supplier s ON s.id = si.supplier_id
          WHERE si.tenant_id = $1 AND si.status IN ('posted','partially_paid','paid')
          GROUP BY si.supplier_id, s.name
@@ -527,7 +533,7 @@ export class ApPaymentService {
                WHERE sa.supplier_invoice_id = si.id AND sa.kind = 'credit_note'), 0)
            - COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
                JOIN supplier_payment sp ON sp.id = spa.payment_id
-               WHERE spa.supplier_invoice_id = si.id AND sp.status <> 'cancelled'), 0)) <> 0
+               WHERE spa.supplier_invoice_id = si.id), 0)) <> 0
          ORDER BY s.name`,
         [ctx.tenantId],
       );

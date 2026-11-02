@@ -34,24 +34,29 @@ import {
   NotFoundError,
   ValidationError,
   evaluatePriceMatch,
+  formatDecimal,
   formatMoney,
   parseMoney,
   parseQuantity,
   parseTolerancePct,
   purchaseLineNet,
   computeTaxEvidence,
+  QTY_SCALE,
   type GlPurpose,
   type JournalLineSpec,
 } from '@idepot/domain';
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork, type UowContext } from '../db/unit-of-work.js';
-import type { DocumentSequenceService } from '../sales/document-sequence.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { DocumentSequenceService } from '../sales/document-sequence.service.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
 import { assertTenantRefs } from '../inventory/inventory-refs.js';
 import {
   assertStatus,
+  dateCol,
+  dateColNull,
   lockRow,
   pgCode,
   requireRow,
@@ -353,7 +358,7 @@ export class SupplierInvoiceService {
 
       const dtoOut = await this.getSupplierInvoiceWithinCtx(ctx, invoiceId);
       if (dto.post === true && (matchState === 'within_tolerance' || matchState === 'no_po')) {
-        return this.postSupplierInvoiceWithinCtx(ctx, principal, invoiceId);
+        return this.postSupplierInvoiceWithinCtx(ctx, principal, invoiceId, undefined, dto.simulateFailure);
       }
       return dtoOut;
     });
@@ -377,6 +382,7 @@ export class SupplierInvoiceService {
     principal: PurchasingPrincipal,
     invoiceId: string,
     approval?: ApproveMatchExceptions,
+    simulateFailure?: 'after_writes' | 'after_journal',
   ): Promise<SupplierInvoiceDto> {
     const inv = await lockRow(ctx, 'supplier_invoice', invoiceId);
     assertStatus('supplier_invoice', invoiceId, String(inv.status), ['pending_match', 'matched']);
@@ -407,7 +413,7 @@ export class SupplierInvoiceService {
     }
 
     // ---- period lock ---------------------------------------------------
-    await this.finance.assertPeriodOpen(ctx, String(inv.business_date).slice(0, 10));
+    await this.finance.assertPeriodOpen(ctx, dateCol(inv.business_date));
 
     // ---- load lines; update GRN/PO invoiced counters -------------------
     const lines = await ctx.query<Record<string, unknown>>(
@@ -445,7 +451,7 @@ export class SupplierInvoiceService {
         }
         await ctx.query(
           `UPDATE goods_receipt_line SET invoiced_quantity_base = $3 WHERE id = $1 AND tenant_id = $2`,
-          [String(gl.id), ctx.tenantId, String(alreadyInvoiced + qty)],
+          [String(gl.id), ctx.tenantId, formatDecimal(alreadyInvoiced + qty, QTY_SCALE)],
         );
         const grnValue = parseMoney(String(gl.line_value));
         const lineNet = parseMoney(String(l.line_net));
@@ -461,7 +467,7 @@ export class SupplierInvoiceService {
         const alreadyInvoiced = parseQuantity(String(pl.invoiced_quantity_base));
         await ctx.query(
           `UPDATE purchase_order_line SET invoiced_quantity_base = $3 WHERE id = $1 AND tenant_id = $2`,
-          [String(pl.id), ctx.tenantId, String(alreadyInvoiced + qty)],
+          [String(pl.id), ctx.tenantId, formatDecimal(alreadyInvoiced + qty, QTY_SCALE)],
         );
       }
     }
@@ -535,17 +541,25 @@ export class SupplierInvoiceService {
       credit: formatMoney(apTotal),
       memo: `supplier invoice ${String(inv.code)} — AP`,
     });
+    // TEST ONLY: deterministic failure AFTER the deepest writes
+    // (GRN/PO counters are already updated; the journal is next)
+    if (simulateFailure === 'after_writes') {
+      throw new Error('simulated failure after writes (atomicity test)');
+    }
     await this.finance.postJournal(ctx, {
       sourceKind: 'supplier_invoice',
       sourceId: invoiceId,
       event: 'supplier_invoice_posted',
       description: `Supplier invoice ${String(inv.code)} (${String(inv.supplier_invoice_number)})`,
-      businessDate: String(inv.business_date).slice(0, 10),
+      businessDate: dateCol(inv.business_date),
       reference: String(inv.code),
       createdBy: principal.userId,
       lines: journalLines,
     });
 
+    if (simulateFailure === 'after_journal') {
+      throw new Error('simulated failure after journal (atomicity test)');
+    }
     await ctx.query(
       `UPDATE supplier_invoice
        SET status = 'posted', posted_at = now(), posted_by = $3,
@@ -632,9 +646,9 @@ export class SupplierInvoiceService {
             WHERE tenant_id = $1 AND supplier_invoice_id = $2 AND kind = 'debit_note'), 0)::text AS debit_total,
          COALESCE((SELECT SUM(amount) FROM supplier_adjustment
             WHERE tenant_id = $1 AND supplier_invoice_id = $2 AND kind = 'credit_note'), 0)::text AS credit_total,
-         COALESCE((SELECT SUM(amount) FROM supplier_payment_allocation spa
+         COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
             JOIN supplier_payment sp ON sp.id = spa.payment_id
-            WHERE spa.tenant_id = $1 AND spa.supplier_invoice_id = $2 AND sp.status <> 'cancelled'), 0)::text AS allocated`,
+            WHERE spa.tenant_id = $1 AND spa.supplier_invoice_id = $2), 0)::text AS allocated`,
       [ctx.tenantId, invoiceId],
     );
     const o = open.rows[0]!;
@@ -674,10 +688,10 @@ export class SupplierInvoiceService {
       supplierId: String(inv.supplier_id),
       supplierName: supplier.rows[0]?.name ?? null,
       supplierInvoiceNumber: String(inv.supplier_invoice_number),
-      supplierInvoiceDate: String(inv.supplier_invoice_date).slice(0, 10),
-      dueDate: inv.due_date ? String(inv.due_date).slice(0, 10) : null,
+      supplierInvoiceDate: dateCol(inv.supplier_invoice_date),
+      dueDate: dateColNull(inv.due_date),
       paymentTerms: inv.payment_terms ? String(inv.payment_terms) : null,
-      businessDate: String(inv.business_date).slice(0, 10),
+      businessDate: dateCol(inv.business_date),
       purchaseOrderId: inv.purchase_order_id ? String(inv.purchase_order_id) : null,
       status: String(inv.status),
       matchState: String(inv.match_state),

@@ -591,6 +591,8 @@ export class FinancialConfigurationService {
       createdBy?: string | null;
       /** correction documents may still post into a soft-closed period */
       allowSoftClosedPeriod?: boolean;
+      /** when set, the new entry is the reversal of this entry (append-only link) */
+      reversalOfId?: string | null;
       lines: JournalLineSpec[];
     },
   ): Promise<{ id: string; totalDebit: string; totalCredit: string } | null> {
@@ -608,13 +610,14 @@ export class FinancialConfigurationService {
     const header = await ctx.query<{ id: string }>(
       `INSERT INTO journal_entry
          (tenant_id, source_kind, source_id, event, description, occurred_at, created_by,
-          total_debit, total_credit, business_date, reference)
-       VALUES ($1,$2,$3,$4,$5,COALESCE($6::timestamptz, now()),$7,$8,$9,$10::date,$11)
+          total_debit, total_credit, business_date, reference, reversal_of_id)
+       VALUES ($1,$2,$3,$4,$5,COALESCE($6::timestamptz, now()),$7,$8,$9,$10::date,$11,$12::uuid)
        RETURNING id`,
       [
         ctx.tenantId, args.sourceKind, args.sourceId, args.event,
         args.description ?? null, occurredAt, args.createdBy ?? ctx.userId,
         journal.totalDebit, journal.totalCredit, businessDate, args.reference ?? null,
+        args.reversalOfId ?? null,
       ],
     );
     const entryId = header.rows[0]!.id;

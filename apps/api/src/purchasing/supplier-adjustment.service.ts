@@ -24,13 +24,17 @@ import {
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork, type UowContext } from '../db/unit-of-work.js';
-import type { DocumentSequenceService } from '../sales/document-sequence.service.js';
-import type { StockPoster } from '../inventory/stock-poster.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { DocumentSequenceService } from '../sales/document-sequence.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { StockPoster } from '../inventory/stock-poster.js';
 import { assertTenantRefs } from '../inventory/inventory-refs.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
-import type { ApPaymentService } from './ap-payment.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { ApPaymentService } from './ap-payment.service.js';
 import {
+  dateCol,
   lockApInvoiceDomain,
   pgCode,
   requireRow,
@@ -265,7 +269,7 @@ export class SupplierAdjustmentService {
       supplierName: supplier.rows[0]?.name ?? null,
       supplierInvoiceId: sa.supplier_invoice_id ? String(sa.supplier_invoice_id) : null,
       supplierInvoiceCode: invoiceCode,
-      businessDate: String(sa.business_date).slice(0, 10),
+      businessDate: dateCol(sa.business_date),
       reason: String(sa.reason),
       adjustmentClass: String(sa.adjustment_class),
       amount: String(sa.amount),

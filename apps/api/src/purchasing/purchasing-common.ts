@@ -19,6 +19,22 @@ export interface PurchasingPrincipal {
   displayName: string;
 }
 
+/**
+ * Reads a PostgreSQL `date` column as an ISO yyyy-mm-dd string. node-pg
+ * parses DATE columns into JS Date objects (local-midnight); naive
+ * String() would produce "Mon Nov 02 ..." — this normalizes both shapes.
+ */
+export function dateCol(v: unknown): string {
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
+}
+
+/** Reads a nullable date column; null passes through. */
+export function dateColNull(v: unknown): string | null {
+  if (v == null) return null;
+  return dateCol(v);
+}
+
 /** Deterministic advisory-lock key space for AP invoice domains. */
 export function apInvoiceLockKey(tenantId: string, invoiceId: string): string {
   return `ap-invoice:${tenantId}:${invoiceId}`;

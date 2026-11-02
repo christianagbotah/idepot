@@ -1066,6 +1066,8 @@ export const CreateGrnSchema = z.object({
       reason: z.string().min(10).max(500),
     })
     .optional(),
+  /** TEST ONLY: inject a deterministic failure at a precise depth */
+  simulateFailure: z.enum(['after_writes', 'after_journal']).optional(),
 });
 export type CreateGrn = z.infer<typeof CreateGrnSchema>;
 
@@ -1131,6 +1133,8 @@ export const CreateSupplierInvoiceSchema = z.object({
     .max(200),
   /** post immediately when the match is clean (within tolerance) */
   post: z.boolean().optional(),
+  /** TEST ONLY: inject a deterministic failure at a precise depth */
+  simulateFailure: z.enum(['after_writes', 'after_journal']).optional(),
 });
 export type CreateSupplierInvoice = z.infer<typeof CreateSupplierInvoiceSchema>;
 
@@ -1213,6 +1217,8 @@ export const PaySupplierSchema = z.object({
     )
     .max(100)
     .optional(),
+  /** TEST ONLY: inject a deterministic failure at a precise depth */
+  simulateFailure: z.enum(['after_writes', 'after_journal']).optional(),
 });
 export type PaySupplier = z.infer<typeof PaySupplierSchema>;
 

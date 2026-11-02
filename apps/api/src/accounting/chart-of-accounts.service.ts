@@ -32,7 +32,7 @@ import {
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork, type UowContext } from '../db/unit-of-work.js';
-import { pgCode, requireRow } from '../purchasing/purchasing-common.js';
+import { dateCol, dateColNull, pgCode, requireRow } from '../purchasing/purchasing-common.js';
 
 interface AccountingPrincipal {
   userId: string;
@@ -406,8 +406,8 @@ export class ChartOfAccountsService {
       isPosting: Boolean(r.is_posting),
       isControl: Boolean(r.is_control),
       isActive: Boolean(r.is_active),
-      effectiveFrom: String(r.effective_from).slice(0, 10),
-      retiredAt: r.retired_at ? String(r.retired_at).slice(0, 10) : null,
+      effectiveFrom: dateCol(r.effective_from),
+      retiredAt: dateColNull(r.retired_at),
       description: r.description ? String(r.description) : null,
     };
   }
@@ -424,8 +424,8 @@ export class ChartOfAccountsService {
       fiscalYear: Number(r.fiscal_year),
       periodNumber: Number(r.period_number),
       periodName: String(r.period_name),
-      startsOn: String(r.starts_on).slice(0, 10),
-      endsOn: String(r.ends_on).slice(0, 10),
+      startsOn: dateCol(r.starts_on),
+      endsOn: dateCol(r.ends_on),
       status: String(r.status),
       closedAt: r.closed_at ? new Date(r.closed_at as string).toISOString() : null,
       closedBy: r.closed_by ? String(r.closed_by) : null,

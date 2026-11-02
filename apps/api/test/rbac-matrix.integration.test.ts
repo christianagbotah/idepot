@@ -8,9 +8,9 @@ import type { ApiFixture } from './helpers.js';
 import { createApiFixture } from './helpers.js';
 
 interface MatrixCase {
-  role: keyof ApiFixture['tenantA']['users'];
+  role: keyof ApiFixture['tenantA']['users'] | 'accountant' | 'procurement';
   method: 'get' | 'post' | 'patch';
-  path: 'warehouses' | 'internal/change-feed' | 'auth/devices' | 'sample-documents' | 'tax/profiles' | 'gl/journals' | 'gl/accounts';
+  path: string;
   body?: Record<string, unknown>;
   expect: number;
 }
@@ -52,13 +52,79 @@ const MATRIX: MatrixCase[] = [
   { role: 'cashier', method: 'get', path: 'gl/journals', expect: 403 },
   { role: 'auditor', method: 'get', path: 'gl/accounts', expect: 200 },
   { role: 'cashier', method: 'get', path: 'gl/accounts', expect: 403 },
+  // ---- Phase 4: purchasing / receiving / AP / accounting / banking ----
+  // purchasing:read
+  { role: 'owner', method: 'get', path: 'purchasing/purchase-orders', expect: 200 },
+  { role: 'manager', method: 'get', path: 'purchasing/purchase-orders', expect: 200 },
+  { role: 'accountant', method: 'get', path: 'purchasing/purchase-orders', expect: 200 },
+  { role: 'procurement', method: 'get', path: 'purchasing/purchase-orders', expect: 200 },
+  { role: 'auditor', method: 'get', path: 'purchasing/purchase-orders', expect: 200 },
+  { role: 'cashier', method: 'get', path: 'purchasing/purchase-orders', expect: 403 },
+  // purchasing:write (creating with an invalid body still proves the
+  // permission gate: 403 vs 400/409 distinguishes authorization)
+  { role: 'manager', method: 'post', path: 'purchasing/purchase-orders', body: {}, expect: 400 },
+  { role: 'procurement', method: 'post', path: 'purchasing/purchase-orders', body: {}, expect: 400 },
+  { role: 'cashier', method: 'post', path: 'purchasing/purchase-orders', body: {}, expect: 403 },
+  { role: 'accountant', method: 'post', path: 'purchasing/purchase-orders', body: {}, expect: 403 },
+  // receiving:write
+  { role: 'manager', method: 'post', path: 'purchasing/grns', body: {}, expect: 400 },
+  { role: 'procurement', method: 'post', path: 'purchasing/grns', body: {}, expect: 400 },
+  { role: 'cashier', method: 'post', path: 'purchasing/grns', body: {}, expect: 403 },
+  // ap:read / ap:pay
+  { role: 'owner', method: 'get', path: 'ap/aging', expect: 200 },
+  { role: 'accountant', method: 'get', path: 'ap/aging', expect: 200 },
+  { role: 'auditor', method: 'get', path: 'ap/aging', expect: 200 },
+  { role: 'cashier', method: 'get', path: 'ap/aging', expect: 403 },
+  { role: 'manager', method: 'post', path: 'purchasing/supplier-payments', body: {}, expect: 400 },
+  { role: 'accountant', method: 'post', path: 'purchasing/supplier-payments', body: {}, expect: 400 },
+  { role: 'procurement', method: 'post', path: 'purchasing/supplier-payments', body: {}, expect: 403 },
+  { role: 'cashier', method: 'post', path: 'purchasing/supplier-payments', body: {}, expect: 403 },
+  // accounting:read / accounting:close / accounting:configure
+  { role: 'owner', method: 'get', path: 'accounting/periods', expect: 200 },
+  { role: 'accountant', method: 'get', path: 'accounting/periods', expect: 200 },
+  { role: 'auditor', method: 'get', path: 'accounting/periods', expect: 200 },
+  { role: 'manager', method: 'get', path: 'accounting/periods', expect: 200 },
+  { role: 'cashier', method: 'get', path: 'accounting/periods', expect: 403 },
+  { role: 'manager', method: 'post', path: 'accounting/periods', body: {}, expect: 403 },
+  { role: 'accountant', method: 'post', path: 'accounting/periods', body: {}, expect: 400 },
+  // accounting:journal (manual journals)
+  { role: 'accountant', method: 'post', path: 'accounting/journals', body: {}, expect: 400 },
+  { role: 'manager', method: 'post', path: 'accounting/journals', body: {}, expect: 400 },
+  { role: 'cashier', method: 'post', path: 'accounting/journals', body: {}, expect: 403 },
+  { role: 'procurement', method: 'post', path: 'accounting/journals', body: {}, expect: 403 },
+  // accounting:configure (chart administration)
+  { role: 'accountant', method: 'post', path: 'accounting/accounts', body: {}, expect: 400 },
+  { role: 'manager', method: 'post', path: 'accounting/accounts', body: {}, expect: 403 },
+  // financial-report:read
+  { role: 'owner', method: 'get', path: 'accounting/trial-balance', expect: 200 },
+  { role: 'accountant', method: 'get', path: 'accounting/profit-and-loss', expect: 200 },
+  { role: 'auditor', method: 'get', path: 'accounting/balance-sheet', expect: 200 },
+  { role: 'manager', method: 'get', path: 'accounting/cash-flow', expect: 200 },
+  { role: 'cashier', method: 'get', path: 'accounting/trial-balance', expect: 403 },
+  { role: 'procurement', method: 'get', path: 'accounting/trial-balance', expect: 403 },
+  // banking:read / banking:write / banking:reconcile
+  { role: 'owner', method: 'get', path: 'banking/accounts', expect: 200 },
+  { role: 'accountant', method: 'get', path: 'banking/accounts', expect: 200 },
+  { role: 'auditor', method: 'get', path: 'banking/accounts', expect: 200 },
+  { role: 'cashier', method: 'get', path: 'banking/accounts', expect: 403 },
+  { role: 'manager', method: 'post', path: 'banking/accounts', body: {}, expect: 400 },
+  { role: 'accountant', method: 'post', path: 'banking/accounts', body: {}, expect: 400 },
+  { role: 'auditor', method: 'post', path: 'banking/accounts', body: {}, expect: 403 },
 ];
 
 describe('RBAC authorization matrix', () => {
   let fx: ApiFixture;
+  // Phase 4 roles seeded locally (the shared fixture seeds the Phase 1-3 set)
+  const extraUsers: Record<string, { token?: string }> = {};
 
   beforeAll(async () => {
     fx = await createApiFixture();
+    const { seedUser, login } = await import('./helpers.js');
+    for (const role of ['accountant', 'procurement']) {
+      const email = `${role}@tenant-a.test`;
+      await seedUser(fx.admin, fx.tenantA.tenantId, email, `${role.replace(/^./, (m) => m.toUpperCase())}-Pass-1`, [role]);
+      extraUsers[role] = { token: await login(fx.app, 'tenant-a', email, `${role.replace(/^./, (m) => m.toUpperCase())}-Pass-1`) };
+    }
   }, 120_000);
   afterAll(async () => {
     // beforeAll may have failed before assigning fx (e.g. embedded PG boot);
@@ -67,7 +133,7 @@ describe('RBAC authorization matrix', () => {
   });
 
   it.each(MATRIX)('$role $method /$path -> $expect', async (c) => {
-    const user = fx.tenantA.users[c.role]!;
+    const user = extraUsers[c.role] ?? fx.tenantA.users[c.role as keyof ApiFixture['tenantA']['users']]!;
     const res = await request(fx.app.getHttpServer())
       [c.method](`/api/${c.path}`)
       .set('Authorization', `Bearer ${user.token}`)

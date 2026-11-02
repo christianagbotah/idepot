@@ -140,6 +140,9 @@ export class JournalService {
   /** Posts an approved manual journal (balanced, audited, period-checked). */
   async postManualJournal(principal: AccountingPrincipal, dto: ManualJournal): Promise<JournalEntryDto> {
     return this.uow.run({ tenantId: principal.tenantId, userId: principal.userId }, async (ctx) => {
+      // provision the neutral control chart idempotently so the seeded
+      // codes resolve even on a tenant that has never posted a document
+      await this.finance.ensureDefaults(ctx);
       // resolve every account code to a tenant-scoped active posting account
       const codes = [...new Set(dto.lines.map((l) => l.accountCode))];
       const accounts = await ctx.query<{ id: string; code: string; is_active: boolean; is_posting: boolean }>(
@@ -233,12 +236,10 @@ export class JournalService {
         reference: String(entry.reference ?? null),
         createdBy: principal.userId,
         allowSoftClosedPeriod: true,
+        reversalOfId: entryId,
         lines: reversed,
       });
       if (posted == null) throw new ConflictError('nothing to reverse');
-      await ctx.query(`UPDATE journal_entry SET reversal_of_id = $3 WHERE id = $1 AND tenant_id = $2`, [
-        posted.id, ctx.tenantId, entryId,
-      ]);
       await ctx.audit.record({
         tenantId: ctx.tenantId,
         actorUserId: principal.userId,

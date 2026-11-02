@@ -37,7 +37,6 @@ export interface BackfillReport {
   nonSaleInventoryJournals: number;
   preHardeningSaleJournals: number;
   partyOpeningBalanceJournals: number;
-  businessDatesBackfilled: number;
   skipped: Array<{ source: string; reason: string }>;
 }
 
@@ -55,20 +54,24 @@ export class BackfillService {
         nonSaleInventoryJournals: 0,
         preHardeningSaleJournals: 0,
         partyOpeningBalanceJournals: 0,
-        businessDatesBackfilled: 0,
         skipped: [],
       };
 
-      // ---- 4. business_date backfill on pre-Phase-4 journals ------------
-      const bd = await ctx.query<{ n: number }>(
-        `WITH updated AS (
-           UPDATE journal_entry SET business_date = occurred_at::date
-           WHERE tenant_id = $1 AND business_date IS NULL
-           RETURNING 1)
-         SELECT count(*)::int AS n FROM updated`,
+      // Idempotency WITHOUT error-catching: a failed INSERT inside one
+      // transaction aborts it, so existing journals are pre-loaded and
+      // skipped deterministically (the UNIQUE (tenant, source_kind,
+      // source_id, event) remains the structural backstop for races).
+      const existingRes = await ctx.query<{ source_kind: string; source_id: string; event: string }>(
+        `SELECT source_kind, source_id::text AS source_id, event FROM journal_entry WHERE tenant_id = $1`,
         [ctx.tenantId],
       );
-      report.businessDatesBackfilled = Number(bd.rows[0]!.n);
+      const existing = new Set(existingRes.rows.map((r) => `${r.source_kind}:${r.source_id}:${r.event}`));
+      const already = (kind: string, id: string, event: string) => existing.has(`${kind}:${id}:${event}`);
+
+      // NOTE: pre-Phase-4 journal rows keep business_date NULL — the
+      // journal is append-only (no UPDATE grant, by design). Every
+      // statement query reads COALESCE(business_date, occurred_at::date),
+      // so legacy rows are classified correctly without mutation.
 
       // ---- 1. non-sale inventory documents ------------------------------
       // opening-stock receipts (migration reason) + adjustments + count
@@ -93,6 +96,7 @@ export class BackfillService {
       ];
       const accounts = await this.finance.resolveGlAccounts(ctx, purposes);
       for (const m of movements.rows) {
+        if (already('stock_movement_backfill', m.id, 'inventory_value_backfilled')) continue;
         const value = parseMoney(m.cost_value!);
         const lines: JournalLineSpec[] = [];
         const memo = `${m.source_document_type} ${m.source_document_id ?? ''} ${m.movement_type}`;
@@ -152,6 +156,7 @@ export class BackfillService {
       const salePurposes: GlPurpose[] = ['sales_revenue', 'tax_payable', 'cogs', 'inventory', 'accounts_receivable', 'cash'];
       const saleAccounts = await this.finance.resolveGlAccounts(ctx, salePurposes);
       for (const inv of invoices.rows) {
+        if (already('invoice_backfill', inv.id, 'sale_posted')) continue;
         const total = parseMoney(inv.total);
         const cogs = parseMoney(inv.cost_total);
         const taxAdded = parseMoney(inv.tax_total) - parseMoney(inv.tax_inclusive_total);
@@ -218,6 +223,8 @@ export class BackfillService {
         cash: 'cash', momo: 'momo_clearing', cheque: 'cheque_clearing', bank_transfer: 'bank_clearing',
       };
       for (const p of payments.rows) {
+        const isDeposit = p.source_kind_hint != null;
+        if (already(isDeposit ? 'customer_deposit' : 'payment', p.id, isDeposit ? 'deposit_posted' : 'receipt_posted')) continue;
         const tenders = await ctx.query<{ method: string; amount: string }>(
           `SELECT method, amount::text AS amount FROM payment_tender WHERE payment_id = $1`,
           [p.id],
@@ -230,7 +237,6 @@ export class BackfillService {
         const change = parseMoney(p.change_given);
         const allocated = parseMoney(allocatedRes.rows[0]!.total);
         const unapplied = amount - change - allocated;
-        const isDeposit = p.source_kind_hint != null;
         const lines: JournalLineSpec[] = [];
         for (const t of tenders.rows) {
           const purpose = TENDER_PURPOSE[t.method];
@@ -275,6 +281,7 @@ export class BackfillService {
         [ctx.tenantId],
       );
       for (const ca of credits.rows) {
+        if (already('credit_application', ca.id, 'credit_applied')) continue;
         try {
           const posted = await this.finance.postJournal(ctx, {
             sourceKind: 'credit_application',
@@ -364,7 +371,6 @@ export class BackfillService {
           nonSaleInventoryJournals: report.nonSaleInventoryJournals,
           preHardeningSaleJournals: report.preHardeningSaleJournals,
           partyOpeningBalanceJournals: report.partyOpeningBalanceJournals,
-          businessDatesBackfilled: report.businessDatesBackfilled,
           skipped: report.skipped.length,
         },
       });
