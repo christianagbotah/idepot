@@ -489,6 +489,7 @@ export class SalePoster {
     const journal = await this.postSaleJournal(ctx, principal, {
       invoiceId,
       code,
+      businessDate,
       occurredAt: input.occurredAt ?? null,
       moneyTenders,
       changeDue,
@@ -612,6 +613,7 @@ export class SalePoster {
     args: {
       invoiceId: string;
       code: string;
+      businessDate: string | null;
       occurredAt: string | null;
       moneyTenders: TenderDto[];
       changeDue: bigint;
@@ -670,6 +672,8 @@ export class SalePoster {
       event: 'sale_posted',
       description: `Sale ${args.code}`,
       occurredAt: args.occurredAt,
+      businessDate: args.businessDate,
+      reference: args.code,
       createdBy: principal.userId,
       lines,
     });

@@ -25,7 +25,10 @@ export type TenantRefTable =
   | 'customer'
   | 'device'
   | 'customer_deposit'
-  | 'invoice';
+  | 'invoice'
+  // Phase 4 — purchasing / banking references
+  | 'supplier'
+  | 'bank_account';
 
 export async function assertTenantRef(
   ctx: UowContext,

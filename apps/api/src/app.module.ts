@@ -47,6 +47,23 @@ import { SyncService } from './sales/sync.service.js';
 // Phase 3 hardening — financial configuration & evidence
 import { FinancialConfigurationService } from './finance/financial-configuration.service.js';
 import { TaxController, GlController } from './finance/finance.controller.js';
+// Phase 4 — purchasing & AP
+import { PurchasingController, ApController } from './purchasing/purchasing.controller.js';
+import { PurchaseOrderService } from './purchasing/purchase.service.js';
+import { ReceivingService } from './purchasing/receiving.service.js';
+import { SupplierInvoiceService } from './purchasing/supplier-invoice.service.js';
+import { ApPaymentService } from './purchasing/ap-payment.service.js';
+import { SupplierAdjustmentService } from './purchasing/supplier-adjustment.service.js';
+// Phase 4 — accounting
+import { AccountingController } from './accounting/accounting.controller.js';
+import { ChartOfAccountsService } from './accounting/chart-of-accounts.service.js';
+import { JournalService } from './accounting/journal.service.js';
+import { FinancialStatementsService } from './accounting/statements.service.js';
+import { ReconciliationService } from './accounting/reconciliation.service.js';
+import { BackfillService } from './accounting/backfill.service.js';
+// Phase 4 — banking
+import { BankingController } from './banking/banking.controller.js';
+import { BankService } from './banking/bank.service.js';
 
 @Module({
   imports: [DbModule],
@@ -81,6 +98,11 @@ import { TaxController, GlController } from './finance/finance.controller.js';
     // Phase 3 hardening — financial configuration & evidence
     TaxController,
     GlController,
+    // Phase 4 — purchasing & accounting & banking
+    PurchasingController,
+    ApController,
+    AccountingController,
+    BankingController,
   ],
   providers: [
     AuthService,
@@ -118,6 +140,20 @@ import { TaxController, GlController } from './finance/finance.controller.js';
     // Phase 3 hardening — tax/GL/cost configuration, override approval,
     // journals (all invoked INSIDE posting transactions)
     FinancialConfigurationService,
+    // Phase 4 — purchasing & AP (all money paths inside the UoW)
+    PurchaseOrderService,
+    ReceivingService,
+    SupplierInvoiceService,
+    ApPaymentService,
+    SupplierAdjustmentService,
+    // Phase 4 — accounting
+    ChartOfAccountsService,
+    JournalService,
+    FinancialStatementsService,
+    ReconciliationService,
+    BackfillService,
+    // Phase 4 — banking
+    BankService,
     // global guard chain: authentication -> authorization
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RbacGuard },

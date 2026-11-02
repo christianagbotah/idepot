@@ -261,6 +261,9 @@ export class ReversalService {
       event: 'invoice_reversed',
       description: `Reversal of invoice ${invoiceCode}`,
       createdBy: principal.userId,
+      // a reversal is a CORRECTION document: it may post into a
+      // soft-closed period (never a closed one)
+      allowSoftClosedPeriod: true,
       lines: journalSpecs,
     });
 

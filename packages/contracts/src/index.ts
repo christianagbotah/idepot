@@ -726,6 +726,8 @@ export interface JournalEntryDto {
   id: string; sourceKind: string; sourceId: string; event: string;
   description: string | null; occurredAt: string;
   totalDebit: string; totalCredit: string;
+  /** Phase 4: human document reference (e.g. the source doc code) */
+  reference: string | null;
   lines: JournalLineDto[];
 }
 
@@ -972,4 +974,651 @@ export interface ReceiptPayloadDto {
   changeGiven: string; amountDue: string;
   balanceOwedThisInvoice: string;
   note: string | null;
+}
+
+/* ========================= Phase 4 — purchasing & AP ========================= */
+
+const positiveQty = () => z.string().regex(/^\d{1,12}(\.\d{1,6})?$/, 'positive decimal(18,6) string');
+
+/* ------------------------------ purchase orders ----------------------------- */
+
+export const CreatePurchaseOrderSchema = z.object({
+  supplierId: z.string().uuid(),
+  warehouseId: z.string().uuid(),
+  expectedDate: isoDate().optional(),
+  notes: z.string().max(2000).optional(),
+  lines: z
+    .array(
+      z.object({
+        productId: z.string().uuid(),
+        unitId: z.string().uuid().nullable().optional(),
+        orderedQuantity: positiveQty(),
+        unitPrice: money(),
+        lineDiscount: money().optional(),
+        expectedDate: isoDate().optional(),
+      }),
+    )
+    .min(1)
+    .max(200),
+  /** submit immediately after creation (skip the draft step) */
+  submit: z.boolean().optional(),
+});
+export type CreatePurchaseOrder = z.infer<typeof CreatePurchaseOrderSchema>;
+
+export interface PurchaseOrderLineDto {
+  id: string;
+  productId: string;
+  productCode: string | null;
+  productName: string | null;
+  unitId: string | null;
+  orderedQuantity: string;
+  conversionFactor: string;
+  orderedQuantityBase: string;
+  unitPrice: string;
+  lineDiscount: string;
+  expectedDate: string | null;
+  receivedQuantityBase: string;
+  invoicedQuantityBase: string;
+}
+
+export interface PurchaseOrderDto {
+  id: string;
+  code: string;
+  supplierId: string;
+  supplierName: string | null;
+  warehouseId: string;
+  status: string;
+  expectedDate: string | null;
+  notes: string | null;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  createdAt: string;
+  lines: PurchaseOrderLineDto[];
+}
+
+/* --------------------------------- receiving -------------------------------- */
+
+export const CreateGrnSchema = z.object({
+  purchaseOrderId: z.string().uuid().nullable().optional(),
+  supplierId: z.string().uuid(),
+  warehouseId: z.string().uuid(),
+  businessDate: isoDate(),
+  supplierDeliveryRef: z.string().max(200).optional(),
+  notes: z.string().max(2000).optional(),
+  lines: z
+    .array(
+      z.object({
+        purchaseOrderLineId: z.string().uuid().nullable().optional(),
+        productId: z.string().uuid(),
+        unitId: z.string().uuid().nullable().optional(),
+        receivedQuantity: positiveQty(),
+        rejectedQuantityBase: positiveQty().optional(),
+        unitCost: money(),
+      }),
+    )
+    .min(1)
+    .max(200),
+  /** override approval when receiving beyond the over-receipt tolerance */
+  overreceiptApproval: z
+    .object({
+      username: z.string().min(3).max(200),
+      password: z.string().min(8).max(200),
+      reason: z.string().min(10).max(500),
+    })
+    .optional(),
+});
+export type CreateGrn = z.infer<typeof CreateGrnSchema>;
+
+export interface GrnLineDto {
+  id: string;
+  purchaseOrderLineId: string | null;
+  productId: string;
+  receivedQuantity: string;
+  conversionFactor: string;
+  receivedQuantityBase: string;
+  rejectedQuantityBase: string;
+  unitCost: string;
+  lineValue: string;
+}
+
+export interface GrnDto {
+  id: string;
+  code: string;
+  purchaseOrderId: string | null;
+  purchaseOrderCode: string | null;
+  supplierId: string;
+  supplierName: string | null;
+  warehouseId: string;
+  businessDate: string;
+  supplierDeliveryRef: string | null;
+  notes: string | null;
+  status: string;
+  receivedBy: string | null;
+  createdAt: string;
+  lines: GrnLineDto[];
+  totalValue: string;
+}
+
+/* ------------------------------ supplier invoices ---------------------------- */
+
+export const CreateSupplierInvoiceSchema = z.object({
+  supplierId: z.string().uuid(),
+  supplierInvoiceNumber: z.string().min(1).max(100),
+  supplierInvoiceDate: isoDate(),
+  dueDate: isoDate().optional(),
+  paymentTerms: z.string().max(200).optional(),
+  businessDate: isoDate(),
+  purchaseOrderId: z.string().uuid().nullable().optional(),
+  notes: z.string().max(2000).optional(),
+  taxInclusive: z.boolean().optional(),
+  lines: z
+    .array(
+      z.object({
+        goodsReceiptLineId: z.string().uuid().nullable().optional(),
+        purchaseOrderLineId: z.string().uuid().nullable().optional(),
+        productId: z.string().uuid().nullable().optional(),
+        expenseAccountCode: z.string().min(1).max(32).nullable().optional(),
+        description: z.string().min(1).max(300),
+        unitId: z.string().uuid().nullable().optional(),
+        quantity: positiveQty().optional(),
+        quantityBase: positiveQty().optional(),
+        unitPrice: money(),
+        lineDiscount: money().optional(),
+        taxExempt: z.boolean().optional(),
+      }),
+    )
+    .min(1)
+    .max(200),
+  /** post immediately when the match is clean (within tolerance) */
+  post: z.boolean().optional(),
+});
+export type CreateSupplierInvoice = z.infer<typeof CreateSupplierInvoiceSchema>;
+
+export interface SupplierInvoiceLineDto {
+  id: string;
+  goodsReceiptLineId: string | null;
+  purchaseOrderLineId: string | null;
+  productId: string | null;
+  expenseAccountCode: string | null;
+  description: string;
+  quantityBase: string;
+  unitPrice: string;
+  lineDiscount: string;
+  lineNet: string;
+  taxExempt: boolean;
+}
+
+export interface MatchItemDto {
+  id: string;
+  matchDimension: string;
+  severity: string;
+  expectedValue: string | null;
+  actualValue: string | null;
+  variance: string | null;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  approvalReason: string | null;
+}
+
+export interface SupplierInvoiceDto {
+  id: string;
+  code: string;
+  supplierId: string;
+  supplierName: string | null;
+  supplierInvoiceNumber: string;
+  supplierInvoiceDate: string;
+  dueDate: string | null;
+  paymentTerms: string | null;
+  businessDate: string;
+  purchaseOrderId: string | null;
+  status: string;
+  matchState: string;
+  subtotal: string;
+  taxTotal: string;
+  taxInclusiveTotal: string;
+  total: string;
+  amountAllocated: string;
+  amountOpen: string;
+  notes: string | null;
+  postedAt: string | null;
+  createdAt: string;
+  lines: SupplierInvoiceLineDto[];
+  matchItems: MatchItemDto[];
+}
+
+export const ApproveMatchExceptionsSchema = z.object({
+  username: z.string().min(3).max(200),
+  password: z.string().min(8).max(200),
+  reason: z.string().min(10).max(500),
+});
+export type ApproveMatchExceptions = z.infer<typeof ApproveMatchExceptionsSchema>;
+
+/* ------------------------------ supplier payments ---------------------------- */
+
+export const PaySupplierSchema = z.object({
+  supplierId: z.string().uuid(),
+  businessDate: isoDate(),
+  amount: money(),
+  method: z.enum(['cash', 'momo', 'cheque', 'bank_transfer', 'other']),
+  reference: z.string().max(200).optional(),
+  bankAccountId: z.string().uuid().nullable().optional(),
+  notes: z.string().max(2000).optional(),
+  clientDocId: z.string().min(6).max(100).nullable().optional(),
+  allocations: z
+    .array(
+      z.object({
+        supplierInvoiceId: z.string().uuid(),
+        amount: money(),
+      }),
+    )
+    .max(100)
+    .optional(),
+});
+export type PaySupplier = z.infer<typeof PaySupplierSchema>;
+
+export const ApplySupplierAdvanceSchema = z.object({
+  paymentId: z.string().uuid(),
+  allocations: z
+    .array(
+      z.object({
+        supplierInvoiceId: z.string().uuid(),
+        amount: money(),
+      }),
+    )
+    .min(1)
+    .max(100),
+});
+export type ApplySupplierAdvance = z.infer<typeof ApplySupplierAdvanceSchema>;
+
+export interface SupplierPaymentDto {
+  id: string;
+  code: string;
+  supplierId: string;
+  supplierName: string | null;
+  businessDate: string;
+  amount: string;
+  method: string;
+  reference: string | null;
+  bankAccountId: string | null;
+  amountAllocated: string;
+  amountUnapplied: string;
+  createdAt: string;
+  allocations: Array<{ supplierInvoiceId: string; supplierInvoiceCode: string | null; amount: string }>;
+}
+
+/* ---------------------------- supplier adjustments ---------------------------- */
+
+export const CreateSupplierAdjustmentSchema = z.object({
+  kind: z.enum(['debit_note', 'credit_note']),
+  supplierId: z.string().uuid(),
+  supplierInvoiceId: z.string().uuid().nullable().optional(),
+  businessDate: isoDate(),
+  reason: z.string().min(10).max(500),
+  adjustmentClass: z.enum(['price_correction', 'quantity_correction', 'returns', 'other']),
+  amount: money(),
+  /** physical goods returned to the supplier (credit notes) */
+  stockReturn: z
+    .array(
+      z.object({
+        productId: z.string().uuid(),
+        warehouseId: z.string().uuid(),
+        quantityBase: positiveQty(),
+        description: z.string().max(300).optional(),
+      }),
+    )
+    .max(100)
+    .optional(),
+});
+export type CreateSupplierAdjustment = z.infer<typeof CreateSupplierAdjustmentSchema>;
+
+export interface SupplierAdjustmentDto {
+  id: string;
+  code: string;
+  kind: string;
+  supplierId: string;
+  supplierName: string | null;
+  supplierInvoiceId: string | null;
+  supplierInvoiceCode: string | null;
+  businessDate: string;
+  reason: string;
+  adjustmentClass: string;
+  amount: string;
+  stockReturnValue: string | null;
+  postedAt: string;
+  createdAt: string;
+}
+
+/* ------------------------------- AP statements ------------------------------- */
+
+export interface ApAgingRowDto {
+  supplierId: string;
+  supplierName: string | null;
+  current: string;
+  bucket_1_30: string;
+  bucket_31_60: string;
+  bucket_61_90: string;
+  bucket_90_plus: string;
+  total: string;
+}
+
+export interface SupplierStatementLineDto {
+  businessDate: string;
+  documentCode: string;
+  documentType: string;
+  detail: string | null;
+  debit: string;
+  credit: string;
+  runningOpen: string;
+}
+
+export interface SupplierStatementDto {
+  supplierId: string;
+  supplierName: string | null;
+  asOf: string;
+  openingBalance: string;
+  lines: SupplierStatementLineDto[];
+  closingBalance: string;
+}
+
+/* ========================= Phase 4 — accounting ========================= */
+
+export const CreateGlAccountSchema = z.object({
+  code: z.string().min(1).max(32),
+  name: z.string().min(2).max(200),
+  accountType: z.enum(['asset', 'liability', 'equity', 'revenue', 'expense']),
+  accountClass: z
+    .enum([
+      'asset', 'liability', 'equity', 'revenue', 'cost_of_sales',
+      'operating_expense', 'other_income', 'other_expense',
+    ])
+    .optional(),
+  parentCode: z.string().min(1).max(32).nullable().optional(),
+  normalBalance: z.enum(['debit', 'credit']).optional(),
+  isPosting: z.boolean().optional(),
+  isControl: z.boolean().optional(),
+  description: z.string().max(2000).optional(),
+});
+export type CreateGlAccount = z.infer<typeof CreateGlAccountSchema>;
+
+export const UpdateGlAccountSchema = z.object({
+  name: z.string().min(2).max(200).optional(),
+  parentCode: z.string().min(1).max(32).nullable().optional(),
+  description: z.string().max(2000).optional(),
+  isActive: z.boolean().optional(),
+});
+export type UpdateGlAccount = z.infer<typeof UpdateGlAccountSchema>;
+
+export const SetGlMappingSchema = z.object({
+  purpose: z.string().min(3).max(60),
+  accountCode: z.string().min(1).max(32),
+});
+export type SetGlMapping = z.infer<typeof SetGlMappingSchema>;
+
+export interface GlAccountFullDto {
+  id: string;
+  code: string;
+  name: string;
+  accountType: string;
+  accountClass: string;
+  parentAccountId: string | null;
+  parentCode: string | null;
+  normalBalance: string;
+  isPosting: boolean;
+  isControl: boolean;
+  isActive: boolean;
+  effectiveFrom: string;
+  retiredAt: string | null;
+  description: string | null;
+}
+
+/* ---------------------------------- periods ---------------------------------- */
+
+export const CreatePeriodsSchema = z.object({
+  fiscalYear: z.number().int().min(2000).max(2999),
+  /** calendar-month periods for the fiscal year; 13 = adjustment period */
+  months: z.array(z.number().int().min(1).max(12)).optional(),
+});
+export type CreatePeriods = z.infer<typeof CreatePeriodsSchema>;
+
+export const PeriodTransitionSchema = z.object({
+  status: z.enum(['open', 'soft_closed', 'closed']),
+  reason: z.string().min(10).max(500).optional(),
+});
+export type PeriodTransition = z.infer<typeof PeriodTransitionSchema>;
+
+export interface AccountingPeriodDto {
+  id: string;
+  fiscalYear: number;
+  periodNumber: number;
+  periodName: string;
+  startsOn: string;
+  endsOn: string;
+  status: string;
+  closedAt: string | null;
+  closedBy: string | null;
+  reopenReason: string | null;
+  reopenedAt: string | null;
+}
+
+/* ------------------------------- manual journals ------------------------------ */
+
+export const ManualJournalSchema = z.object({
+  businessDate: isoDate(),
+  reference: z.string().max(100).optional(),
+  description: z.string().min(3).max(500),
+  lines: z
+    .array(
+      z.object({
+        accountCode: z.string().min(1).max(32),
+        debit: money().optional(),
+        credit: money().optional(),
+        memo: z.string().max(200).optional(),
+      }),
+    )
+    .min(2)
+    .max(200),
+});
+export type ManualJournal = z.infer<typeof ManualJournalSchema>;
+
+/* ------------------------------ financial statements --------------------------- */
+
+export interface TrialBalanceRowDto {
+  accountId: string;
+  code: string;
+  name: string;
+  accountClass: string;
+  openingDebit: string;
+  openingCredit: string;
+  periodDebit: string;
+  periodCredit: string;
+  closingDebit: string;
+  closingCredit: string;
+}
+
+export interface TrialBalanceDto {
+  asOf: string;
+  from: string | null;
+  rows: TrialBalanceRowDto[];
+  totalOpeningDebit: string;
+  totalOpeningCredit: string;
+  totalPeriodDebit: string;
+  totalPeriodCredit: string;
+  totalClosingDebit: string;
+  totalClosingCredit: string;
+  balanced: boolean;
+}
+
+export interface StatementLineDto {
+  accountCode: string;
+  accountName: string;
+  accountClass: string;
+  amount: string;
+}
+
+export interface ProfitAndLossDto {
+  from: string;
+  to: string;
+  revenue: StatementLineDto[];
+  costOfSales: StatementLineDto[];
+  operatingExpenses: StatementLineDto[];
+  otherIncome: StatementLineDto[];
+  otherExpenses: StatementLineDto[];
+  totalRevenue: string;
+  totalCostOfSales: string;
+  grossProfit: string;
+  totalOperatingExpenses: string;
+  totalOtherIncome: string;
+  totalOtherExpenses: string;
+  netProfit: string;
+}
+
+export interface BalanceSheetDto {
+  asOf: string;
+  assets: StatementLineDto[];
+  liabilities: StatementLineDto[];
+  equity: StatementLineDto[];
+  totalAssets: string;
+  totalLiabilities: string;
+  totalEquity: string;
+  retainedEarningsAccountCode: string | null;
+  /** Σ P&L classes since the beginning of time (unclosed current earnings) */
+  currentEarnings: string;
+  balanced: boolean;
+  difference: string;
+}
+
+export interface CashFlowDto {
+  from: string;
+  to: string;
+  method: 'indirect';
+  netProfit: string;
+  operatingAssetChanges: StatementLineDto[];
+  operatingLiabilityChanges: StatementLineDto[];
+  equityFinancing: StatementLineDto[];
+  netCashFromOperations: string;
+  /** Σ movements on cash/bank control accounts in the window */
+  netCashMovement: string;
+  /** netCashFromOperations − netCashMovement; MUST be zero (invariant) */
+  unexplained: string;
+}
+
+export interface ReconciliationCheckDto {
+  check: string;
+  controlBalance: string;
+  subledgerBalance: string;
+  difference: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface ArApReconciliationDto {
+  asOf: string;
+  checks: ReconciliationCheckDto[];
+}
+
+/* ========================= Phase 4 — banking ========================= */
+
+export const CreateBankAccountSchema = z.object({
+  code: z.string().min(2).max(32),
+  bankName: z.string().min(2).max(200),
+  branch: z.string().max(200).optional(),
+  accountName: z.string().min(2).max(200),
+  accountNumber: z.string().min(3).max(100),
+  currency: z.string().min(3).max(8).optional(),
+  glAccountCode: z.string().min(1).max(32),
+  openedOn: isoDate().optional(),
+});
+export type CreateBankAccount = z.infer<typeof CreateBankAccountSchema>;
+
+export interface BankAccountDto {
+  id: string;
+  code: string;
+  bankName: string;
+  branch: string | null;
+  accountName: string;
+  accountNumber: string;
+  currency: string;
+  glAccountId: string;
+  glAccountCode: string | null;
+  isActive: boolean;
+  openedOn: string | null;
+  glBalance: string;
+}
+
+export const BankTransferSchema = z.object({
+  fromBankAccountId: z.string().uuid(),
+  toBankAccountId: z.string().uuid(),
+  businessDate: isoDate(),
+  amount: money(),
+  fee: money().optional(),
+  reference: z.string().max(200).optional(),
+  notes: z.string().max(2000).optional(),
+  clientDocId: z.string().min(6).max(100).nullable().optional(),
+});
+export type BankTransferRequest = z.infer<typeof BankTransferSchema>;
+
+export interface BankTransferDto {
+  id: string;
+  code: string;
+  fromBankAccountId: string;
+  fromAccountCode: string | null;
+  toBankAccountId: string;
+  toAccountCode: string | null;
+  businessDate: string;
+  amount: string;
+  fee: string;
+  reference: string | null;
+  postedAt: string;
+}
+
+export interface BankStatementDto {
+  id: string;
+  bankAccountId: string;
+  bankAccountCode: string | null;
+  statementDate: string;
+  filename: string;
+  fileSha256: string;
+  rowCount: number;
+  importedAt: string;
+  lines: Array<{
+    id: string;
+    lineNo: number;
+    valueDate: string;
+    transactionDate: string | null;
+    reference: string | null;
+    description: string | null;
+    direction: string;
+    amount: string;
+    closingBalance: string | null;
+    matchStatus: string;
+    matchedAmount: string;
+  }>;
+}
+
+export interface BankMatchSuggestionDto {
+  statementLineId: string;
+  journalLineId: string;
+  journalReference: string | null;
+  amount: string;
+  ruleName: string;
+  confidence: string;
+}
+
+export const BankMatchSchema = z.object({
+  statementLineId: z.string().uuid(),
+  journalLineId: z.string().uuid(),
+  amount: money().optional(),
+});
+export type BankMatchRequest = z.infer<typeof BankMatchSchema>;
+
+export interface BankReconciliationDto {
+  id: string;
+  bankAccountId: string;
+  bankAccountCode: string | null;
+  asOf: string;
+  statementClosingBalance: string | null;
+  glClosingBalance: string;
+  difference: string;
+  status: string;
+  finalizedAt: string | null;
 }

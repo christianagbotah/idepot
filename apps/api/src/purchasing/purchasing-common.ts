@@ -1,0 +1,134 @@
+/**
+ * Purchasing module shared helpers (Phase 4).
+ */
+import { ConflictError, NotFoundError, ValidationError, convertToBaseExact, parseQuantity } from '@idepot/domain';
+import type { UowContext } from '../db/unit-of-work.js';
+
+/** Postgres SQLSTATE of a driver error, when present (23505 unique). */
+export function pgCode(err: unknown): string | undefined {
+  if (typeof err === 'object' && err !== null && 'code' in err) {
+    const code = (err as { code?: unknown }).code;
+    if (typeof code === 'string') return code;
+  }
+  return undefined;
+}
+
+export interface PurchasingPrincipal {
+  userId: string;
+  tenantId: string;
+  displayName: string;
+}
+
+/** Deterministic advisory-lock key space for AP invoice domains. */
+export function apInvoiceLockKey(tenantId: string, invoiceId: string): string {
+  return `ap-invoice:${tenantId}:${invoiceId}`;
+}
+
+/** Transaction-scoped advisory lock on one AP invoice domain (serialized
+ *  allocations/adjustments against the same invoice; the losing caller
+ *  waits, then re-reads the authoritative open AP — never a raw 23505). */
+export async function lockApInvoiceDomain(ctx: UowContext, invoiceId: string): Promise<void> {
+  await ctx.query(
+    `SELECT pg_advisory_xact_lock(('x' || substr(md5($1::text), 1, 16))::bit(64)::bigint)`,
+    [apInvoiceLockKey(ctx.tenantId, invoiceId)],
+  );
+}
+
+/**
+ * Resolves a transacted quantity to its server-authoritative BASE
+ * quantity using the product_unit configuration (mirrors StockPoster's
+ * conversion authority; the client unit/quantity is the business fact,
+ * the factor is always resolved server-side).
+ */
+export async function resolveBaseQuantity(
+  ctx: UowContext,
+  args: { productId: string; unitId?: string | null; quantity: string },
+): Promise<{ quantityBase: string; conversionFactor: string; unitId: string | null }> {
+  const qty = parseQuantity(args.quantity);
+  if (qty <= 0n) throw new ValidationError('quantity must be > 0');
+  if (args.unitId == null || args.unitId === '') {
+    return { quantityBase: args.quantity, conversionFactor: '1', unitId: null };
+  }
+  const product = await ctx.query<{ base_unit_id: string }>(
+    `SELECT base_unit_id FROM product WHERE id = $1`,
+    [args.productId],
+  );
+  if (product.rows.length === 0) throw new NotFoundError('product', args.productId);
+  let factor: string;
+  if (String(product.rows[0]!.base_unit_id) === args.unitId) {
+    factor = '1';
+  } else {
+    const cfg = await ctx.query<{ conversion_factor: string }>(
+      `SELECT conversion_factor::text AS conversion_factor FROM product_unit
+       WHERE product_id = $1 AND unit_id = $2`,
+      [args.productId, args.unitId],
+    );
+    if (cfg.rows.length === 0) {
+      throw new NotFoundError('product_unit configuration', `${args.productId}/${args.unitId}`);
+    }
+    factor = cfg.rows[0]!.conversion_factor;
+  }
+  const base = convertToBaseExact(args.quantity, factor);
+  return { quantityBase: base, conversionFactor: factor, unitId: args.unitId };
+}
+
+/** Loads a tenant-scoped row and throws NotFoundError when absent
+ *  (cross-tenant ids are indistinguishable from missing — RLS). */
+export async function requireRow<T extends Record<string, unknown>>(
+  ctx: UowContext,
+  table: string,
+  id: string,
+): Promise<T> {
+  const res = await ctx.query<T>(`SELECT * FROM ${table} WHERE id = $1`, [id]);
+  if (res.rows.length === 0) throw new NotFoundError(table, id);
+  return res.rows[0]!;
+}
+
+/** Loads a tenant-scoped row FOR UPDATE (header lock for state machines). */
+export async function lockRow<T extends Record<string, unknown>>(
+  ctx: UowContext,
+  table: string,
+  id: string,
+): Promise<T> {
+  const res = await ctx.query<T>(`SELECT * FROM ${table} WHERE id = $1 FOR UPDATE`, [id]);
+  if (res.rows.length === 0) throw new NotFoundError(table, id);
+  return res.rows[0]!;
+}
+
+/** Purchasing tolerance policy from tenant_config (configurable, never
+ *  magic constants; defaults are strict zero). */
+export async function purchasingTolerance(ctx: UowContext): Promise<{
+  overreceiptTolerancePct: string;
+  priceTolerancePct: string;
+  valueTolerance: string;
+}> {
+  const res = await ctx.query<{
+    po_overreceipt_tolerance_pct: string;
+    match_price_tolerance_pct: string;
+    match_value_tolerance: string;
+  }>(
+    `SELECT po_overreceipt_tolerance_pct::text AS po_overreceipt_tolerance_pct,
+            match_price_tolerance_pct::text AS match_price_tolerance_pct,
+            match_value_tolerance::text AS match_value_tolerance
+     FROM tenant_config WHERE tenant_id = $1`,
+    [ctx.tenantId],
+  );
+  const row = res.rows[0];
+  return {
+    overreceiptTolerancePct: row?.po_overreceipt_tolerance_pct ?? '0',
+    priceTolerancePct: row?.match_price_tolerance_pct ?? '0',
+    valueTolerance: row?.match_value_tolerance ?? '0',
+  };
+}
+
+/** Guard: a header status must be one of the allowed values. */
+export function assertStatus(
+  table: string,
+  id: string,
+  current: string,
+  allowed: readonly string[],
+): void {
+  if (!allowed.includes(current)) {
+    throw new ConflictError(`${table} ${id} is "${current}" — allowed: ${allowed.join(', ')}`);
+  }
+}

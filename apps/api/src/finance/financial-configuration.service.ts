@@ -14,6 +14,7 @@ import {
   ValidationError,
   parseMoney,
   parseTaxRate,
+  type AccountClass,
   type GlPurpose,
   type JournalLineSpec,
   type TaxComponentRule,
@@ -50,23 +51,40 @@ function pgCode(err: unknown): string | undefined {
 @Injectable()
 export class FinancialConfigurationService {
   /** The generic control chart seeded per tenant (codes are configuration
-   *  seeds, not statutory facts; every purpose maps to exactly one account). */
+   *  seeds, not statutory facts; every purpose maps to exactly one account).
+   *  Phase 4 extends the Phase 3 sales/POS controls with the purchasing &
+   *  accounting controls — provisioning is per-purpose idempotent so
+   *  EXISTING tenants (seeded with the 10 Phase 3 purposes) migrate
+   *  cleanly into the full chart with no duplicate accounting system. */
   private static readonly CONTROL_CHART: ReadonlyArray<{
     purpose: GlPurpose;
     code: string;
     name: string;
-    type: 'asset' | 'liability' | 'revenue' | 'expense';
+    type: 'asset' | 'liability' | 'equity' | 'revenue' | 'expense';
+    accountClass: AccountClass;
+    isControl?: boolean;
   }> = [
-    { purpose: 'cash', code: '1000', name: 'Cash on Hand', type: 'asset' },
-    { purpose: 'bank_clearing', code: '1010', name: 'Bank Clearing', type: 'asset' },
-    { purpose: 'momo_clearing', code: '1020', name: 'Mobile Money Clearing', type: 'asset' },
-    { purpose: 'cheque_clearing', code: '1030', name: 'Cheques in Transit', type: 'asset' },
-    { purpose: 'accounts_receivable', code: '1100', name: 'Accounts Receivable', type: 'asset' },
-    { purpose: 'inventory', code: '1200', name: 'Inventory', type: 'asset' },
-    { purpose: 'customer_deposit_liability', code: '2100', name: 'Customer Deposits', type: 'liability' },
-    { purpose: 'tax_payable', code: '2200', name: 'Tax Payable', type: 'liability' },
-    { purpose: 'sales_revenue', code: '4000', name: 'Sales Revenue', type: 'revenue' },
-    { purpose: 'cogs', code: '5000', name: 'Cost of Goods Sold', type: 'expense' },
+    { purpose: 'cash', code: '1000', name: 'Cash on Hand', type: 'asset', accountClass: 'asset', isControl: true },
+    { purpose: 'bank_clearing', code: '1010', name: 'Bank Clearing', type: 'asset', accountClass: 'asset', isControl: true },
+    { purpose: 'momo_clearing', code: '1020', name: 'Mobile Money Clearing', type: 'asset', accountClass: 'asset', isControl: true },
+    { purpose: 'cheque_clearing', code: '1030', name: 'Cheques in Transit', type: 'asset', accountClass: 'asset', isControl: true },
+    { purpose: 'accounts_receivable', code: '1100', name: 'Accounts Receivable', type: 'asset', accountClass: 'asset', isControl: true },
+    { purpose: 'inventory', code: '1200', name: 'Inventory', type: 'asset', accountClass: 'asset', isControl: true },
+    { purpose: 'supplier_advance', code: '1310', name: 'Advances to Suppliers', type: 'asset', accountClass: 'asset', isControl: true },
+    { purpose: 'input_tax_recoverable', code: '1400', name: 'Input Tax Recoverable', type: 'asset', accountClass: 'asset', isControl: true },
+    { purpose: 'customer_deposit_liability', code: '2100', name: 'Customer Deposits', type: 'liability', accountClass: 'liability', isControl: true },
+    { purpose: 'tax_payable', code: '2200', name: 'Tax Payable', type: 'liability', accountClass: 'liability', isControl: true },
+    { purpose: 'accounts_payable', code: '2300', name: 'Accounts Payable', type: 'liability', accountClass: 'liability', isControl: true },
+    { purpose: 'grni_clearing', code: '2310', name: 'GR/IR Accrual', type: 'liability', accountClass: 'liability', isControl: true },
+    { purpose: 'opening_balance_equity', code: '3950', name: 'Opening Balance Equity', type: 'equity', accountClass: 'equity' },
+    { purpose: 'retained_earnings', code: '3900', name: 'Retained Earnings', type: 'equity', accountClass: 'equity' },
+    { purpose: 'sales_revenue', code: '4000', name: 'Sales Revenue', type: 'revenue', accountClass: 'revenue' },
+    { purpose: 'inventory_adjustment_gain', code: '4100', name: 'Inventory Adjustment Gains', type: 'revenue', accountClass: 'other_income' },
+    { purpose: 'cogs', code: '5000', name: 'Cost of Goods Sold', type: 'expense', accountClass: 'cost_of_sales' },
+    { purpose: 'purchase_expense', code: '5100', name: 'Purchases & Direct Expenses', type: 'expense', accountClass: 'operating_expense' },
+    { purpose: 'purchase_price_variance', code: '5200', name: 'Purchase Price Variance', type: 'expense', accountClass: 'operating_expense' },
+    { purpose: 'inventory_adjustment_loss', code: '5300', name: 'Inventory Shrinkage & Write-offs', type: 'expense', accountClass: 'operating_expense' },
+    { purpose: 'bank_fee_expense', code: '5400', name: 'Bank Charges', type: 'expense', accountClass: 'operating_expense' },
   ];
 
   constructor(private readonly uow: UnitOfWork) {}
@@ -76,39 +94,61 @@ export class FinancialConfigurationService {
    * open posting transaction: control chart + purpose mappings, an AVCO
    * cost-policy version effective forever, and a default tax profile with
    * ZERO components (tax-neutral until the tenant configures real ones).
-   * One guard query per posting; the INSERTs race safely on the unique
-   * constraints (a concurrent first-posting provisions the same rows).
+   * Per-purpose idempotency: a tenant seeded by Phase 3 (10 purposes) gains
+   * exactly the missing Phase 4 purposes — never a duplicate chart. The
+   * INSERTs race safely on the unique constraints (a concurrent
+   * first-posting provisions the same rows).
    */
   async ensureDefaults(ctx: UowContext): Promise<void> {
-    const guard = await ctx.query<{ mappings: string; cost_versions: string; tax_profiles: string }>(
-      `SELECT
-         (SELECT count(*) FROM gl_mapping WHERE tenant_id = $1)::text AS mappings,
-         (SELECT count(*) FROM cost_policy_version WHERE tenant_id = $1)::text AS cost_versions,
-         (SELECT count(*) FROM tax_profile WHERE tenant_id = $1)::text AS tax_profiles`,
+    const existing = await ctx.query<{ purpose: string }>(
+      `SELECT purpose FROM gl_mapping WHERE tenant_id = $1`,
       [ctx.tenantId],
     );
-    const g = guard.rows[0]!;
-
-    if (g.mappings !== '10') {
-      for (const acc of FinancialConfigurationService.CONTROL_CHART) {
+    const present = new Set(existing.rows.map((r) => r.purpose));
+    const missing = FinancialConfigurationService.CONTROL_CHART.filter(
+      (c) => !present.has(c.purpose),
+    );
+    if (missing.length > 0) {
+      for (const acc of missing) {
         await ctx.query(
-          `INSERT INTO gl_account (tenant_id, code, name, account_type)
-           VALUES ($1,$2,$3,$4)
+          `INSERT INTO gl_account (tenant_id, code, name, account_type, account_class, normal_balance, is_control)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
            ON CONFLICT (tenant_id, code) DO NOTHING`,
-          [ctx.tenantId, acc.code, acc.name, acc.type],
+          [
+            ctx.tenantId,
+            acc.code,
+            acc.name,
+            acc.type,
+            acc.accountClass,
+            acc.accountClass === 'asset' ||
+              acc.accountClass === 'cost_of_sales' ||
+              acc.accountClass === 'operating_expense' ||
+              acc.accountClass === 'other_expense'
+              ? 'debit'
+              : 'credit',
+            acc.isControl ?? false,
+          ],
         );
       }
       await ctx.query(
         `INSERT INTO gl_mapping (tenant_id, purpose, account_id)
          SELECT $1, c.purpose, a.id
            FROM (VALUES
-             ${FinancialConfigurationService.CONTROL_CHART.map((c) => `('${c.purpose}','${c.code}')`).join(',')}
+             ${missing.map((c) => `('${c.purpose}','${c.code}')`).join(',')}
            ) AS c(purpose, code)
            JOIN gl_account a ON a.tenant_id = $1 AND a.code = c.code
          ON CONFLICT (tenant_id, purpose) DO NOTHING`,
         [ctx.tenantId],
       );
     }
+
+    const guard = await ctx.query<{ cost_versions: string; tax_profiles: string }>(
+      `SELECT
+         (SELECT count(*) FROM cost_policy_version WHERE tenant_id = $1)::text AS cost_versions,
+         (SELECT count(*) FROM tax_profile WHERE tenant_id = $1)::text AS tax_profiles`,
+      [ctx.tenantId],
+    );
+    const g = guard.rows[0]!;
 
     if (g.cost_versions === '0') {
       await ctx.query(
@@ -160,8 +200,9 @@ export class FinancialConfigurationService {
       rate: string;
       inclusive: boolean;
       seq: number;
+      recoverable: boolean;
     }>(
-      `SELECT id, name, rate::text AS rate, inclusive, seq
+      `SELECT id, name, rate::text AS rate, inclusive, seq, recoverable
        FROM tax_component WHERE version_id = $1
        ORDER BY seq, name`,
       [version.versionId],
@@ -172,6 +213,7 @@ export class FinancialConfigurationService {
       rate: c.rate,
       inclusive: c.inclusive,
       seq: c.seq,
+      recoverable: c.recoverable,
     }));
     // validate every configured rate now — a bad configuration fails the
     // posting LOUD, never silently computes
@@ -492,6 +534,36 @@ export class FinancialConfigurationService {
   }
 
   /**
+   * Period lock (Phase 4 close/lock): posting is blocked when the
+   * business date falls in a CLOSED accounting period, and in a
+   * SOFT-CLOSED period unless the document is an explicit correction
+   * (reversal / debit note / backfill). A tenant that has never
+   * configured periods is unaffected (fail-open only while NO period
+   * covers the date — once a period exists for the date, its status
+   * rules apply). This is the single choke point every journal passes
+   * through, so every financially coupled document inherits the lock.
+   */
+  async assertPeriodOpen(
+    ctx: UowContext,
+    businessDate: string,
+    opts: { allowSoftClosed?: boolean } = {},
+  ): Promise<void> {
+    const res = await ctx.query<{ status: string }>(
+      `SELECT status FROM accounting_period
+       WHERE tenant_id = $1 AND starts_on <= $2::date AND ends_on >= $2::date
+       LIMIT 1`,
+      [ctx.tenantId, businessDate],
+    );
+    const row = res.rows[0];
+    if (!row || row.status === 'open') return;
+    if (row.status === 'soft_closed' && opts.allowSoftClosed === true) return;
+    throw new ConflictError(
+      `accounting period covering ${businessDate} is ${row.status} — posting is blocked ` +
+        `(reopen requires accounting:close with reason)`,
+    );
+  }
+
+  /**
    * Builds and appends a balanced journal inside the open transaction
    * (review finding #2): the domain JournalBuilder refuses unbalanced or
    * malformed entries BEFORE any insert, and the database constraint
@@ -500,6 +572,11 @@ export class FinancialConfigurationService {
    *
    * Zero-amount legs are skipped; an entry with no positive legs is not
    * written at all (a no-tax, zero-COGS sale carries no dead journal).
+   *
+   * Phase 4: the entry records its business date + document reference,
+   * and the accounting-period lock is enforced here (the single choke
+   * point) — businessDate defaults to the occurred-at date so legacy
+   * callers inherit the lock without signature changes.
    */
   async postJournal(
     ctx: UowContext,
@@ -509,10 +586,21 @@ export class FinancialConfigurationService {
       event: string;
       description?: string | null;
       occurredAt?: string | null;
+      businessDate?: string | null;
+      reference?: string | null;
       createdBy?: string | null;
+      /** correction documents may still post into a soft-closed period */
+      allowSoftClosedPeriod?: boolean;
       lines: JournalLineSpec[];
     },
   ): Promise<{ id: string; totalDebit: string; totalCredit: string } | null> {
+    const occurredAt = args.occurredAt ?? null;
+    const businessDate =
+      args.businessDate ??
+      (occurredAt != null ? occurredAt.slice(0, 10) : new Date().toISOString().slice(0, 10));
+    await this.assertPeriodOpen(ctx, businessDate, {
+      allowSoftClosed: args.allowSoftClosedPeriod === true,
+    });
     const builder = new JournalBuilder();
     for (const spec of args.lines) builder.addIfPositive(spec);
     if (builder.lineCount === 0) return null;
@@ -520,13 +608,13 @@ export class FinancialConfigurationService {
     const header = await ctx.query<{ id: string }>(
       `INSERT INTO journal_entry
          (tenant_id, source_kind, source_id, event, description, occurred_at, created_by,
-          total_debit, total_credit)
-       VALUES ($1,$2,$3,$4,$5,COALESCE($6::timestamptz, now()),$7,$8,$9)
+          total_debit, total_credit, business_date, reference)
+       VALUES ($1,$2,$3,$4,$5,COALESCE($6::timestamptz, now()),$7,$8,$9,$10::date,$11)
        RETURNING id`,
       [
         ctx.tenantId, args.sourceKind, args.sourceId, args.event,
-        args.description ?? null, args.occurredAt ?? null, args.createdBy ?? ctx.userId,
-        journal.totalDebit, journal.totalCredit,
+        args.description ?? null, occurredAt, args.createdBy ?? ctx.userId,
+        journal.totalDebit, journal.totalCredit, businessDate, args.reference ?? null,
       ],
     );
     const entryId = header.rows[0]!.id;
@@ -582,6 +670,7 @@ export class FinancialConfigurationService {
           occurredAt: new Date(e.occurred_at as string).toISOString(),
           totalDebit: String(e.total_debit),
           totalCredit: String(e.total_credit),
+          reference: e.reference ? String(e.reference) : null,
           lines: lines.rows.map((l) => ({
             id: String(l.id),
             accountId: String(l.account_id),
