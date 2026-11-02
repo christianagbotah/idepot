@@ -445,6 +445,18 @@ export class BankService {
        FROM bank_statement_line l WHERE l.bank_statement_id = $1 ORDER BY l.line_no`,
       [statementId],
     );
+    const allMatches = await ctx.query<{ bank_statement_line_id: string; journal_line_id: string; amount: string }>(
+      `SELECT bm.bank_statement_line_id::text AS bank_statement_line_id, bm.journal_line_id::text AS journal_line_id, bm.amount::text AS amount
+       FROM bank_match bm JOIN bank_statement_line l ON l.id = bm.bank_statement_line_id
+       WHERE l.bank_statement_id = $1`,
+      [statementId],
+    );
+    const matchesByLine = new Map<string, Array<{ journalLineId: string; amount: string }>>();
+    for (const m of allMatches.rows) {
+      const list = matchesByLine.get(m.bank_statement_line_id) ?? [];
+      list.push({ journalLineId: m.journal_line_id, amount: m.amount });
+      matchesByLine.set(m.bank_statement_line_id, list);
+    }
     return {
       id: String(s.id),
       bankAccountId: String(s.bank_account_id),
@@ -466,6 +478,7 @@ export class BankService {
         closingBalance: l.closing_balance != null ? String(l.closing_balance) : null,
         matchStatus: String(l.match_status),
         matchedAmount: String(l.matched_amount),
+        matches: matchesByLine.get(String(l.id)) ?? [],
       })),
     };
   }

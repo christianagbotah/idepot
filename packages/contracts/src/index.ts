@@ -1598,6 +1598,7 @@ export interface BankStatementDto {
     closingBalance: string | null;
     matchStatus: string;
     matchedAmount: string;
+    matches: Array<{ journalLineId: string; amount: string }>;
   }>;
 }
 

@@ -9,7 +9,7 @@ interface NavLink {
   label: string;
 }
 
-const NAV: Array<{ group: string; links: NavLink[] }> = [
+const NAV: Array<{ group: string; links: NavLink[]; roles?: string[] }> = [
   {
     group: 'Catalog',
     links: [
@@ -45,6 +45,39 @@ const NAV: Array<{ group: string; links: NavLink[] }> = [
       { href: '/payments', label: 'Payments' },
       { href: '/deposits', label: 'Deposits' },
       { href: '/shifts', label: 'Shifts' },
+    ],
+  },
+  {
+    group: 'Purchasing',
+    // nav visibility only — the server enforces the real permissions
+    roles: ['owner', 'admin', 'manager', 'accountant', 'procurement', 'auditor'],
+    links: [
+      { href: '/purchasing/orders', label: 'Purchase Orders' },
+      { href: '/purchasing/grns', label: 'Goods Receipts' },
+      { href: '/purchasing/invoices', label: 'Supplier Invoices' },
+      { href: '/purchasing/payments', label: 'Supplier Payments' },
+      { href: '/purchasing/adjustments', label: 'Debit/Credit Notes' },
+      { href: '/ap', label: 'AP Aging & Statements' },
+    ],
+  },
+  {
+    group: 'Accounting',
+    roles: ['owner', 'admin', 'manager', 'accountant', 'auditor'],
+    links: [
+      { href: '/accounting/accounts', label: 'Chart of Accounts' },
+      { href: '/accounting/journals', label: 'Journals' },
+      { href: '/accounting/periods', label: 'Periods & Close' },
+      { href: '/accounting/reports', label: 'Financial Reports' },
+      { href: '/accounting/reconciliation', label: 'Reconciliation' },
+    ],
+  },
+  {
+    group: 'Banking',
+    roles: ['owner', 'admin', 'manager', 'accountant', 'auditor'],
+    links: [
+      { href: '/banking/accounts', label: 'Bank Accounts' },
+      { href: '/banking/transfers', label: 'Transfers' },
+      { href: '/banking/statements', label: 'Statements & Match' },
     ],
   },
 ];
@@ -94,7 +127,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <div className="app-body">
         <nav className="app-sidebar" aria-label="Main navigation">
           <div className="app-nav">
-            {NAV.flatMap((group) => [
+            {NAV.filter((group) => group.roles == null || group.roles.some((r) => u.roles.includes(r))).flatMap((group) => [
               <div key={group.group} className="nav-group">
                 {group.group}
               </div>,
