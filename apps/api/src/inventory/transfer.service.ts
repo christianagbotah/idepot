@@ -124,7 +124,15 @@ export class TransferService {
           transferId: id,
           reason: 'transfer dispatch',
         })),
-        { sourceDocumentType: 'transfer', sourceDocumentId: id, createdBy: principal.userId },
+        {
+          sourceDocumentType: 'transfer',
+          sourceDocumentId: id,
+          createdBy: principal.userId,
+          // value-preserving GL legs: inventory ↔ inventory_in_transit
+          // (never revenue/expense — internal transfers carry no P&L)
+          glPosting: { mode: 'transfer' },
+          documentCode: String(t.code),
+        },
       );
 
       await ctx.query(
@@ -189,7 +197,14 @@ export class TransferService {
               reason: 'transfer receipt',
             },
           ],
-          { sourceDocumentType: 'transfer', sourceDocumentId: id, createdBy: principal.userId },
+          {
+            sourceDocumentType: 'transfer',
+            sourceDocumentId: id,
+            createdBy: principal.userId,
+            // value-preserving GL legs: inventory ↔ inventory_in_transit
+            glPosting: { mode: 'transfer' },
+            documentCode: String(t.code),
+          },
         );
         movements.push(...posted);
         await ctx.query(

@@ -32,6 +32,7 @@ import {
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { UnitOfWork, type UowContext } from '../db/unit-of-work.js';
+import { accountingPeriodLockKey } from '../finance/financial-configuration.service.js';
 import { dateCol, dateColNull, pgCode, requireRow } from '../purchasing/purchasing-common.js';
 
 interface AccountingPrincipal {
@@ -310,6 +311,17 @@ export class ChartOfAccountsService {
     dto: PeriodTransition,
   ): Promise<AccountingPeriodDto> {
     return this.uow.run({ tenantId: principal.tenantId, userId: principal.userId }, async (ctx) => {
+      // EXCLUSIVE period lock (review round 2): a closing/soft-closing
+      // transition serializes against every open posting transaction —
+      // each posting holds the same lock SHARED until commit, so a close
+      // can never slip under a check that has already passed. Reopenings
+      // do not need the exclusive lock (they only ever unblock posters).
+      if (dto.status !== 'open') {
+        await ctx.query(
+          `SELECT pg_advisory_xact_lock(('x' || substr(md5($1::text), 1, 16))::bit(64)::bigint)`,
+          [accountingPeriodLockKey(principal.tenantId, periodId)],
+        );
+      }
       const period = await requireRow<Record<string, unknown>>(ctx, 'accounting_period', periodId);
       const from = String(period.status);
       const to = dto.status;

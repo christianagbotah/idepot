@@ -33,6 +33,18 @@ function pgCode(err: unknown): string | undefined {
 }
 
 /**
+ * Advisory-lock domain key for the accounting-period close/posting race:
+ * posting takes the lock SHARED for the rest of its transaction; closing
+ * (or soft-closing) a period takes it EXCLUSIVE first. The two operations
+ * therefore serialize deterministically — a close can never commit under
+ * a posting that already passed its period check, and a posting that
+ * waits out a close re-reads the status and is rejected.
+ */
+export function accountingPeriodLockKey(tenantId: string, periodId: string): string {
+  return `accounting-period:${tenantId}:${periodId}`;
+}
+
+/**
  * Financial configuration + evidence services (Phase 3 hardening, review
  * findings #1/#2/#3/#4).
  *
@@ -70,6 +82,7 @@ export class FinancialConfigurationService {
     { purpose: 'cheque_clearing', code: '1030', name: 'Cheques in Transit', type: 'asset', accountClass: 'asset', isControl: true },
     { purpose: 'accounts_receivable', code: '1100', name: 'Accounts Receivable', type: 'asset', accountClass: 'asset', isControl: true },
     { purpose: 'inventory', code: '1200', name: 'Inventory', type: 'asset', accountClass: 'asset', isControl: true },
+    { purpose: 'inventory_in_transit', code: '1210', name: 'Inventory In Transit', type: 'asset', accountClass: 'asset', isControl: true },
     { purpose: 'supplier_advance', code: '1310', name: 'Advances to Suppliers', type: 'asset', accountClass: 'asset', isControl: true },
     { purpose: 'input_tax_recoverable', code: '1400', name: 'Input Tax Recoverable', type: 'asset', accountClass: 'asset', isControl: true },
     { purpose: 'customer_deposit_liability', code: '2100', name: 'Customer Deposits', type: 'liability', accountClass: 'liability', isControl: true },
@@ -542,19 +555,41 @@ export class FinancialConfigurationService {
    * covers the date — once a period exists for the date, its status
    * rules apply). This is the single choke point every journal passes
    * through, so every financially coupled document inherits the lock.
+   *
+   * Race hardening (review round 2): while the check passes, the posting
+   * transaction takes the period's advisory lock SHARED and holds it to
+   * commit. A concurrent close must take the SAME lock EXCLUSIVE first
+   * (see ChartOfAccountsService.transitionPeriod), so a close can never
+   * slip under a posting that already passed this check, and a posting
+   * that waits out a close re-reads the (now closed) status and is
+   * rejected — the outcome is deterministic in both orders.
    */
   async assertPeriodOpen(
     ctx: UowContext,
     businessDate: string,
     opts: { allowSoftClosed?: boolean } = {},
   ): Promise<void> {
-    const res = await ctx.query<{ status: string }>(
-      `SELECT status FROM accounting_period
+    const res = await ctx.query<{ id: string; status: string }>(
+      `SELECT id, status FROM accounting_period
        WHERE tenant_id = $1 AND starts_on <= $2::date AND ends_on >= $2::date
        LIMIT 1`,
       [ctx.tenantId, businessDate],
     );
-    const row = res.rows[0];
+    let row = res.rows[0];
+    if (row) {
+      // SHARED lock: concurrent postings coexist; an exclusive closer waits
+      await ctx.query(
+        `SELECT pg_advisory_xact_lock_shared(('x' || substr(md5($1::text), 1, 16))::bit(64)::bigint)`,
+        [accountingPeriodLockKey(ctx.tenantId, row.id)],
+      );
+      // re-read UNDER the lock: a close that committed while we waited is
+      // now visible — the stale pre-lock status is never trusted
+      const again = await ctx.query<{ status: string }>(
+        `SELECT status FROM accounting_period WHERE id = $1 AND tenant_id = $2`,
+        [row.id, ctx.tenantId],
+      );
+      row = again.rows[0] ? { id: row.id, status: again.rows[0]!.status } : row;
+    }
     if (!row || row.status === 'open') return;
     if (row.status === 'soft_closed' && opts.allowSoftClosed === true) return;
     throw new ConflictError(

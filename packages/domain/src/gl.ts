@@ -39,7 +39,11 @@ export type GlPurpose =
   | 'inventory_adjustment_loss'
   | 'opening_balance_equity'
   | 'retained_earnings'
-  | 'bank_fee_expense';
+  | 'bank_fee_expense'
+  // Phase 4 review hardening — internal transfers carry their value in a
+  // separate in-transit asset while the goods are between warehouses
+  // (no P&L impact: the movement is inventory ↔ inventory, never revenue)
+  | 'inventory_in_transit';
 
 /** The tender→control-account purposes (payment-transaction-map). */
 export const TENDER_GL_PURPOSE: Record<string, GlPurpose> = {

@@ -76,7 +76,12 @@ export class BackfillService {
       // ---- 1. non-sale inventory documents ------------------------------
       // opening-stock receipts (migration reason) + adjustments + count
       // variances: Dr Inventory / Cr opening equity (opening) or
-      // Cr adjustment gain / Dr adjustment loss (variances)
+      // Cr adjustment gain / Dr adjustment loss (variances).
+      // Review hardening: movements that ALREADY carry a synchronous
+      // journal (source_kind='stock_movement' — the Phase 4 posting path
+      // of adjustments/counts/opening stock/transfers) are skipped —
+      // the backfill is for historical gaps only and can never double-post
+      // a journal that was produced synchronously with its document.
       const movements = await ctx.query<{
         id: string; movement_type: string; reason: string | null; occurred_at: string;
         cost_value: string | null; quantity_base: string;
@@ -88,6 +93,10 @@ export class BackfillService {
          WHERE m.tenant_id = $1
            AND m.cost_value IS NOT NULL AND m.cost_value <> 0
            AND m.source_document_type IN ('stock_adjustment','stock_count','stock_opening')
+           AND NOT EXISTS (
+             SELECT 1 FROM journal_entry je
+             WHERE je.tenant_id = m.tenant_id
+               AND je.source_kind = 'stock_movement' AND je.source_id = m.id)
          ORDER BY m.occurred_at, m.id`,
         [ctx.tenantId],
       );

@@ -9,6 +9,7 @@ import {
   avcoIssueCost,
   convertToBaseExact,
   formatDecimal,
+  formatMoney,
   halfEvenDiv,
   mulScaledRounded,
   parseMoney,
@@ -25,11 +26,41 @@ import type { UowContext } from '../db/unit-of-work.js';
 import { assertTenantRefs } from './inventory-refs.js';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
 import { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
+import type { GlPurpose, JournalLineSpec } from '@idepot/domain';
+
+/**
+ * Synchronous GL participation for financially relevant inventory
+ * documents (Phase 4 review hardening — BLOCKER: "backfill is for
+ * historical gaps; it must not replace synchronous posting").
+ *
+ *  - `adjustment`: stock adjustments, count variances, write-offs and
+ *    opening-stock receipts post Dr/Cr inventory against the
+ *    purpose-mapped counterpart (opening_balance_equity for
+ *    `opening_balance` reasons, inventory_adjustment_gain for upward
+ *    movements, inventory_adjustment_loss for downward ones). Reversal
+ *    movements mirror the ORIGINAL movement's counterpart account so a
+ *    reversal unwinds the same account it came from (never a fictitious
+ *    gain).
+ *  - `transfer`: dispatch/receipt legs move the carried AVCO value
+ *    between `inventory` and `inventory_in_transit` — value-preserving,
+ *    zero P&L impact by construction.
+ *
+ * Every journal is keyed (tenant, source_kind='stock_movement',
+ * source_id=<movement id>, event) — the unique journal constraint makes
+ * a re-run structurally impossible, and the historical backfill skips
+ * any movement that already has one.
+ */
+export type InventoryGlPostingMode = 'adjustment' | 'transfer';
 
 export interface PostMovementsMeta {
   sourceDocumentType?: string | null;
   sourceDocumentId?: string | null;
   createdBy?: string | null;
+  /** when set, every movement with a non-zero cost value posts its GL
+   *  journal synchronously (see InventoryGlPostingMode) */
+  glPosting?: { mode: InventoryGlPostingMode };
+  /** document code used as the journal reference (evidence linkage) */
+  documentCode?: string | null;
   /**
    * Oversell policy (offline-sync §5b, Phase 3): the tenant-level default is
    * 'reject' (fail loud — identical to the Phase 2 behaviour). When the
@@ -264,9 +295,150 @@ export class StockPoster {
         }
         throw err;
       }
-      out.push(this.toMovementDto(res.rows[0] as Record<string, unknown>));
+      const movementRow = res.rows[0] as Record<string, unknown>;
+      if (meta.glPosting != null) {
+        await this.postMovementJournal(ctx, meta, movementRow);
+      }
+      out.push(this.toMovementDto(movementRow));
     }
     return out;
+  }
+
+  /**
+   * Synchronous per-movement GL journal (one balanced entry per movement
+   * with a non-zero cost value). Runs INSIDE the posting transaction: a
+   * period-lock rejection rolls the movement, the document, the audit and
+   * the outbox back together — a new financial event can never exist
+   * without its journal.
+   */
+  private async postMovementJournal(
+    ctx: UowContext,
+    meta: PostMovementsMeta,
+    movement: Record<string, unknown>,
+  ): Promise<void> {
+    const mode = meta.glPosting!.mode;
+    const costValue = movement.cost_value != null ? parseMoney(String(movement.cost_value)) : 0n;
+    if (costValue === 0n) return; // zero-value movement carries no financial event
+    const movementId = String(movement.id);
+    const movementType = String(movement.movement_type);
+    const reason = movement.reason != null ? String(movement.reason) : null;
+    const occurredAt = new Date(movement.occurred_at as string).toISOString();
+    const isReversal = movement.reversal_of != null;
+
+    const purposes: GlPurpose[] =
+      mode === 'transfer'
+        ? ['inventory', 'inventory_in_transit']
+        : ['inventory', 'opening_balance_equity', 'inventory_adjustment_gain', 'inventory_adjustment_loss'];
+    const accounts = await this.finance.resolveGlAccounts(ctx, purposes);
+    const inventoryAccount = accounts.get('inventory')!;
+    const value = formatMoney(costValue);
+    const memo = `${movementType} movement ${movementId}`;
+
+    let lines: JournalLineSpec[];
+    let event: string;
+    // a reversal is a CORRECTION document: it may post into a soft-closed
+    // period (ordinary postings may not)
+    const allowSoftClosed = mode === 'adjustment' && isReversal;
+
+    if (mode === 'transfer') {
+      event = movementType === 'transfer_out' ? 'transfer_out_posted' : 'transfer_in_posted';
+      // value-preserving: inventory ↔ in-transit, same amount, no P&L leg
+      lines =
+        movementType === 'transfer_out'
+          ? [
+              { accountId: accounts.get('inventory_in_transit')!, debit: value, memo },
+              { accountId: inventoryAccount, credit: value, memo },
+            ]
+          : [
+              { accountId: inventoryAccount, debit: value, memo },
+              { accountId: accounts.get('inventory_in_transit')!, credit: value, memo },
+            ];
+    } else if (isReversal) {
+      // mirror the ORIGINAL movement's counterpart account so the reversal
+      // unwinds exactly the account the original event hit
+      const original = await this.reversalCounterpart(ctx, String(movement.reversal_of), inventoryAccount);
+      event = 'inventory_posted';
+      lines =
+        original.direction === 'gain'
+          ? [
+              // original was Dr inventory / Cr counterpart → unwind the counterpart
+              { accountId: original.counterAccountId, debit: value, memo },
+              { accountId: inventoryAccount, credit: value, memo },
+            ]
+          : [
+              // original was a loss (Dr counterpart / Cr inventory) → unwind it
+              { accountId: inventoryAccount, debit: value, memo },
+              { accountId: original.counterAccountId, credit: value, memo },
+            ];
+    } else if (reason === 'opening_balance') {
+      event = 'inventory_posted';
+      lines = [
+        { accountId: inventoryAccount, debit: value, memo },
+        { accountId: accounts.get('opening_balance_equity')!, credit: value, memo },
+      ];
+    } else {
+      // direction decides the account mapping: an upward movement books
+      // Dr inventory / Cr adjustment gain; a downward one books
+      // Dr adjustment loss (shrinkage/write-off) / Cr inventory
+      const qty = String(movement.quantity_base);
+      const upward = !qty.startsWith('-');
+      event = 'inventory_posted';
+      lines = upward
+        ? [
+            { accountId: inventoryAccount, debit: value, memo },
+            { accountId: accounts.get('inventory_adjustment_gain')!, credit: value, memo },
+          ]
+        : [
+            { accountId: accounts.get('inventory_adjustment_loss')!, debit: value, memo },
+            { accountId: inventoryAccount, credit: value, memo },
+          ];
+    }
+
+    await this.finance.postJournal(ctx, {
+      sourceKind: 'stock_movement',
+      sourceId: movementId,
+      event,
+      description: `${meta.sourceDocumentType ?? 'inventory'} movement (${mode})`,
+      occurredAt,
+      reference: meta.documentCode ?? null,
+      allowSoftClosedPeriod: allowSoftClosed,
+      lines,
+    });
+  }
+
+  /** Resolves the counterpart account + direction of the original
+   *  movement's synchronous journal (reversal mirroring). */
+  private async reversalCounterpart(
+    ctx: UowContext,
+    originalMovementId: string,
+    inventoryAccount: string,
+  ): Promise<{ counterAccountId: string; direction: 'gain' | 'loss' }> {
+    const res = await ctx.query<{ quantity_base: string; account_id: string; purpose: string }>(
+      `SELECT m.quantity_base::text AS quantity_base, l.account_id, COALESCE(m2.purpose, '') AS purpose
+       FROM stock_movement m
+       JOIN journal_entry e ON e.tenant_id = m.tenant_id
+         AND e.source_kind = 'stock_movement' AND e.source_id = m.id
+       JOIN journal_line l ON l.entry_id = e.id AND l.tenant_id = e.tenant_id
+       LEFT JOIN gl_mapping m2 ON m2.account_id = l.account_id AND m2.tenant_id = l.tenant_id
+       WHERE m.id = $1 AND m.tenant_id = $2`,
+      [originalMovementId, ctx.tenantId],
+    );
+    if (res.rows.length === 0) {
+      // the original movement carries no synchronous journal (historical /
+      // zero-value) — mirror against the adjustment-loss account, which is
+      // the economically conservative counterpart for restoring stock
+      const accounts = await this.finance.resolveGlAccounts(ctx, ['inventory_adjustment_loss']);
+      return { counterAccountId: accounts.get('inventory_adjustment_loss')!, direction: 'loss' };
+    }
+    const originalQty = res.rows[0]!.quantity_base;
+    const counter = res.rows.find((r) => r.purpose !== 'inventory' && r.account_id !== inventoryAccount);
+    if (!counter) {
+      throw new ConflictError(`original movement ${originalMovementId} has no counterpart journal line to mirror`);
+    }
+    return {
+      counterAccountId: counter.account_id,
+      direction: originalQty.startsWith('-') ? 'loss' : 'gain',
+    };
   }
 
   /**
