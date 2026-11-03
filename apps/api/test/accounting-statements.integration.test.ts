@@ -252,19 +252,28 @@ describe('Phase 4 accounting: statements, periods, backfill, reconciliation', ()
     expect(ap.amount).toBe('0.0000');
   });
 
-  it('cash flow (indirect): net profit + Δ working capital == net cash movement', async () => {
+  it('cash flow (indirect): operating / financing classified separately, identity exact', async () => {
     const res = await request(app.getHttpServer())
       .get(`/api/accounting/cash-flow?from=${JAN1}&to=${TODAY}`)
       .set(owner);
     expect(res.status).toBe(200);
     expect(res.body.method).toBe('indirect');
     expect(res.body.netProfit).toBe('55.0000');
-    // the documented invariant: unexplained == 0
+    // the documented invariant: unexplained == 0 (never plugged)
     expect(res.body.unexplained).toBe('0.0000');
-    // net cash movement: cash +380, bank1 +95, bank2 +100 → 575;
-    // indirect: net profit 55 − Δinventory 180 + equity funding 700 = 575
+    // direct cash movement: cash +380, bank1 +95, bank2 +100 → 575
     expect(res.body.netCashMovement).toBe('575.0000');
-    expect(res.body.netCashFromOperations).toBe('575.0000');
+    // OPERATING ONLY: net profit 55 − Δinventory 180 = −125 (equity funding
+    // is financing, never operating)
+    expect(res.body.netCashFromOperations).toBe('-125.0000');
+    // FINANCING: the 700 opening funding (capital injection)
+    expect(res.body.netCashFromFinancing).toBe('700.0000');
+    expect(res.body.investingActivities).toHaveLength(0);
+    expect(res.body.netCashFromInvesting).toBe('0.0000');
+    // the classified activities sum EXACTLY to the direct movement
+    expect(res.body.netIncreaseDecreaseInCash).toBe('575.0000');
+    expect(res.body.openingCashAndEquivalents).toBe('0.0000');
+    expect(res.body.closingCashAndEquivalents).toBe('575.0000');
   });
 
   it('AR/AP control accounts reconcile to their subledgers', async () => {
@@ -366,33 +375,35 @@ describe('Phase 4 accounting: statements, periods, backfill, reconciliation', ()
       .send({ status: 'open', reason: 'testing complete — normal operations' });
   });
 
-  it('GL backfill is idempotent and posts journals for non-sale inventory documents', async () => {
-    // a stock adjustment (Phase 2 document, no journal of its own)
+  it('inventory documents post GL journals SYNCHRONOUSLY; backfill adds nothing and stays idempotent', async () => {
+    // a stock adjustment (Phase 2 document) — its journal must exist BEFORE
+    // any backfill runs (review blocker: backfill is for historical gaps)
     const adjustment = await request(app.getHttpServer())
       .post('/api/stock-adjustments')
       .set(manager)
       .send({
         warehouseId: whA,
-        reason: 'damage write-off of one unit (backfill test)',
+        reason: 'damage write-off of one unit (synchronous GL test)',
         lines: [{ productId: productA, quantityBase: '-1' }],
       });
     expect(adjustment.status).toBe(201);
 
-    // before: no journal for that movement
-    const before = await fx.admin.query(
-      `SELECT count(*)::int AS n FROM journal_entry WHERE source_kind = 'stock_movement_backfill'`,
+    // the synchronous journal exists immediately, without any backfill
+    const sync = await fx.admin.query(
+      `SELECT count(*)::int AS n FROM journal_entry WHERE source_kind = 'stock_movement'`,
     );
-    expect(before.rows[0].n).toBe(0);
+    expect(sync.rows[0].n).toBeGreaterThanOrEqual(1);
 
+    // backfill adds NOTHING for it (already posted synchronously)…
     const run1 = await request(app.getHttpServer())
       .post('/api/accounting/backfill')
       .set(owner)
       .send({});
     expect(run1.status).toBe(201);
-    expect(run1.body.nonSaleInventoryJournals).toBeGreaterThanOrEqual(1);
+    expect(run1.body.nonSaleInventoryJournals).toBe(0);
     expect(run1.body.skipped).toHaveLength(0);
 
-    // second run posts NOTHING (idempotent by the journal unique key)
+    // …and a second run posts nothing either (fully idempotent)
     const run2 = await request(app.getHttpServer())
       .post('/api/accounting/backfill')
       .set(owner)
@@ -402,15 +413,15 @@ describe('Phase 4 accounting: statements, periods, backfill, reconciliation', ()
     expect(run2.body.preHardeningSaleJournals).toBe(0);
     expect(run2.body.partyOpeningBalanceJournals).toBe(0);
 
-    // the backfilled journal is balanced and identifiable as backfill evidence
+    // the synchronous journal is balanced and movement-keyed
     const je = await fx.admin.query(
-      `SELECT total_debit::text AS d, total_credit::text AS c FROM journal_entry
-       WHERE source_kind = 'stock_movement_backfill'`,
+      `SELECT e.total_debit::text AS d, e.total_credit::text AS c
+       FROM journal_entry e WHERE e.source_kind = 'stock_movement'`,
     );
+    expect(je.rows.length).toBeGreaterThanOrEqual(1);
     for (const row of je.rows) {
       expect(row.d).toBe(row.c);
     }
-    expect(je.rows.length).toBeGreaterThanOrEqual(1);
   });
 
   it('chart of accounts: deactivation is blocked while financial evidence references the account', async () => {

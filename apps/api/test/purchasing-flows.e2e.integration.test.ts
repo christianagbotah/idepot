@@ -625,8 +625,12 @@ describe('Phase 4 purchasing E2E (PO → GRN → invoice → match → pay)', ()
     expect(res.body.supplierId).toBe(supplierS1);
     const invoices = res.body.lines.filter((l: { documentType: string }) => l.documentType === 'supplier_invoice');
     expect(invoices.length).toBeGreaterThanOrEqual(3);
-    // closing = 2460 (inv1) + 1400 (inv4) + 24 (inv5) − 2460 (payment) − 24 (advance apply) − 24 (credit note) = 1376
-    expect(res.body.closingBalance).toBe('1376.0000');
+    // review round 2 (blocker 5): every document appears EXACTLY once —
+    // closing = 2460 (inv1) + 1400 (inv4) + 24 (inv5) − 24 (credit note)
+    //            − 2460 (payment) − 24 (advance apply) = 1400
+    // (the previous statement folded the notes into the invoice row AND
+    //  unioned them again — its 1376 double-counted the credit note)
+    expect(res.body.closingBalance).toBe('1400.0000');
   });
 
   it('cross-tenant isolation: tenant B cannot see tenant A purchasing documents', async () => {
