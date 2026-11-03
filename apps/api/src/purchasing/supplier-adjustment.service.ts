@@ -70,6 +70,22 @@ export class SupplierAdjustmentService {
         if (String(inv.status) === 'cancelled') {
           throw new ConflictError('cannot adjust a cancelled supplier invoice');
         }
+        // review round 2 (blocker 2): an UNPOSTED invoice has not posted its
+        // AP journal — correcting it would fabricate AP evidence (a note
+        // against pending_match/matched documents is refused)
+        if (!['posted', 'partially_paid', 'paid'].includes(String(inv.status))) {
+          throw new ConflictError(
+            `supplier invoice ${String(inv.code)} is "${String(inv.status)}" — only posted invoices can be adjusted (post the invoice first)`,
+          );
+        }
+        // chronology guard (blocker 4): a note must not predate the invoice
+        // it corrects — the statement/reconciliation windows assume each
+        // document affects a report only from its own date onward
+        if (dto.businessDate < dateCol(inv.business_date)) {
+          throw new ValidationError(
+            `adjustment business date ${dto.businessDate} predates the invoice document date ${dateCol(inv.business_date)}`,
+          );
+        }
         if (dto.kind === 'credit_note') {
           const open = await this.apPayments.openApForInvoice(ctx, dto.supplierInvoiceId);
           if (amount > open) {

@@ -268,22 +268,51 @@ export default function FinancialReportsPage() {
                 </tr>
                 {sectionRows('Changes in operating assets', cf.operatingAssetChanges)}
                 {sectionRows('Changes in operating liabilities', cf.operatingLiabilityChanges)}
-                {sectionRows('Equity financing', cf.equityFinancing)}
                 <tr>
                   <td>
-                    <strong>Net cash from operations</strong>
+                    <strong>Net cash from operating activities</strong>
                   </td>
                   <td className="num">
                     <strong>{formatMoney(cf.netCashFromOperations)}</strong>
                   </td>
                 </tr>
+                {sectionRows('Investing activities', cf.investingActivities)}
                 <tr>
                   <td>
-                    <strong>Net cash movement (cash &amp; bank controls)</strong>
+                    <strong>Net cash from investing activities</strong>
                   </td>
                   <td className="num">
-                    <strong>{formatMoney(cf.netCashMovement)}</strong>
+                    <strong>{formatMoney(cf.netCashFromInvesting)}</strong>
                   </td>
+                </tr>
+                {sectionRows('Financing activities', cf.financingActivities)}
+                <tr>
+                  <td>
+                    <strong>Net cash from financing activities</strong>
+                  </td>
+                  <td className="num">
+                    <strong>{formatMoney(cf.netCashFromFinancing)}</strong>
+                  </td>
+                </tr>
+                <tr>
+                  <td>
+                    <strong>Net increase / decrease in cash</strong>
+                  </td>
+                  <td className="num">
+                    <strong>{formatMoney(cf.netIncreaseDecreaseInCash)}</strong>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Cash &amp; equivalents, opening</td>
+                  <td className="num">{formatMoney(cf.openingCashAndEquivalents)}</td>
+                </tr>
+                <tr>
+                  <td>Cash &amp; equivalents, closing</td>
+                  <td className="num">{formatMoney(cf.closingCashAndEquivalents)}</td>
+                </tr>
+                <tr>
+                  <td>Direct ledger movement (cash &amp; bank controls)</td>
+                  <td className="num">{formatMoney(cf.netCashMovement)}</td>
                 </tr>
                 <tr>
                   <td>Unexplained difference</td>

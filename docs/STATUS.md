@@ -134,8 +134,9 @@ The last focused round on the same head, preserving every existing behaviour; NO
 (8 canonical classes), parent hierarchy with cycle guard, normal balance,
 posting/non-posting and control designations, effective dates and safe
 deactivation only (blocked while financial evidence references the
-account). Purpose catalog widened from 10 to 21 posting purposes — the
-posting engine resolves accounts by purpose, never by hard-coded ids.
+account). Purpose catalog widened from 10 to 22 posting purposes (the second
+review round added `inventory_in_transit`) — the posting engine resolves
+accounts by purpose, never by hard-coded ids.
 Accounting periods (fiscal monthly, overlap-guarded) with
 open/soft-closed/closed + audited reopen; the period lock is enforced at
 the single journal choke point so EVERY financially coupled document
@@ -214,13 +215,102 @@ authorization matrix including negative and cross-tenant cases.
 **Posting rules** for every document type are documented in
 docs/accounting/posting-rules.md.
 
+**Second independent review round (accounting corrections, blockers 1–5).**
+The holistic review of the Phase 4 accounting engine found five material
+defects the existing tests did not exercise; all are fixed and pinned by a
+dedicated 36-test regression suite (real API/DB evidence, exact expected
+totals — never "the endpoint responded"):
+
+- **BLOCKER 1 — cash-flow signs & classification.** The indirect build-up
+  pushed credit-normal LIABILITIES with the raw debit−credit, so an unpaid
+  GRN reported its GR/IR funding as −100 instead of +100 (net cash movement
+  misstated whenever working capital moved), and equity financing was mixed
+  into `netCashFromOperations`. Rebuilt from the ledger identity
+  Σ(debits−credits)=0: every non-cash balance-sheet account contributes
+  `credit − debit` (assets negative when growing, liabilities positive,
+  equity positive), classified into OPERATING (net profit + working
+  capital), INVESTING (purpose-designated long-lived assets; honestly empty
+  in the seed chart) and FINANCING (equity class — injections positive,
+  distributions negative). `netIncreaseDecreaseInCash` = the three
+  activities summed, and the statement now also reports opening/closing
+  cash & equivalents, reconciling EXACTLY to the direct ledger Σ over the
+  configured cash accounts (unexplained surfaced, never plugged). Proven by
+  a 12-scenario E2E timeline (unpaid GRN → invoiced → partially paid →
+  settled, deposits received/consumed, supplier advance, capital injection,
+  owner distribution, bank-to-bank transfer + fee, operating expense,
+  purchase + sale) asserting exact totals at every milestone.
+- **BLOCKER 2 — reconciliation sign normalization & posted-only scope.**
+  `controlBalance` normalizes the GL movement by the control account's
+  configured `normal_balance` (credit-normal AP/deposits present as
+  positive liabilities; debit-normal AR/advances stay as-is; linear
+  formula so REVERSING balances still reconcile exactly), and the AP
+  subledger now counts only authoritatively POSTED invoices
+  (posted/partially_paid/paid) plus their as-of-dated corrections,
+  allocations and standalone notes — a pending_match invoice (which has no
+  AP journal) moves NEITHER side. Adjustments against unposted invoices are
+  refused outright (409) so no AP evidence can exist without its invoice.
+  Nine scenarios pinned with exact control == subledger values.
+- **BLOCKER 3 — synchronous GL posting + period locks for inventory
+  documents.** Stock adjustments, count variances, write-offs, opening
+  stock and internal transfers now post their journals INSIDE the posting
+  transaction through the StockPoster (per-movement journals keyed
+  `source_kind='stock_movement'`/movement id — the unique constraint makes
+  double-posting structurally impossible): Dr Inventory / Cr adjustment
+  gains for upward movements, Dr shrinkage & write-offs / Cr Inventory for
+  downward ones, Cr opening-balance equity for `opening_balance`, and
+  reversal movements MIRROR the original movement's counterpart account
+  (a reversed write-off never books a fictitious gain). Transfers move the
+  carried AVCO value inventory ↔ `inventory_in_transit` (new purpose 1210)
+  — value-preserving, zero P&L by construction (proven). The backfill
+  skips movements that already carry a synchronous journal, so it remains
+  a historical-gaps tool only (idempotency re-proven). Accounting-period
+  enforcement is inherited at the journal choke point AND serialized
+  against closes with a per-period advisory lock (posting takes it SHARED,
+  closing EXCLUSIVE — the concurrent close/posting race is deterministic
+  and tested: a close can never slip under a passed check, and a poster
+  that waits out a close re-reads the status and is rejected). Deep
+  rollback re-proven across stock balance, cost state, GL, audit and
+  outbox.
+- **BLOCKER 4 — as-of correctness everywhere.** AP aging, customer-deposit
+  and supplier-advance reconciliation, and the COGS↔ledger check now cut
+  every document, allocation and application at its own authoritative
+  business/posting date (applications take effect on the payment's journal
+  date; credit applications on their own posting date — never the
+  deposit's; future events cannot leak backwards). Timeline tests on three
+  distinct dates per family: AP 100 → 40 → 0 (Oct 1/10/20), deposits
+  200 → 50, advances 80 → 40, COGS 0 → equal-at-every-cut. Two chronology
+  guards make the windows trustworthy at WRITE time: a payment/allocation
+  may not predate its invoice's document date, and a note may not predate
+  the invoice it corrects.
+- **BLOCKER 5 — supplier statement double-count.** The statement folded
+  debit/credit notes into the invoice row AND unioned them again as
+  separate rows. Now the invoice row carries the original posted value
+  exactly once, each note appears once on its own business date, each
+  payment allocation once on the payment's date, only posted invoices
+  appear, standalone notes appear as their own documents, and the
+  unapplied advance remainder is reported SEPARATELY (`advanceBalance` —
+  an asset, not a payable). The closing balance reconciles exactly with
+  the canonical AP equation AND the normalized GL control at every
+  before/between/after checkpoint.
+- **Holistic defects fixed on top of the five:** AP-aging bucket mapping
+  crashed with `money "undefined"` for ANY invoice 1–90 days past due (the
+  raw bucket label was used as the DTO key); the aging now omits
+  fully-settled suppliers instead of presenting all-zero rows; the
+  COGS↔ledger check subtracts reversal movements symmetrically with the
+  compensating reversal journals (previously a reversed sale broke the
+  check); the reconciliation JOIN now derives `normal_balance` correctly
+  under aggregation.
+
 ## Verification summary (Phase 4 — current head)
 
-- 114 unit tests + 258 integration tests green (16 purchasing E2E, 8
+- 114 unit tests + 294 integration tests green, including the NEW 36-test
+  financial-corrections suite (12 cash-flow scenarios, 9 reconciliation
+  scenarios, 8 synchronous-posting/period-lock/rollback tests, 4 as-of
+  timelines, 4 statement-chronology tests), 16 purchasing E2E, 8
   concurrency/atomicity with full-table snapshot proofs, 12 accounting
   statements/periods/backfill, 8 banking, 11 migration smoke incl. rerun
   idempotency, 84 RBAC matrix cases, 6 independent-review regressions,
-  plus all Phase 1–3 suites).
+  plus all Phase 1–3 suites.
 - Independent final review round (blockers fixed at head):
   - **AP status truthfulness** — the payment status is recomputed from
     the canonical AP equation (`paid ⟺ open ≤ 0`) by one shared
@@ -245,10 +335,13 @@ docs/accounting/posting-rules.md.
 - Concurrency: simultaneous GRNs vs one PO (exactly one commits), duplicate
   invoice submission, simultaneous AP allocations (deterministic
   over-allocation conflict), duplicate transfer client-docs.
-- Benchmarks (local embedded PG, 30 samples each): GRN posting p50 6.9ms /
-  p95 23.0ms; supplier invoice p50 8.5ms / p95 27.1ms; AP payment p50
-  6.2ms / p95 19.7ms; trial balance p50 8.9ms / p95 9.6ms; AP aging p50
-  3.0ms / p95 4.1ms (benchmarks/phase4-posting/results/latest.json).
+- Benchmarks (local embedded PG, Node 24.22.2, 30 samples each): GRN
+  posting p50 7.5ms / p95 19.6ms; supplier invoice p50 9.8ms / p95
+  27.2ms; AP payment p50 6.8ms / p95 16.0ms; trial balance p50 9.3ms /
+  p95 10.4ms; sale posting cash p50 14.9ms / p95 34.2ms, credit p50
+  13.4ms / p95 34.1ms (benchmarks/*/results/latest.json — the synchronous
+  inventory-GL hook adds no measurable cost to the GRN/sale paths, which
+  do not use it).
 - Financial invariants proven in tests: ΣD=ΣC (TB balanced), Assets =
   Liabilities + Equity, COGS ↔ stock ledger, AR/AP/deposit/advance control
   tie-outs, cash-flow unexplained == 0, period locks block posting.

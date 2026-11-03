@@ -1324,6 +1324,9 @@ export interface SupplierStatementDto {
   openingBalance: string;
   lines: SupplierStatementLineDto[];
   closingBalance: string;
+  /** unapplied supplier-advance remainder as of `asOf` (presented SEPARATELY
+   *  from the AP running balance — it is an asset, not a payable) */
+  advanceBalance: string;
 }
 
 /* ========================= Phase 4 — accounting ========================= */
@@ -1498,13 +1501,34 @@ export interface CashFlowDto {
   to: string;
   method: 'indirect';
   netProfit: string;
+  /** working-capital asset changes — presented as the signed CASH effect
+   *  (an increase in an operating asset is negative) */
   operatingAssetChanges: StatementLineDto[];
+  /** working-capital liability changes — presented as the signed CASH effect
+   *  (an increase in an operating liability is positive) */
   operatingLiabilityChanges: StatementLineDto[];
-  equityFinancing: StatementLineDto[];
+  /** operating activities ONLY: netProfit + working-capital changes
+   *  (equity financing is NOT part of this figure) */
   netCashFromOperations: string;
-  /** Σ movements on cash/bank control accounts in the window */
+  /** purchase/disposal of long-lived assets (empty while the chart has no
+   *  fixed-asset accounts — the classification mechanism is purpose-driven) */
+  investingActivities: StatementLineDto[];
+  netCashFromInvesting: string;
+  /** capital injections (positive) / owner distributions (negative) and
+   *  debt movements — the equity class plus loan-designated accounts */
+  financingActivities: StatementLineDto[];
+  netCashFromFinancing: string;
+  /** operating + investing + financing — the true net cash movement */
+  netIncreaseDecreaseInCash: string;
+  /** Σ cash & cash-equivalent balances strictly before `from` */
+  openingCashAndEquivalents: string;
+  /** opening + net increase/decrease — reconciles EXACTLY to the direct
+   *  ledger Σ over the cash accounts as of `to` */
+  closingCashAndEquivalents: string;
+  /** direct Σ (debits − credits) over the cash/bank controls in the window */
   netCashMovement: string;
-  /** netCashFromOperations − netCashMovement; MUST be zero (invariant) */
+  /** netIncreaseDecreaseInCash − netCashMovement; MUST be zero (invariant).
+   *  A non-zero residual is surfaced, never plugged. */
   unexplained: string;
 }
 

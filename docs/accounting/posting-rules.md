@@ -122,19 +122,41 @@ Value conservation: the destination receives exactly the amount; the fee is
 an explicit posted charge. Same-account transfers are rejected. Duplicate
 `client_doc_id` is a clean 409.
 
-### Inventory adjustments / count variances / write-offs (backfill)
-Live adjustments post through StockPoster; the Phase 4 backfill posts the GL
-for historical non-sale movements that lack journals:
+### Inventory adjustments / count variances / write-offs (SYNCHRONOUS,
+### review round 2)
+Every financially relevant movement posts its journal INSIDE the posting
+transaction, through the StockPoster (one journal per movement, keyed
+`source_kind='stock_movement'` / movement id — the journal unique
+constraint makes double-posting structurally impossible):
 
 ```
-gain:  Dr inventory / Cr inventory_adjustment_gain (or opening_balance_equity
-       for reason 'opening_balance')
-loss:  Dr inventory_adjustment_loss / Cr inventory
+gain:        Dr inventory / Cr inventory_adjustment_gain
+opening:     Dr inventory / Cr opening_balance_equity   (reason 'opening_balance')
+loss:        Dr inventory_adjustment_loss / Cr inventory
+reversal:    mirrors the ORIGINAL movement's counterpart account — a
+             reversed write-off unwinds the same loss account, never a
+             fictitious gain
+zero-value:  movements without cost evidence carry no journal (no
+             financial event)
 ```
 
-Warehouse transfers post NO journal (the inventory control is one account;
-value moves between warehouse cost states — Σ transfer-in values ==
-transfer-out value, always).
+The Phase 4 backfill remains the tool for HISTORICAL gaps only: it skips
+any movement that already carries a synchronous journal, so it can never
+double-post.
+
+### Internal warehouse transfers (SYNCHRONOUS, review round 2)
+Value-preserving only — never revenue, expense or profit:
+
+```
+dispatch: Dr inventory_in_transit (1210) / Cr inventory   (carried AVCO value)
+receive:  Dr inventory / Cr inventory_in_transit           (exact carried value)
+```
+
+Σ transfer-in values == transfer-out value always; the in-transit control
+returns to zero when every line is received. Partial receives settle the
+carried value proportionally with the exact residual on the completing
+batch (the StockPoster residual convention), and each received batch posts
+its own journal (no per-transfer unique-key collision).
 
 ### Party opening balances
 ```
@@ -166,7 +188,16 @@ documents.
 
 - `open`: posting allowed.
 - `soft_closed`: only correction documents (reversals, debit/credit notes,
-  backfill, migration) — `allowSoftClosedPeriod`.
+  adjustment reversals, backfill, migration) — `allowSoftClosedPeriod`.
+  Ordinary inventory postings (adjustments, counts, transfers, opening
+  stock) are blocked like any other document.
+- Race hardening (review round 2): a passing check takes the period's
+  advisory lock SHARED for the rest of the posting transaction; a close or
+  soft-close takes the SAME lock EXCLUSIVE first. A close can therefore
+  never slip under a check that already passed, and a poster that waits
+  out a close re-reads the status under the lock and is rejected — the
+  concurrent close/posting race is deterministic in both orders (pinned by
+  test).
 - `closed`: nothing posts; reopening requires `accounting:close` + an
   audited reason (≥ 10 chars).
 - No period configured for the date: unrestricted (a tenant that has not

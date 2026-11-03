@@ -235,11 +235,17 @@ export interface CashFlowWebDto {
   to: string;
   netProfit: string;
   netCashFromOperations: string;
+  netCashFromInvesting: string;
+  netCashFromFinancing: string;
+  netIncreaseDecreaseInCash: string;
+  openingCashAndEquivalents: string;
+  closingCashAndEquivalents: string;
   netCashMovement: string;
   unexplained: string;
   operatingAssetChanges: Array<{ accountCode: string; accountName: string; amount: string }>;
   operatingLiabilityChanges: Array<{ accountCode: string; accountName: string; amount: string }>;
-  equityFinancing: Array<{ accountCode: string; accountName: string; amount: string }>;
+  investingActivities: Array<{ accountCode: string; accountName: string; amount: string }>;
+  financingActivities: Array<{ accountCode: string; accountName: string; amount: string }>;
 }
 
 export interface ReconciliationWebDto {

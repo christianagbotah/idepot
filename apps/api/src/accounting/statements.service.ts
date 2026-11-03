@@ -206,13 +206,39 @@ export class FinancialStatementsService {
   /* -------------------------------- cash flow --------------------------------- */
 
   /**
-   * INDIRECT method (docs/accounting/cash-flow-method.md):
-   *   net profit
-   * + decreases of operating assets / increases of operating liabilities
-   *   (Δ AR, Δ inventory, Δ AP, Δ deposits, Δ GR/IR, Δ advances)
-   * + equity financing movements (capital injections / distributions)
-   * = net cash from operations, asserted == Σ movements on the
-   *   cash/bank/momo/cheque control accounts in the window.
+   * INDIRECT method — rebuilt from accounting first principles (review
+   * round 2; docs/accounting/cash-flow-method.md):
+   *
+   * The global ledger identity Σ(debits − credits) = 0 over EVERY journal
+   * line in the window gives an EXACT decomposition of the cash movement:
+   *
+   *   cashΔ = netProfit + Σ_{non-cash balance-sheet accounts} (credit − debit)
+   *
+   * where `credit − debit` is the account's signed contribution to cash:
+   *   - an ASSET increase (debit-heavy) contributes NEGATIVE  (consumes cash);
+   *   - a LIABILITY increase (credit-heavy) contributes POSITIVE (funds
+   *     operations — e.g. an unpaid GRN leaves inventory −X on the asset
+   *     side and +X on the GR/IR liability side, netting exactly zero);
+   *   - an EQUITY increase contributes POSITIVE (capital injection).
+   * The previous implementation negated assets/equity but pushed liabilities
+   * with the RAW debit−credit — reversing the required direction for every
+   * credit-normal account (the unpaid-GRN case reported −100 instead of
+   * +100). The formula here is uniform and derives from the identity, not
+   * from per-class sign conventions.
+   *
+   * CLASSIFICATION (IFRS-style, purpose/class driven):
+   *   operating   = net profit + working-capital changes (AR, inventory,
+   *                 GR/IR, AP, deposits, advances, tax controls …);
+   *   investing   = long-lived-asset accounts (purpose-designated; the
+   *                 control chart has none yet, so the section is
+   *                 honestly empty rather than fabricated);
+   *   financing   = the equity class (capital injections / distributions);
+   *   net increase/decrease in cash = operating + investing + financing.
+   *
+   * The result reconciles EXACTLY to the direct Σ(debits − credits) over
+   * the configured cash & cash-equivalent accounts (purpose-mapped cash
+   * controls + every bank account's own GL account) — both over the window
+   * and for the closing balance. `unexplained` is surfaced, never plugged.
    */
   async cashFlow(tenantId: string, args: { from: string; to: string }): Promise<CashFlowDto> {
     return this.uow.run({ tenantId }, async (ctx) => {
@@ -237,55 +263,85 @@ export class FinancialStatementsService {
       );
 
       const CASH_PURPOSES = new Set(['cash', 'bank_clearing', 'momo_clearing', 'cheque_clearing']);
+      /** purposes whose balance-sheet movement is an INVESTING activity
+       *  (long-lived assets). Purpose-driven so tenants can designate
+       *  accounts without code changes; empty in the seed chart. */
+      const INVESTING_PURPOSES = new Set<string>([]);
       const netProfit = await this.profitAndLoss(ctx.tenantId, args);
       const netProfitScaled = parseMoney(netProfit.netProfit);
 
       const operatingAssetChanges: StatementLineDto[] = [];
       const operatingLiabilityChanges: StatementLineDto[] = [];
-      const equityFinancing: StatementLineDto[] = [];
+      const investingActivities: StatementLineDto[] = [];
+      const financingActivities: StatementLineDto[] = [];
       let netCashMovement = 0n;
+      let operatingContribution = 0n;
+      let investingContribution = 0n;
+      let financingContribution = 0n;
 
       for (const r of res.rows) {
         const debit = parseMoney(r.debit);
         const credit = parseMoney(r.credit);
-        const net = debit - credit;
+        // signed CASH-EFFECT contribution of this account's movements:
+        // credit − debit (see the method contract above)
+        const contribution = credit - debit;
         if ((r.purpose != null && CASH_PURPOSES.has(r.purpose)) || r.is_bank_account) {
-          netCashMovement += net;
-          continue; // cash/bank accounts are the target, not a reconciliation item
+          netCashMovement += debit - credit; // cash accounts are the TARGET
+          continue;
         }
-        if (net === 0n) continue;
+        if (contribution === 0n) continue;
+        const line: StatementLineDto = {
+          accountCode: r.code, accountName: r.name, accountClass: r.account_class,
+          amount: formatMoney(contribution),
+        };
+        if (r.account_class === 'equity') {
+          financingActivities.push(line);
+          financingContribution += contribution;
+          continue;
+        }
+        if (r.purpose != null && INVESTING_PURPOSES.has(r.purpose)) {
+          investingActivities.push(line);
+          investingContribution += contribution;
+          continue;
+        }
         switch (r.account_class) {
           case 'asset':
-            // an increase in an operating asset consumes cash → negative sign
-            operatingAssetChanges.push({
-              accountCode: r.code, accountName: r.name, accountClass: r.account_class,
-              amount: formatMoney(-net),
-            });
+            operatingAssetChanges.push(line);
+            operatingContribution += contribution;
             break;
           case 'liability':
-            operatingLiabilityChanges.push({
-              accountCode: r.code, accountName: r.name, accountClass: r.account_class,
-              amount: formatMoney(net),
-            });
-            break;
-          case 'equity':
-            // capital injections are credits (cash inflow) — present as
-            // positive financing, distributions (debits) as negative
-            equityFinancing.push({
-              accountCode: r.code, accountName: r.name, accountClass: r.account_class,
-              amount: formatMoney(-net),
-            });
+            operatingLiabilityChanges.push(line);
+            operatingContribution += contribution;
             break;
           default:
             // P&L classes are already inside net profit — excluded here
             break;
         }
       }
-      const operatingTotal =
-        operatingAssetChanges.reduce((s, l) => s + parseMoney(l.amount), 0n) +
-        operatingLiabilityChanges.reduce((s, l) => s + parseMoney(l.amount), 0n);
-      const equityTotal = equityFinancing.reduce((s, l) => s + parseMoney(l.amount), 0n);
-      const netCashFromOperations = netProfitScaled + operatingTotal + equityTotal;
+
+      const netCashFromOperations = netProfitScaled + operatingContribution;
+      const netIncreaseDecreaseInCash =
+        netCashFromOperations + investingContribution + financingContribution;
+
+      // direct reconciliation over the cash & cash-equivalent accounts
+      const opening = await ctx.query<{ opening: string; closing: string }>(
+        `SELECT
+           (COALESCE(SUM(l.debit) FILTER (WHERE COALESCE(e.business_date, e.occurred_at::date) < $2::date), 0)
+            - COALESCE(SUM(l.credit) FILTER (WHERE COALESCE(e.business_date, e.occurred_at::date) < $2::date), 0))::text AS opening,
+           (COALESCE(SUM(l.debit) FILTER (WHERE COALESCE(e.business_date, e.occurred_at::date) <= $3::date), 0)
+            - COALESCE(SUM(l.credit) FILTER (WHERE COALESCE(e.business_date, e.occurred_at::date) <= $3::date), 0))::text AS closing
+         FROM journal_line l
+         JOIN journal_entry e ON e.id = l.entry_id AND e.tenant_id = l.tenant_id
+         JOIN gl_account a ON a.id = l.account_id AND a.tenant_id = l.tenant_id
+         LEFT JOIN gl_mapping m ON m.account_id = a.id AND m.tenant_id = a.tenant_id
+         LEFT JOIN bank_account ba ON ba.gl_account_id = a.id AND ba.tenant_id = a.tenant_id
+         WHERE a.tenant_id = $1
+           AND ((m.purpose IN ('cash','bank_clearing','momo_clearing','cheque_clearing')) OR ba.id IS NOT NULL)`,
+        [ctx.tenantId, args.from, args.to],
+      );
+      const openingCash = parseMoney(opening.rows[0]!.opening);
+      const closingCashDirect = parseMoney(opening.rows[0]!.closing);
+
       return {
         from: args.from,
         to: args.to,
@@ -293,10 +349,18 @@ export class FinancialStatementsService {
         netProfit: netProfit.netProfit,
         operatingAssetChanges,
         operatingLiabilityChanges,
-        equityFinancing,
         netCashFromOperations: formatMoney(netCashFromOperations),
+        investingActivities,
+        netCashFromInvesting: formatMoney(investingContribution),
+        financingActivities,
+        netCashFromFinancing: formatMoney(financingContribution),
+        netIncreaseDecreaseInCash: formatMoney(netIncreaseDecreaseInCash),
+        openingCashAndEquivalents: formatMoney(openingCash),
+        closingCashAndEquivalents: formatMoney(openingCash + netIncreaseDecreaseInCash),
         netCashMovement: formatMoney(netCashMovement),
-        unexplained: formatMoney(netCashFromOperations - netCashMovement),
+        // direct closing must equal opening + classified activities — the
+        // identity guarantees it; any residual is surfaced, NEVER plugged
+        unexplained: formatMoney(openingCash + netIncreaseDecreaseInCash - closingCashDirect),
       };
     });
   }
