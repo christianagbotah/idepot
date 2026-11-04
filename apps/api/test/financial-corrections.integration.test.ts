@@ -1201,7 +1201,7 @@ describe('Blocker 4: as-of reporting never sees future transactions', () => {
     expect(r.get('customer_deposit_liability')!.controlBalance).toBe('50.0000');
   });
 
-  it('supplier advance timeline: applications take effect from their journal date only', async () => {
+  it('supplier advance timeline: applications book on their OWN application date (Oct-1 advance → Oct-20 invoice)', async () => {
     // Oct 1: invoice 40 (2 × 20), then an advance payment 80 on Oct 1
     const grn = await request(base).post('/api/purchasing/grns').set(manager).send({
       supplierId: supplierS1, warehouseId: whA, businessDate: OCT1,
@@ -1227,15 +1227,25 @@ describe('Blocker 4: as-of reporting never sees future transactions', () => {
     expect(r.get('supplier_advance')!.controlBalance).toBe('80.0000');
     expect(r.get('supplier_advance')!.subledgerBalance).toBe('80.0000');
 
-    // application of 40 books at the PAYMENT's business date (Oct 1)
+    // application of 40 books at ITS OWN application date (Oct 5) — never
+    // retroactively on the advance's date
     const apply = await request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send({
-      paymentId: adv.body.id, allocations: [{ supplierInvoiceId: inv.body.id, amount: '40.0000' }],
+      paymentId: adv.body.id, businessDate: OCT5,
+      allocations: [{ supplierInvoiceId: inv.body.id, amount: '40.0000' }],
     });
     expect(apply.status).toBe(201);
+    expect(String(apply.body.code)).toMatch(/^SAA/);
+    expect(apply.body.journalEntryId).toBeTruthy();
+    expect(apply.body.paymentUnapplied).toBe('40.0000');
     r = await recon(OCT5);
-    expect(r.get('supplier_advance')!.controlBalance).toBe('40.0000'); // 80 − 40 applied
+    expect(r.get('supplier_advance')!.controlBalance).toBe('40.0000'); // 80 − 40 applied ON Oct 5
     expect(r.get('accounts_payable')!.controlBalance).toBe('100.0000'); // only TM-INV-1 remains
     expect(r.get('supplier_advance')!.passed).toBe(true);
+    expect(r.get('accounts_payable')!.passed).toBe(true);
+    // the application does NOT leak before its own date
+    r = await recon(OCT1);
+    expect(r.get('supplier_advance')!.controlBalance).toBe('80.0000');
+    expect(r.get('accounts_payable')!.controlBalance).toBe('140.0000');
 
     // Oct 20: second invoice 40 (not applied) — visible only from Oct 20 on
     const grn2 = await request(base).post('/api/purchasing/grns').set(manager).send({
@@ -1251,18 +1261,42 @@ describe('Blocker 4: as-of reporting never sees future transactions', () => {
     expect(inv2.status).toBe(201);
     r = await recon(OCT15);
     expect(r.get('accounts_payable')!.controlBalance).toBe('40.0000'); // TM-INV-1 (paid 60 on Oct 10); future invoice invisible
+    expect(r.get('supplier_advance')!.controlBalance).toBe('40.0000'); // the Oct-20 application is not yet effective
     r = await recon(OCT25);
     expect(r.get('accounts_payable')!.controlBalance).toBe('40.0000'); // TM-INV-1 settled; TM-INV-2 open
     expect(r.get('accounts_payable')!.subledgerBalance).toBe('40.0000');
     expect(r.get('supplier_advance')!.controlBalance).toBe('40.0000'); // 80 − 40 stays unapplied
 
-    // chronology guard: an advance may NEVER be applied to an invoice dated
-    // after the payment — the application would predate the invoice
+    // REVIEW ROUND 3, BLOCKER 1: the Oct-1 advance CAN be applied to the
+    // Oct-20 invoice — the application books on its OWN date (Oct 20),
+    // with a DISTINCT journal identity (the second application of the
+    // same advance no longer collides on (payment, advance_applied))
+    const apply2 = await request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send({
+      paymentId: adv.body.id, businessDate: OCT20,
+      allocations: [{ supplierInvoiceId: inv2.body.id, amount: '1.0000' }],
+    });
+    expect(apply2.status).toBe(201);
+    expect(apply2.body.journalEntryId).toBeTruthy();
+    expect(apply2.body.journalEntryId).not.toBe(apply.body.journalEntryId);
+    r = await recon(OCT25);
+    expect(r.get('accounts_payable')!.controlBalance).toBe('39.0000'); // TM-INV-2 40 − 1 applied Oct 20
+    expect(r.get('accounts_payable')!.subledgerBalance).toBe('39.0000');
+    expect(r.get('accounts_payable')!.passed).toBe(true);
+    expect(r.get('supplier_advance')!.controlBalance).toBe('39.0000'); // 40 − 1
+    expect(r.get('supplier_advance')!.passed).toBe(true);
+    // historical: as of Oct 15 the Oct-20 application does not exist
+    r = await recon(OCT15);
+    expect(r.get('supplier_advance')!.controlBalance).toBe('40.0000');
+    expect(r.get('accounts_payable')!.controlBalance).toBe('40.0000');
+
+    // chronology is STILL guarded — by the APPLICATION date now: an
+    // application may not predate the invoice it settles
     const refused = await request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send({
-      paymentId: adv.body.id, allocations: [{ supplierInvoiceId: inv2.body.id, amount: '1.0000' }],
+      paymentId: adv.body.id, businessDate: OCT15, // before inv2's Oct 20 document date
+      allocations: [{ supplierInvoiceId: inv2.body.id, amount: '1.0000' }],
     });
     expect(refused.status).toBe(400);
-    expect(refused.body.error).toMatch(/before invoice|predates/i);
+    expect(refused.body.error).toMatch(/predates/i);
   });
 
   it('COGS timeline: GL and stock ledger are cut at the SAME as-of date', async () => {
@@ -1442,14 +1476,23 @@ describe('Blocker 5: supplier statement presents every document exactly once', (
     expect(s.closingBalance).toBe('20.0000');
     expect(s.advanceBalance).toBe('50.0000');
 
-    // Oct 20: apply 20 of the advance to the invoice
+    // Oct 20: apply 20 of the advance to the invoice — the application is
+    // its own dated document (review round 3, blocker 1)
     const apply = await request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send({
-      paymentId: adv.body.id, allocations: [{ supplierInvoiceId: invId(), amount: '20.0000' }],
+      paymentId: adv.body.id, businessDate: D7, allocations: [{ supplierInvoiceId: invId(), amount: '20.0000' }],
     });
     expect(apply.status).toBe(201);
     s = await statement(D7);
+    // the application appears ONCE, as its own document row on its OWN date
+    const appRows = s.lines.filter((l) => l.documentType === 'supplier_advance_application');
+    expect(appRows).toHaveLength(1);
+    expect(appRows[0]).toMatchObject({ businessDate: D7, credit: '20.0000', debit: '0.0000' });
     expect(s.closingBalance).toBe('0.0000'); // 20 AP settled by the advance application
     expect(s.advanceBalance).toBe('30.0000'); // 50 − 20 remains unapplied
+    // before its own date the application does not exist
+    s = await statement(D6);
+    expect(s.lines.filter((l) => l.documentType === 'supplier_advance_application')).toHaveLength(0);
+    expect(s.advanceBalance).toBe('50.0000');
 
     s = await statement(D8);
     expect(s.closingBalance).toBe('0.0000');

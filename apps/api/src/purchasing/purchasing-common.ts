@@ -53,11 +53,12 @@ export async function lockApInvoiceDomain(ctx: UowContext, invoiceId: string): P
 /** Recomputes a supplier invoice's payment status from the CANONICAL AP
  *  equation — the same one openApForInvoice derives:
  *
- *    open = total + Σ debit notes − Σ credit notes − Σ allocations
+ *    open = total + Σ debit notes − Σ credit notes
+ *           − Σ payment allocations − Σ advance-application legs
  *
  *  open ≤ 0 → 'paid'; otherwise 'partially_paid' (called only from paths
- *  that have just created an allocation or an adjustment against the
- *  invoice, so 'partially_paid' is always truthful in those contexts).
+ *  that have just created an allocation/adjustment/application against
+ *  the invoice, so 'partially_paid' is always truthful in those contexts).
  *  Cancelled invoices are never touched.
  *
  *  Regression background: the previous inline updates marked an invoice
@@ -75,8 +76,13 @@ export async function refreshInvoiceStatus(ctx: UowContext, invoiceId: string): 
                         WHERE sa.supplier_invoice_id = si.id AND sa.kind = 'debit_note'), 0)
                     - COALESCE((SELECT SUM(sa.amount) FROM supplier_adjustment sa
                         WHERE sa.supplier_invoice_id = si.id AND sa.kind = 'credit_note'), 0)
-                    - COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
-                        WHERE spa.supplier_invoice_id = si.id), 0)) <= 0
+                    - COALESCE((SELECT SUM(x.amount) FROM (
+                        SELECT spa.amount FROM supplier_payment_allocation spa
+                          WHERE spa.supplier_invoice_id = si.id
+                        UNION ALL
+                        SELECT saal.amount FROM supplier_advance_application_line saal
+                          WHERE saal.supplier_invoice_id = si.id
+                      ) x), 0)) <= 0
               THEN 'paid'
               ELSE 'partially_paid'
             END

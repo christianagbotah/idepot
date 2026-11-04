@@ -649,16 +649,21 @@ export class SupplierInvoiceService {
       `SELECT * FROM match_review_item WHERE supplier_invoice_id = $1 ORDER BY created_at, id`,
       [invoiceId],
     );
-    // AP open = total + debit notes − credit notes − allocations
+    // AP open = total + debit notes − credit notes − payment allocations
+    // − advance-application legs (review round 3, blocker 1)
     const open = await ctx.query<{ debit_total: string; credit_total: string; allocated: string }>(
       `SELECT
          COALESCE((SELECT SUM(amount) FROM supplier_adjustment
             WHERE tenant_id = $1 AND supplier_invoice_id = $2 AND kind = 'debit_note'), 0)::text AS debit_total,
          COALESCE((SELECT SUM(amount) FROM supplier_adjustment
             WHERE tenant_id = $1 AND supplier_invoice_id = $2 AND kind = 'credit_note'), 0)::text AS credit_total,
-         COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
-            JOIN supplier_payment sp ON sp.id = spa.payment_id
-            WHERE spa.tenant_id = $1 AND spa.supplier_invoice_id = $2), 0)::text AS allocated`,
+         COALESCE((SELECT SUM(x.amount) FROM (
+            SELECT spa.amount FROM supplier_payment_allocation spa
+              WHERE spa.tenant_id = $1 AND spa.supplier_invoice_id = $2
+            UNION ALL
+            SELECT saal.amount FROM supplier_advance_application_line saal
+              WHERE saal.tenant_id = $1 AND saal.supplier_invoice_id = $2
+          ) x), 0)::text AS allocated`,
       [ctx.tenantId, invoiceId],
     );
     const o = open.rows[0]!;

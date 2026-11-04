@@ -649,6 +649,10 @@ export interface InvoiceDto {
 export const ReverseInvoiceSchema = z.object({
   reason: z.string().min(10).max(500),
   clientDocId: uuid().nullish(),
+  /** TEST ONLY: deterministic failure AFTER every financial write
+   *  (journal + restored deposit + reversal row + status flip) — the
+   *  transaction must roll back to zero partial effects */
+  simulateFailure: z.literal('after_financial_writes').optional(),
 });
 export type ReverseInvoice = z.infer<typeof ReverseInvoiceSchema>;
 export interface InvoiceReversalDto {
@@ -1222,8 +1226,20 @@ export const PaySupplierSchema = z.object({
 });
 export type PaySupplier = z.infer<typeof PaySupplierSchema>;
 
+/**
+ * SUPPLIER ADVANCE APPLICATION (review round 3, blocker 1) — the
+ * append-only allocation document. A supplier advance is frequently
+ * paid BEFORE the goods/invoice exist, so an application is its own
+ * dated document: it books on the APPLICATION's business date (never
+ * the original advance's), carries idempotency + approval evidence,
+ * and each application posts its own journal (Dr AP / Cr supplier
+ * advances) inside the allocation transaction.
+ */
 export const ApplySupplierAdvanceSchema = z.object({
   paymentId: z.string().uuid(),
+  /** the application's own effective date — must be ≥ the advance's and
+   *  ≥ every target invoice's document date */
+  businessDate: isoDate(),
   allocations: z
     .array(
       z.object({
@@ -1233,8 +1249,32 @@ export const ApplySupplierAdvanceSchema = z.object({
     )
     .min(1)
     .max(100),
+  /** idempotency identity — a replay returns the original document */
+  clientDocId: z.string().min(6).max(100).nullable().optional(),
+  notes: z.string().max(2000).optional(),
+  /** TEST ONLY: inject a deterministic failure at a precise depth */
+  simulateFailure: z.enum(['after_writes', 'after_journal']).optional(),
 });
 export type ApplySupplierAdvance = z.infer<typeof ApplySupplierAdvanceSchema>;
+
+export interface SupplierAdvanceApplicationDto {
+  id: string;
+  code: string;
+  paymentId: string;
+  paymentCode: string;
+  supplierId: string;
+  businessDate: string;
+  amount: string;
+  allocations: Array<{ supplierInvoiceId: string; supplierInvoiceCode: string | null; amount: string }>;
+  journalEntryId: string | null;
+  clientDocId: string | null;
+  notes: string | null;
+  createdBy: string | null;
+  approvedBy: string | null;
+  createdAt: string;
+  /** the source advance's remaining unapplied balance AFTER this application */
+  paymentUnapplied: string;
+}
 
 export interface SupplierPaymentDto {
   id: string;
@@ -1249,7 +1289,18 @@ export interface SupplierPaymentDto {
   amountAllocated: string;
   amountUnapplied: string;
   createdAt: string;
-  allocations: Array<{ supplierInvoiceId: string; supplierInvoiceCode: string | null; amount: string }>;
+  allocations: Array<{
+    supplierInvoiceId: string;
+    supplierInvoiceCode: string | null;
+    amount: string;
+    /** 'payment' = allocated by the payment document itself (payment date);
+     *  'application' = a later supplier_advance_application document (own date) */
+    kind: 'payment' | 'application';
+    /** the application document's code (kind='application') */
+    documentCode: string | null;
+    /** the effective date of this allocation leg */
+    appliedOn: string;
+  }>;
 }
 
 /* ---------------------------- supplier adjustments ---------------------------- */

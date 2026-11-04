@@ -518,11 +518,14 @@ describe('Phase 4 purchasing E2E (PO → GRN → invoice → match → pay)', ()
       .set(manager)
       .send({
         paymentId: advancePaymentId,
+        businessDate: TODAY,
         allocations: [{ supplierInvoiceId: inv.body.id, amount: '24.0000' }],
       });
     expect(apply.status).toBe(201);
-    expect(apply.body.amountUnapplied).toBe('16.0000');
-    expect(apply.body.amountAllocated).toBe('2484.0000');
+    // the application is its own dated document (review round 3, blocker 1)
+    expect(String(apply.body.code)).toMatch(/^SAA/);
+    expect(apply.body.amount).toBe('24.0000');
+    expect(apply.body.paymentUnapplied).toBe('16.0000');
 
     const invAfter = await request(app.getHttpServer())
       .get(`/api/purchasing/supplier-invoices/${inv.body.id}`)

@@ -231,7 +231,7 @@ describe('Phase 4 review regressions: AP status truthfulness + GR/IR proration',
     const apply = await request(app.getHttpServer())
       .post('/api/purchasing/supplier-payments/apply-advance')
       .set(manager)
-      .send({ paymentId: advance.body.id, allocations: [{ supplierInvoiceId: c.invoiceId!, amount: '500.00' }] });
+      .send({ paymentId: advance.body.id, businessDate: TODAY, allocations: [{ supplierInvoiceId: c.invoiceId!, amount: '500.00' }] });
     expect(apply.status).toBe(201);
 
     const invAfter = await request(app.getHttpServer())

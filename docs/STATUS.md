@@ -303,7 +303,14 @@ totals — never "the endpoint responded"):
 
 ## Verification summary (Phase 4 — current head)
 
-- 114 unit tests + 294 integration tests green, including the NEW 36-test
+- 114 unit tests + 310 integration tests green, including the NEW 16-test
+  advance/AR-reversal suite (review round 3), the 36-test financial-corrections
+  suite (12 cash-flow scenarios, 9 reconciliation scenarios, 8
+  synchronous-posting/period-lock/rollback tests, 4 as-of timelines, 4
+  statement-chronology tests), 16 purchasing E2E, 8 concurrency/atomicity with
+  full-table snapshot proofs, 12 accounting statements/periods/backfill, 8
+  banking, 11 migration smoke incl. rerun idempotency, 84 RBAC matrix cases, 6
+  independent-review regressions, plus all Phase 1–3 suites.
   financial-corrections suite (12 cash-flow scenarios, 9 reconciliation
   scenarios, 8 synchronous-posting/period-lock/rollback tests, 4 as-of
   timelines, 4 statement-chronology tests), 16 purchasing E2E, 8
@@ -329,6 +336,33 @@ totals — never "the endpoint responded"):
     tenant FK to `bank_account` (house pattern; previously the only
     cross-document reference without one), and the bank-tendered payment
     path (bank's OWN GL account, inactive-account refusal) is tested.
+- Review round 3 (supplier advance lifecycle + reversal-aware AR):
+  - **Supplier advance applications are dated documents** — an advance paid
+    Oct 1 can be applied to an invoice dated Oct 20 (the advance was paid
+    BEFORE the goods existed). Each application is an append-only
+    `supplier_advance_application` document (independent ID/code `SAA…`,
+    composite tenant FKs, APPLICATION business date, client idempotency
+    identity, journal linkage, created-by/approved-by evidence, audit +
+    outbox) written in the same UnitOfWork transaction as its journal
+    (Dr AP / Cr supplier advances) booked on the APPLICATION's date.
+    Successive applications of one advance carry DISTINCT journal identities
+    (the old `(supplier_payment, paymentId, advance_applied)` identity
+    collided with the journal unique constraint, and
+    `UNIQUE (payment_id, supplier_invoice_id)` forbade a second application
+    to the same invoice outright). The AP equation, aging, supplier
+    statement and supplier-advance reconciliation apply each leg from its
+    OWN date only.
+  - **AR reconciliation is reversal-aware and as-of correct** — the
+    append-only `invoice_reversal` record cancels the outstanding exposure
+    from the reversal journal's effective date onward; reports dated BEFORE
+    the reversal still show the original exposure; no fake payment rows.
+  - **Reversal clearing-pair fix** — the restored-deposit/AR clearing legs
+    were dropped when the sale journal had no leg on that account (detached
+    map-object mutation), producing an unbalanced journal and a 400 on every
+    reversal of an invoice settled after the sale. Fixed and pinned.
+  - **Concurrent idempotent replay** — two reversals with the same
+    clientDocId now both return the original document (the loser previously
+    hit the one-reversal conflict before reaching the replay check).
 - Deep atomicity: failures injected after the journal and after the
   deepest counter writes prove ZERO partial state across 19 tables
   (canonical row snapshots, not row counts).

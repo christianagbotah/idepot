@@ -187,6 +187,27 @@ export class PurchasingController {
     });
   }
 
+  @Get('advance-applications')
+  @RequirePermissions('ap:read')
+  listAdvanceApplications(
+    @Req() req: Request,
+    @Query('paymentId') paymentId?: string,
+    @Query('supplierId') supplierId?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.apPayments.listAdvanceApplications(principalOf(req).tenantId, {
+      paymentId: paymentId || undefined,
+      supplierId: supplierId || undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
+  @Get('advance-applications/:id')
+  @RequirePermissions('ap:read')
+  getAdvanceApplication(@Req() req: Request, @Param('id') id: string) {
+    return this.apPayments.getAdvanceApplication(principalOf(req).tenantId, id);
+  }
+
   /* ------------------------------ adjustments ---------------------------- */
 
   @Post('supplier-adjustments')

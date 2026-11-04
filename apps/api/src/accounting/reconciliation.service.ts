@@ -28,11 +28,31 @@
  * 3. AS-OF SCOPING (blocker 4): every document and allocation affects the
  *    report only from its own authoritative business date — the invoice from
  *    its business_date, an adjustment from its own business_date, a payment
- *    allocation from the payment's business_date, a credit application from
- *    its posting date (created_at — the date the credit_applied journal
- *    carries). Future events never leak into historical balances, and the
- *    COGS check compares GL activity and stock-ledger movements over the
- *    SAME as-of window.
+ *    allocation from the payment's business_date, an advance application
+ *    from the application document's own business_date, a credit
+ *    application from its posting date (created_at — the date the
+ *    credit_applied journal carries). Future events never leak into
+ *    historical balances, and the COGS check compares GL activity and
+ *    stock-ledger movements over the SAME as-of window.
+ *
+ * Review round 3 corrections:
+ *
+ * 4. REVERSAL-AWARE, AS-OF-CORRECT AR (blocker 2): the subledger uses
+ *    the append-only invoice_reversal record as authoritative correction
+ *    evidence. BEFORE the reversal's effective date (the reversal
+ *    journal's business_date) the original invoice stays in receivables
+ *    exactly as it was; FROM the reversal date onward the reversal
+ *    cancels the invoice's outstanding exposure — precisely the amount
+ *    the reversal journal removed from the AR control (Σ invoice total
+ *    minus what had settled by the reversal date), so an unpaid reversed
+ *    invoice leaves the subledger on the reversal date and a part-paid
+ *    one leaves the remainder — WITHOUT fake payment rows, and reports
+ *    dated BEFORE the reversal still show the original exposure.
+ *
+ * 5. ADVANCE APPLICATIONS (blocker 1): AP and supplier-advance checks
+ *    count each application from the application document's own
+ *    business_date (the journal's date) — an advance paid Oct 1 and
+ *    applied Oct 21 reduces AP on Oct 21, never retroactively.
  */
 import { Injectable } from '@nestjs/common';
 import type { ArApReconciliationDto, ReconciliationCheckDto } from '@idepot/contracts';
@@ -58,8 +78,18 @@ export class ReconciliationService {
   }
 
   /** AR: open receivables (posted invoice totals − allocations received by
-   *  the as-of date − credit applications posted by the as-of date) vs the
-   *  normalized accounts_receivable control balance. */
+   *  the as-of date − credit applications posted by the as-of date −
+   *  REVERSAL cancellations effective by the as-of date) vs the normalized
+   *  accounts_receivable control balance.
+   *
+   *  Reversal-aware and as-of correct (review round 3, blocker 2): the
+   *  append-only invoice_reversal record is the authoritative correction
+   *  evidence. Before the reversal's effective date the original invoice
+   *  remains in receivables; from that date onward the reversal cancels
+   *  the invoice's outstanding exposure (total − what had settled by the
+   *  reversal date) — exactly what the reversal journal removed from the
+   *  AR control. No fake payment rows are inserted; original invoice,
+   *  allocation, credit and reversal evidence all stay in place. */
   private async arControlCheck(ctx: UowContext, asOf: string): Promise<ReconciliationCheckDto> {
     const ar = await this.controlBalance(ctx, 'accounts_receivable', asOf);
     const sub = await ctx.query<{ total: string }>(
@@ -70,18 +100,37 @@ export class ReconciliationService {
              WHERE pa.invoice_id = i.id AND p.business_date <= $2::date), 0)
          - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca
              WHERE ca.invoice_id = i.id AND ca.created_at::date <= $2::date), 0)
+         - CASE WHEN rev.effective_date IS NOT NULL AND rev.effective_date <= $2::date
+             -- the reversal cancels the OUTSTANDING exposure as of its
+             -- effective date — the exact amount its journal removed
+             -- from the AR control (never more, never less)
+             THEN GREATEST(
+               i.total
+               - COALESCE((SELECT SUM(pa.amount) FROM payment_allocation pa
+                   JOIN payment p ON p.id = pa.payment_id
+                   WHERE pa.invoice_id = i.id AND p.business_date <= rev.effective_date), 0)
+               - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca
+                   WHERE ca.invoice_id = i.id AND ca.created_at::date <= rev.effective_date), 0),
+               0)
+             ELSE 0 END
        ), 0)::text AS total
        FROM invoice i
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(re.business_date, r.created_at::date) AS effective_date
+         FROM invoice_reversal r
+         LEFT JOIN journal_entry re ON re.id = r.journal_entry_id
+         WHERE r.tenant_id = i.tenant_id AND r.invoice_id = i.id
+       ) rev ON true
        WHERE i.tenant_id = $1 AND i.status IN ('posted','reversed') AND i.business_date <= $2::date`,
       [ctx.tenantId, asOf],
     );
     const subledger = parseMoney(sub.rows[0]!.total);
     return this.check(
       'accounts_receivable',
-      'AR subledger (open invoices − allocations − credit applications, as-of dated)',
+      'AR subledger (open invoices − allocations − credit applications − reversal cancellations, as-of dated)',
       ar,
       subledger,
-      'reversed invoices carry a compensating reversal journal, so both sides include them symmetrically; credit applications count from their own posting date, never the deposit\u2019s',
+      'reversed invoices leave the subledger only from the reversal journal\u2019s effective date — historical reports dated before the reversal still show the original exposure; credit applications count from their own posting date, never the deposit\u2019s',
     );
   }
 
@@ -102,9 +151,15 @@ export class ReconciliationService {
            - COALESCE((SELECT SUM(sa.amount) FROM supplier_adjustment sa
                WHERE sa.supplier_invoice_id = si.id AND sa.kind = 'credit_note'
                  AND sa.business_date <= $2::date), 0)
-           - COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
+           - COALESCE((SELECT SUM(x.amount) FROM (
+             SELECT spa.amount FROM supplier_payment_allocation spa
                JOIN supplier_payment sp ON sp.id = spa.payment_id
-               WHERE spa.supplier_invoice_id = si.id AND sp.business_date <= $2::date), 0)
+               WHERE spa.supplier_invoice_id = si.id AND sp.business_date <= $2::date
+             UNION ALL
+             SELECT saal.amount FROM supplier_advance_application_line saal
+               JOIN supplier_advance_application saa ON saa.id = saal.application_id
+               WHERE saal.supplier_invoice_id = si.id AND saa.business_date <= $2::date
+           ) x), 0)
          ) AS open
          FROM supplier_invoice si
          WHERE si.tenant_id = $1 AND si.status IN ('posted','partially_paid','paid')
@@ -154,16 +209,22 @@ export class ReconciliationService {
     );
   }
 
-  /** Supplier advances: unapplied payment remainders as of the report date
-   *  (allocations take effect on the PAYMENT's business date — the date the
-   *  advance-application journal carries) vs the normalized supplier_advance
-   *  control balance. */
+  /** Supplier advances: unapplied payment remainders as of the report date.
+   *  Payment-time allocations take effect on the PAYMENT's business date;
+   *  each advance APPLICATION (review round 3, blocker 1) reduces the
+   *  advance from the application document's OWN business date — the date
+   *  its advance_applied journal carries — so an advance paid Oct 1 and
+   *  applied Oct 21/25 shows full, 60 and 40 on Oct 5/22/26. */
   private async supplierAdvanceControlCheck(ctx: UowContext, asOf: string): Promise<ReconciliationCheckDto> {
     const control = await this.controlBalance(ctx, 'supplier_advance', asOf);
     const sub = await ctx.query<{ total: string }>(
       `SELECT COALESCE(SUM(
-         sp.amount - COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
+         sp.amount
+         - COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
              WHERE spa.payment_id = sp.id), 0)
+         - COALESCE((SELECT SUM(saal.amount) FROM supplier_advance_application_line saal
+             JOIN supplier_advance_application saa ON saa.id = saal.application_id
+             WHERE saa.payment_id = sp.id AND saa.business_date <= $2::date), 0)
        ), 0)::text AS total
        FROM supplier_payment sp
        WHERE sp.tenant_id = $1 AND sp.business_date <= $2::date`,
@@ -172,10 +233,10 @@ export class ReconciliationService {
     const subledger = parseMoney(sub.rows[0]!.total);
     return this.check(
       'supplier_advance',
-      'Supplier advances (payments − allocations, as-of dated)',
+      'Supplier advances (payments − payment-time allocations − applications from their own dates, as-of dated)',
       control,
       subledger,
-      'advance applications take effect on the payment\u2019s business date — the same date the advance_applied journal carries',
+      'advance applications take effect on the application document\u2019s own business date — the same date the advance_applied journal carries',
     );
   }
 
