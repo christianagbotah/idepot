@@ -57,6 +57,10 @@ Every allowlist entry is deliberate and documented:
    - **Compensating controls:** tree redaction (this branch); gitleaks gate now blocks re-introduction; history retention accepted rather than rewritten (Phase 0 is merged to main — a rewrite would invalidate every existing commit hash and open PR).
    - **Advisory:** if the Envato account is the repository owner's, rotate the token at envato.com regardless of the low assessment.
 
+3. **Reversal-replay idempotency UUID in the round-3 integration test (`apps/api/test/advance-ar-reversal.integration.test.ts`)** — a fixed UUID-shaped `client_doc_id` used by the concurrent duplicate-idempotency scenario of the invoice-reversal command. Introduced at commit `933bb30` (review round 3), replaced on the working tree by `crypto.randomUUID()` at commit `e3b0727`; the literal remains reachable in full git history, so full-history scanning requires the allowlist.
+   - **Exposure assessment:** none. It is a client idempotency token for a command replayed against an ephemeral embedded test database that is destroyed after the run; it grants no access to any system and matches no real credential format in use.
+   - **Compensating controls:** the gitleaks `generic-api-key` rule continues to flag any NEW secret-shaped literals (only this exact value is exempted); the test file itself now derives replay identities via `randomUUID()`.
+
 ## Local reproduction
 
 ```
