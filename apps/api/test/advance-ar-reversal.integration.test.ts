@@ -20,6 +20,7 @@
  * Every assertion is an exact expected value derived from the posting
  * rules (never merely "the endpoint responded").
  */
+import { randomUUID } from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { createApiFixture, type ApiFixture } from './helpers.js';
@@ -884,7 +885,7 @@ describe('Blocker 2: AR reconciliation is reversal-aware and as-of correct', () 
 
     // (9) duplicate idempotency: the same clientDocId replays ONE document
     const { invoiceId: id2 } = await creditSale(YESTERDAY, '100.00');
-    const key = '9f1c3b2a-7d4e-4f50-8a61-b2c3d4e5f607'; // uuid (schema: uuid().nullish())
+    const key = randomUUID(); // the replayed command identity — both concurrent requests share it
     const [p1, p2] = await Promise.all([
       reverse(id2, { clientDocId: key }),
       reverse(id2, { clientDocId: key }),
