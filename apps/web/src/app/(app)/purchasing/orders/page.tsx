@@ -6,7 +6,6 @@ import { useSession } from '../../../../lib/session';
 import { useReferenceData } from '../../../../lib/use-reference';
 import { formatMoney, formatQty } from '../../../../lib/format';
 import { StatusBadge } from '../../../../components/status-badge';
-import type { ListDto } from '../../../../lib/types';
 import type { PurchaseOrderWebDto } from '../../../../lib/types-phase4';
 
 interface LineDraft {
@@ -42,11 +41,11 @@ export default function PurchaseOrdersPage() {
     async (token: string) => {
       setLoading(true);
       try {
-        const res = await apiFetch<ListDto<PurchaseOrderWebDto>>(
+        const res = await apiFetch<PurchaseOrderWebDto[]>(
           `/purchasing/purchase-orders${qs({ limit: '100', status: statusFilter || undefined })}`,
           { token },
         );
-        setOrders(res.items);
+        setOrders(res);
       } catch (err) {
         setLoadError(apiErrorMessage(err));
       } finally {
