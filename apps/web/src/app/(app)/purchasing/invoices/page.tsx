@@ -6,7 +6,6 @@ import { useSession } from '../../../../lib/session';
 import { useReferenceData } from '../../../../lib/use-reference';
 import { formatMoney, formatQty } from '../../../../lib/format';
 import { StatusBadge } from '../../../../components/status-badge';
-import type { ListDto } from '../../../../lib/types';
 import type { GrnWebDto, PurchaseOrderWebDto, SupplierInvoiceWebDto } from '../../../../lib/types-phase4';
 
 interface LineDraft {
@@ -44,10 +43,10 @@ export default function SupplierInvoicesPage() {
   const load = useCallback(async (token: string) => {
     setLoading(true);
     try {
-      const res = await apiFetch<ListDto<SupplierInvoiceWebDto>>(`/purchasing/supplier-invoices${qs({ limit: '100' })}`, {
+      const res = await apiFetch<SupplierInvoiceWebDto[]>(`/purchasing/supplier-invoices${qs({ limit: '100' })}`, {
         token,
       });
-      setInvoices(res.items);
+      setInvoices(res);
     } catch (err) {
       setLoadError(apiErrorMessage(err));
     } finally {
@@ -58,14 +57,14 @@ export default function SupplierInvoicesPage() {
   useEffect(() => {
     if (!session) return;
     void load(session.accessToken);
-    void apiFetch<ListDto<GrnWebDto>>(`/purchasing/grns${qs({ limit: '100' })}`, { token: session.accessToken }).then(
-      (res) => setGrns(res.items),
+    void apiFetch<GrnWebDto[]>(`/purchasing/grns${qs({ limit: '100' })}`, { token: session.accessToken }).then(
+      (res) => setGrns(res),
       () => undefined,
     );
-    void apiFetch<ListDto<PurchaseOrderWebDto>>(`/purchasing/purchase-orders${qs({ limit: '100' })}`, {
+    void apiFetch<PurchaseOrderWebDto[]>(`/purchasing/purchase-orders${qs({ limit: '100' })}`, {
       token: session.accessToken,
     }).then(
-      (res) => setOpenOrders(res.items.filter((o) => ['approved', 'issued', 'partially_received', 'received'].includes(o.status))),
+      (res) => setOpenOrders(res.filter((o) => ['approved', 'issued', 'partially_received', 'received'].includes(o.status))),
       () => undefined,
     );
   }, [session, load]);

@@ -6,7 +6,6 @@ import { useSession } from '../../../../lib/session';
 import { useReferenceData } from '../../../../lib/use-reference';
 import { formatMoney } from '../../../../lib/format';
 import { StatusBadge } from '../../../../components/status-badge';
-import type { ListDto } from '../../../../lib/types';
 import type { SupplierAdjustmentWebDto, SupplierInvoiceWebDto } from '../../../../lib/types-phase4';
 
 export default function SupplierAdjustmentsPage() {
@@ -32,11 +31,11 @@ export default function SupplierAdjustmentsPage() {
   const load = useCallback(async (token: string) => {
     setLoading(true);
     try {
-      const res = await apiFetch<ListDto<SupplierAdjustmentWebDto>>(
+      const res = await apiFetch<SupplierAdjustmentWebDto[]>(
         `/purchasing/supplier-adjustments${qs({ limit: '100' })}`,
         { token },
       );
-      setItems(res.items);
+      setItems(res);
     } catch (err) {
       setLoadError(apiErrorMessage(err));
     } finally {
@@ -54,11 +53,11 @@ export default function SupplierAdjustmentsPage() {
       setInvoices([]);
       return;
     }
-    void apiFetch<ListDto<SupplierInvoiceWebDto>>(
+    void apiFetch<SupplierInvoiceWebDto[]>(
       `/purchasing/supplier-invoices${qs({ supplierId, limit: '100' })}`,
       { token: session.accessToken },
     ).then(
-      (res) => setInvoices(res.items.filter((i) => i.status !== 'cancelled')),
+      (res) => setInvoices(res.filter((i) => i.status !== 'cancelled')),
       () => setInvoices([]),
     );
   }, [session, supplierId]);

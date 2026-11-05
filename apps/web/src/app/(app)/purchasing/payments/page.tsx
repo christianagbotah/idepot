@@ -5,7 +5,6 @@ import { apiFetch, apiErrorMessage, qs } from '../../../../lib/api';
 import { useSession } from '../../../../lib/session';
 import { useReferenceData } from '../../../../lib/use-reference';
 import { formatMoney } from '../../../../lib/format';
-import type { ListDto } from '../../../../lib/types';
 import type { SupplierInvoiceWebDto, SupplierPaymentWebDto } from '../../../../lib/types-phase4';
 
 export default function SupplierPaymentsPage() {
@@ -31,10 +30,10 @@ export default function SupplierPaymentsPage() {
   const load = useCallback(async (token: string) => {
     setLoading(true);
     try {
-      const res = await apiFetch<ListDto<SupplierPaymentWebDto>>(`/purchasing/supplier-payments${qs({ limit: '100' })}`, {
+      const res = await apiFetch<SupplierPaymentWebDto[]>(`/purchasing/supplier-payments${qs({ limit: '100' })}`, {
         token,
       });
-      setPayments(res.items);
+      setPayments(res);
     } catch (err) {
       setLoadError(apiErrorMessage(err));
     } finally {
@@ -52,11 +51,11 @@ export default function SupplierPaymentsPage() {
       setOpenInvoices([]);
       return;
     }
-    void apiFetch<ListDto<SupplierInvoiceWebDto>>(
+    void apiFetch<SupplierInvoiceWebDto[]>(
       `/purchasing/supplier-invoices${qs({ supplierId, limit: '100' })}`,
       { token: session.accessToken },
     ).then(
-      (res) => setOpenInvoices(res.items.filter((i) => i.status !== 'cancelled' && Number(i.amountOpen) > 0)),
+      (res) => setOpenInvoices(res.filter((i) => i.status !== 'cancelled' && Number(i.amountOpen) > 0)),
       () => setOpenInvoices([]),
     );
   }, [session, supplierId]);
