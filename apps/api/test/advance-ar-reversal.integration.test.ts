@@ -52,7 +52,9 @@ describe('Blocker 1: supplier advance applications are dated documents', () => {
   let supplierS1: string;
 
   const OCT1 = `${YEAR}-10-01`; // advance ₵100 paid
+  const OCT2 = `${YEAR}-10-02`;
   const OCT5 = `${YEAR}-10-05`; // historical check 1
+  const OCT6 = `${YEAR}-10-06`;
   const OCT10 = `${YEAR}-10-10`;
   const OCT15 = `${YEAR}-10-15`;
   const OCT20 = `${YEAR}-10-20`; // invoice ₵60 recorded
@@ -322,7 +324,7 @@ describe('Blocker 1: supplier advance applications are dated documents', () => {
     expect(st.advanceBalance).toBe('10.0000'); // 30 − 20 — applied exactly once
   });
 
-  it('a DIFFERENT payload with a reused idempotency key returns the original document (no second application)', async () => {
+  it('same key + DIFFERENT amount → controlled 409 idempotency_key_reuse, the original is untouched', async () => {
     const sup = await newSupplier('AA Reuse Key');
     const adv = await advancePayment(OCT1, '80.00', sup);
     const inv = await invoice(OCT5, '2', '20.00', 'AA-INV-REUSE40', sup);
@@ -335,16 +337,28 @@ describe('Blocker 1: supplier advance applications are dated documents', () => {
     expect(first.status).toBe(201);
     expect(first.body.amount).toBe('40.0000');
 
-    // same key, different amount: the ORIGINAL 40 document is returned
+    // same key, different amount (80): a REUSED KEY carrying different
+    // business facts is a conflict — never a replay of the original ₵40
+    // document for a ₵80 request, never a silent second application
     const hijack = await request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send({
       paymentId: adv.id, businessDate: OCT5,
       allocations: [{ supplierInvoiceId: inv.id, amount: '80.0000' }],
       clientDocId: 'aa-reuse-key-000001',
     });
-    expect(hijack.status).toBe(201);
-    expect(hijack.body.id).toBe(first.body.id);
-    expect(hijack.body.amount).toBe('40.0000'); // the requested 80 was NOT applied
+    expect(hijack.status).toBe(409);
+    expect(hijack.body.code).toBe('idempotency_key_reuse');
+    expect(hijack.body.error).toMatch(/DIFFERENT apply-advance request|idempotency/i);
 
+    // the fingerprint is persisted with the application document
+    const fp = await fx.admin.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM supplier_advance_application
+       WHERE tenant_id = $1 AND client_doc_id = 'aa-reuse-key-000001'
+         AND request_fingerprint IS NOT NULL`,
+      [fx.tenantA.tenantId],
+    );
+    expect(Number(fp.rows[0]!.n)).toBe(1);
+
+    // exactly ONE application, ₵40 — the requested 80 was NOT applied
     const applied = await fx.admin.query<{ total: string }>(
       `SELECT COALESCE(SUM(saal.amount), 0)::text AS total
        FROM supplier_advance_application_line saal
@@ -355,6 +369,283 @@ describe('Blocker 1: supplier advance applications are dated documents', () => {
     expect(applied.rows[0]!.total).toBe('40.0000');
     const st = await statement(sup, OCT26);
     expect(st.advanceBalance).toBe('40.0000'); // 80 − 40, not 0
+    const r = await recon(OCT26);
+    expect(r.get('supplier_advance')!.passed).toBe(true);
+  });
+
+  it('same key + different invoice / payment / business date each → 409 idempotency_key_reuse', async () => {
+    // ── different INVOICE leg ─────────────────────────────────────────
+    const supA = await newSupplier('AA Reuse Invoice');
+    const advA = await advancePayment(OCT1, '60.00', supA);
+    const invA1 = await invoice(OCT5, '1', '20.00', 'AA-INV-RUI-1', supA);
+    const invA2 = await invoice(OCT10, '1', '20.00', 'AA-INV-RUI-2', supA);
+    const okA = await request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send({
+      paymentId: advA.id, businessDate: OCT10,
+      allocations: [{ supplierInvoiceId: invA1.id, amount: '20.0000' }],
+      clientDocId: 'aa-reuse-inv-000001',
+    });
+    expect(okA.status).toBe(201);
+    const otherInvoice = await request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send({
+      paymentId: advA.id, businessDate: OCT10,
+      allocations: [{ supplierInvoiceId: invA2.id, amount: '20.0000' }], // inv1 → inv2
+      clientDocId: 'aa-reuse-inv-000001',
+    });
+    expect(otherInvoice.status).toBe(409);
+    expect(otherInvoice.body.code).toBe('idempotency_key_reuse');
+
+    // ── different PAYMENT (advance) ───────────────────────────────────
+    const supB = await newSupplier('AA Reuse Payment');
+    const advB1 = await advancePayment(OCT1, '30.00', supB);
+    const advB2 = await advancePayment(OCT2, '30.00', supB);
+    const invB = await invoice(OCT5, '1', '20.00', 'AA-INV-RUP-1', supB);
+    const okB = await request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send({
+      paymentId: advB1.id, businessDate: OCT5,
+      allocations: [{ supplierInvoiceId: invB.id, amount: '20.0000' }],
+      clientDocId: 'aa-reuse-pay-000001',
+    });
+    expect(okB.status).toBe(201);
+    const otherPayment = await request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send({
+      paymentId: advB2.id, // adv1 → adv2
+      businessDate: OCT5,
+      allocations: [{ supplierInvoiceId: invB.id, amount: '20.0000' }],
+      clientDocId: 'aa-reuse-pay-000001',
+    });
+    expect(otherPayment.status).toBe(409);
+    expect(otherPayment.body.code).toBe('idempotency_key_reuse');
+    // the key still resolves to the ORIGINAL advance only
+    const payRows = await fx.admin.query<{ payment_id: string; n: string }>(
+      `SELECT payment_id::text, COUNT(*)::text AS n FROM supplier_advance_application
+       WHERE tenant_id = $1 AND client_doc_id = 'aa-reuse-pay-000001' GROUP BY payment_id`,
+      [fx.tenantA.tenantId],
+    );
+    expect(payRows.rows).toHaveLength(1);
+    expect(payRows.rows[0]!.payment_id).toBe(advB1.id);
+
+    // ── different business DATE ──────────────────────────────────────
+    const supC = await newSupplier('AA Reuse Date');
+    const advC = await advancePayment(OCT1, '30.00', supC);
+    const invC = await invoice(OCT5, '1', '20.00', 'AA-INV-RUD-1', supC);
+    const okC = await request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send({
+      paymentId: advC.id, businessDate: OCT5,
+      allocations: [{ supplierInvoiceId: invC.id, amount: '20.0000' }],
+      clientDocId: 'aa-reuse-date-00001',
+    });
+    expect(okC.status).toBe(201);
+    const otherDate = await request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send({
+      paymentId: advC.id,
+      businessDate: OCT6, // Oct 5 → Oct 6
+      allocations: [{ supplierInvoiceId: invC.id, amount: '20.0000' }],
+      clientDocId: 'aa-reuse-date-00001',
+    });
+    expect(otherDate.status).toBe(409);
+    expect(otherDate.body.code).toBe('idempotency_key_reuse');
+
+    const r = await recon(OCT26);
+    expect(r.get('supplier_advance')!.passed).toBe(true);
+  });
+
+  it('normalized replay: same key with reordered legs, respelled amounts and different notes replays the ORIGINAL', async () => {
+    const sup = await newSupplier('AA Replay Norm');
+    const adv = await advancePayment(OCT1, '60.00', sup);
+    const inv1 = await invoice(OCT5, '1', '20.00', 'AA-INV-RN-1', sup);
+    const inv2 = await invoice(OCT6, '1', '20.00', 'AA-INV-RN-2', sup);
+
+    const first = await request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send({
+      paymentId: adv.id, businessDate: OCT6,
+      allocations: [
+        { supplierInvoiceId: inv1.id, amount: '20.0000' },
+        { supplierInvoiceId: inv2.id, amount: '15.5' },
+      ],
+      clientDocId: 'aa-replay-norm-0001',
+      notes: 'original note',
+    });
+    expect(first.status).toBe(201);
+    expect(first.body.amount).toBe('35.5000');
+
+    // the SAME command re-sent: legs reversed, "15.5" respelled "15.5000",
+    // notes reworded — none of that is materially relevant, so this is a
+    // replay, not a conflict
+    const replay = await request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send({
+      paymentId: adv.id, businessDate: OCT6,
+      allocations: [
+        { supplierInvoiceId: inv2.id, amount: '15.5000' },
+        { supplierInvoiceId: inv1.id, amount: '20' },
+      ],
+      clientDocId: 'aa-replay-norm-0001',
+      notes: 'reworded note changes nothing',
+    });
+    expect(replay.status).toBe(201);
+    expect(replay.body.id).toBe(first.body.id);
+    expect(replay.body.code).toBe(first.body.code);
+    expect(replay.body.journalEntryId).toBe(first.body.journalEntryId);
+    expect(replay.body.amount).toBe('35.5000');
+
+    const rows = await fx.admin.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM supplier_advance_application
+       WHERE tenant_id = $1 AND client_doc_id = 'aa-replay-norm-0001'`,
+      [fx.tenantA.tenantId],
+    );
+    expect(Number(rows.rows[0]!.n)).toBe(1);
+    const st = await statement(sup, OCT26);
+    expect(st.advanceBalance).toBe('24.5000'); // 60 − 35.50 applied exactly once
+  });
+
+  it('concurrent same-key/same-payload retries: one effect, both receive the same logical response (no 500)', async () => {
+    const sup = await newSupplier('AA Conc Same Key');
+    const adv = await advancePayment(OCT1, '40.00', sup);
+    const inv = await invoice(OCT5, '1', '20.00', 'AA-INV-CSK-1', sup);
+
+    const payload = {
+      paymentId: adv.id, businessDate: OCT5,
+      allocations: [{ supplierInvoiceId: inv.id, amount: '20.0000' }],
+      clientDocId: 'aa-conc-same-000001',
+    };
+    const [r1, r2] = await Promise.all([
+      request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send(payload),
+      request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send(payload),
+    ]);
+
+    // both serialize on the idempotency claim: the loser re-reads UNDER
+    // the lock and replays — never a raw 23505/25P02 surfacing as 500
+    expect(r1.status).toBe(201);
+    expect(r2.status).toBe(201);
+    expect(r1.body.id).toBe(r2.body.id);
+    expect(r1.body.code).toBe(r2.body.code);
+    expect(r1.body.journalEntryId).toBe(r2.body.journalEntryId);
+    expect(r1.body.journalEntryId).toBeTruthy();
+
+    const rows = await fx.admin.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM supplier_advance_application
+       WHERE tenant_id = $1 AND client_doc_id = 'aa-conc-same-000001'`,
+      [fx.tenantA.tenantId],
+    );
+    expect(Number(rows.rows[0]!.n)).toBe(1);
+    const journals = await fx.admin.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM journal_entry WHERE tenant_id = $1 AND source_kind = 'supplier_advance_application' AND source_id = $2`,
+      [fx.tenantA.tenantId, r1.body.id],
+    );
+    expect(Number(journals.rows[0]!.n)).toBe(1);
+    const st = await statement(sup, OCT26);
+    expect(st.advanceBalance).toBe('20.0000'); // 40 − 20 applied exactly once
+    const r = await recon(OCT26);
+    expect(r.get('supplier_advance')!.passed).toBe(true);
+  });
+
+  it('concurrent same-key/DIFFERENT-payload: exactly one winner + one controlled 409 (never 500, never both applied)', async () => {
+    const sup = await newSupplier('AA Conc Diff Key');
+    const adv = await advancePayment(OCT1, '80.00', sup);
+    const inv = await invoice(OCT5, '2', '20.00', 'AA-INV-CDK-1', sup); // open 40
+
+    const [r1, r2] = await Promise.all([
+      request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send({
+        paymentId: adv.id, businessDate: OCT5,
+        allocations: [{ supplierInvoiceId: inv.id, amount: '40.0000' }],
+        clientDocId: 'aa-conc-diff-000001',
+      }),
+      request(base).post('/api/purchasing/supplier-payments/apply-advance').set(manager).send({
+        paymentId: adv.id, businessDate: OCT5,
+        allocations: [{ supplierInvoiceId: inv.id, amount: '30.0000' }], // DIFFERENT payload, same key
+        clientDocId: 'aa-conc-diff-000001',
+      }),
+    ]);
+
+    const statuses = [r1.status, r2.status].sort();
+    expect(statuses).toEqual([201, 409]);
+    const winner = r1.status === 201 ? r1 : r2;
+    const loser = r1.status === 201 ? r2 : r1;
+    expect(loser.body.code).toBe('idempotency_key_reuse');
+    expect(['40.0000', '30.0000']).toContain(winner.body.amount);
+
+    // exactly ONE application under the key — the winner's, never both
+    const rows = await fx.admin.query<{ n: string; amount: string }>(
+      `SELECT COUNT(*)::text AS n, MIN(amount)::text AS amount FROM supplier_advance_application
+       WHERE tenant_id = $1 AND client_doc_id = 'aa-conc-diff-000001'`,
+      [fx.tenantA.tenantId],
+    );
+    expect(Number(rows.rows[0]!.n)).toBe(1);
+    expect(rows.rows[0]!.amount).toBe(winner.body.amount);
+    const st = await statement(sup, OCT26);
+    expect(st.advanceBalance).toBe(`80.0000` === winner.body.amount ? '40.0000' : '50.0000');
+    const r = await recon(OCT26);
+    expect(r.get('supplier_advance')!.passed).toBe(true);
+  });
+
+  it('DB conservation invariant: a forged/incomplete application header is rejected at commit, a well-formed one is not', async () => {
+    const sup = await newSupplier('AA Forge Header');
+    const adv = await advancePayment(OCT1, '40.00', sup);
+
+    const baseRow = {
+      tenant: fx.tenantA.tenantId,
+      payment: adv.id,
+      user: fx.tenantA.users.owner!.id,
+    };
+
+    // (a) header amount 30 but a single 20 leg → the deferred
+    //     header↔lines conservation trigger aborts the COMMIT itself
+    //     (NOT awaited: the rejection is asserted below)
+    const forged = fx.admin.query('BEGIN').then(() =>
+      fx.admin.query(
+        `INSERT INTO supplier_advance_application
+           (id, tenant_id, code, payment_id, amount, business_date, client_doc_id, created_by)
+         VALUES ($1,$2,'SAA-FORGE-A',$3,30,$4,'aa-forge-header-a',$5)`,
+        [randomUUID(), baseRow.tenant, baseRow.payment, OCT5, baseRow.user],
+      ),
+    ).then(() =>
+      fx.admin.query(
+        `INSERT INTO supplier_advance_application_line (tenant_id, application_id, supplier_invoice_id, amount)
+         SELECT $1, id, (SELECT id FROM supplier_invoice WHERE tenant_id = $1 LIMIT 1), 20
+         FROM supplier_advance_application WHERE code = 'SAA-FORGE-A'`,
+        [baseRow.tenant],
+      ),
+    ).then(() => fx.admin.query('COMMIT'));
+
+    await expect(forged).rejects.toThrow(/conservation violated/i);
+    // nothing persisted — the whole transaction rolled back
+    const goneA = await fx.admin.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM supplier_advance_application WHERE tenant_id = $1 AND code = 'SAA-FORGE-A'`,
+      [baseRow.tenant],
+    );
+    expect(Number(goneA.rows[0]!.n)).toBe(0);
+
+    // (b) header with NO legs at all → same commit-time rejection
+    const incomplete = fx.admin.query('BEGIN').then(() =>
+      fx.admin.query(
+        `INSERT INTO supplier_advance_application
+           (id, tenant_id, code, payment_id, amount, business_date, client_doc_id, created_by)
+         VALUES ($1,$2,'SAA-FORGE-B',$3,20,$4,'aa-forge-header-b',$5)`,
+        [randomUUID(), baseRow.tenant, baseRow.payment, OCT5, baseRow.user],
+      ),
+    ).then(() => fx.admin.query('COMMIT'));
+    await expect(incomplete).rejects.toThrow(/conservation violated/i);
+    const goneB = await fx.admin.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM supplier_advance_application WHERE tenant_id = $1 AND code = 'SAA-FORGE-B'`,
+      [baseRow.tenant],
+    );
+    expect(Number(goneB.rows[0]!.n)).toBe(0);
+
+    // (c) control — header amount == Σ legs: the invariant is satisfied
+    //     (SET CONSTRAINTS ... IMMEDIATE forces the deferred check HERE,
+    //     proving it would pass at commit; then ROLLBACK keeps the shared
+    //     fixture clean — the API tests above already prove the real
+    //     commit path constructs header+lines exactly this way)
+    const inv1 = await invoice(OCT5, '1', '20.00', 'AA-INV-FORGE-1', sup);
+    const wellFormed = fx.admin.query('BEGIN').then(() =>
+      fx.admin.query(
+        `INSERT INTO supplier_advance_application
+           (id, tenant_id, code, payment_id, amount, business_date, client_doc_id, created_by)
+         VALUES ($1,$2,'SAA-FORGE-C',$3,20,$4,'aa-forge-header-c',$5)`,
+        [randomUUID(), baseRow.tenant, baseRow.payment, OCT5, baseRow.user],
+      ),
+    ).then(() =>
+      fx.admin.query(
+        `INSERT INTO supplier_advance_application_line (tenant_id, application_id, supplier_invoice_id, amount)
+         SELECT $1, id, $2, 20 FROM supplier_advance_application WHERE code = 'SAA-FORGE-C'`,
+        [baseRow.tenant, inv1.id],
+      ),
+    ).then(() => fx.admin.query(`SET CONSTRAINTS saa_header_lines_conservation, saal_header_lines_conservation IMMEDIATE`))
+      .then(() => fx.admin.query('ROLLBACK'));
+    await expect(wellFormed).resolves.toBeDefined();
+
     const r = await recon(OCT26);
     expect(r.get('supplier_advance')!.passed).toBe(true);
   });

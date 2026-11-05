@@ -17,6 +17,9 @@ const DOMAIN_STATUS: Record<string, HttpStatus> = {
   forbidden: HttpStatus.FORBIDDEN,
   not_found: HttpStatus.NOT_FOUND,
   conflict: HttpStatus.CONFLICT,
+  // same idempotency key reused for a DIFFERENT payload — controlled 409
+  // (Phase 3 contract; never a silent duplicate, never a 500)
+  idempotency_key_reuse: HttpStatus.CONFLICT,
 };
 
 /** Maps domain errors to HTTP; never leaks stack traces. */

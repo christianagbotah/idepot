@@ -50,8 +50,10 @@ import type {
 } from '@idepot/contracts';
 import {
   ConflictError,
+  IdempotencyKeyReuseError,
   NotFoundError,
   ValidationError,
+  applyAdvanceRequestFingerprint,
   formatMoney,
   parseMoney,
   splitPayment,
@@ -69,6 +71,7 @@ import { assertTenantRefs } from '../inventory/inventory-refs.js';
 import {
   dateCol,
   lockApInvoiceDomain,
+  lockAdvanceApplicationIdemDomain,
   lockRow,
   pgCode,
   refreshInvoiceStatus,
@@ -268,22 +271,60 @@ export class ApPaymentService {
    * supplier advances) is posted inside this same UnitOfWork transaction
    * with source = the application document, so successive applications
    * of one advance carry distinct journal identities; audit + outbox are
-   * written in the same transaction. `dto.clientDocId` makes the command
-   * idempotent — a replay returns the ORIGINAL document unchanged.
+   * written in the same transaction.
+   *
+   * IDEMPOTENCY CONTRACT (review round 4, blockers 1–2 — same contract
+   * the Phase 3 sync engine established): `dto.clientDocId` identifies
+   * the COMMAND, not just the document. The canonical request
+   * fingerprint (tenant + command type + payment + application business
+   * date + sorted allocation legs with normalized amounts) is persisted
+   * WITH the application and compared on every retry:
+   *   same key + same normalized payload  → replay of the ORIGINAL result;
+   *   same key + DIFFERENT payload        → controlled HTTP 409
+   *                                         `idempotency_key_reuse` —
+   * a recycled key can never return the original document for a
+   * different amount/invoice/payment/date, and never a second effect.
+   * The claim is a transaction-scoped advisory lock over
+   * (tenant, clientDocId) taken FIRST — before the payment row lock and
+   * every invoice-domain lock — so concurrent same-key retries
+   * serialize at the transaction boundary and the loser re-reads UNDER
+   * the claim (no raw 23505 on an aborted transaction, no 25P02, no
+   * HTTP 500; lock order is idempotency claim → payment → invoices).
    */
   async applyAdvance(
     principal: PurchasingPrincipal,
     dto: ApplySupplierAdvance,
   ): Promise<SupplierAdvanceApplicationDto> {
+    // pure computation from the request — no DB access, safe before locks
+    const requestFingerprint = applyAdvanceRequestFingerprint(principal.tenantId, dto);
+    const hasIdemKey = dto.clientDocId != null && dto.clientDocId !== '';
+
     return this.uow.run({ tenantId: principal.tenantId, userId: principal.userId }, async (ctx) => {
-      // ---- 0. idempotent replay of the application command --------------
-      if (dto.clientDocId != null && dto.clientDocId !== '') {
-        const existing = await ctx.query<{ id: string }>(
-          `SELECT id FROM supplier_advance_application WHERE tenant_id = $1 AND client_doc_id = $2`,
+      // ---- 0. CLAIM the idempotency domain, then re-read UNDER the claim.
+      //         The advisory lock is taken before every business lock, so
+      //         simultaneous same-key requests serialize HERE: whoever
+      //         commits first is visible to the other's re-read — there
+      //         is no in-flight state and no unique-violation race.
+      if (hasIdemKey) {
+        await lockAdvanceApplicationIdemDomain(ctx, dto.clientDocId!);
+        const existing = await ctx.query<{ id: string; request_fingerprint: string | null }>(
+          `SELECT id, request_fingerprint FROM supplier_advance_application
+           WHERE tenant_id = $1 AND client_doc_id = $2`,
           [ctx.tenantId, dto.clientDocId],
         );
         if (existing.rows.length > 0) {
-          return this.getAdvanceApplicationWithinCtx(ctx, String(existing.rows[0]!.id));
+          const prior = existing.rows[0]!;
+          // NULL fingerprint = a pre-hardening row written before the
+          // fingerprint column existed: legacy duplicate semantics —
+          // replay it unchanged (compat), same as the sync registry.
+          if (prior.request_fingerprint != null && prior.request_fingerprint !== requestFingerprint) {
+            throw new IdempotencyKeyReuseError(
+              `client doc id "${dto.clientDocId}" was already used for a DIFFERENT apply-advance request ` +
+                `(payment, business date, invoices or amounts differ) — a retry must replay the SAME command; ` +
+                `reusing the key for different business facts is a conflict, never a silent duplicate`,
+            );
+          }
+          return this.getAdvanceApplicationWithinCtx(ctx, String(prior.id));
         }
       }
 
@@ -388,16 +429,16 @@ export class ApPaymentService {
       }
 
       // ---- 6. the append-only application document (header + legs,
-      //         complete: journal linked) ---------------------------------
+      //         complete: journal + request fingerprint linked) -------------
       try {
         await ctx.query(
           `INSERT INTO supplier_advance_application
              (id, tenant_id, code, payment_id, amount, business_date,
-              client_doc_id, notes, journal_entry_id, created_by, approved_by)
-           VALUES ($1,$2,$3,$4,$5,$6::date,$7,$8,$9,$10,$11)`,
+              client_doc_id, request_fingerprint, notes, journal_entry_id, created_by, approved_by)
+           VALUES ($1,$2,$3,$4,$5,$6::date,$7,$8,$9,$10,$11,$12)`,
           [
             applicationId, ctx.tenantId, code, dto.paymentId, formatMoney(appliedNow),
-            dto.businessDate, dto.clientDocId ?? null, dto.notes ?? null, journalId,
+            dto.businessDate, dto.clientDocId ?? null, requestFingerprint, dto.notes ?? null, journalId,
             principal.userId, principal.userId,
           ],
         );
@@ -411,17 +452,23 @@ export class ApPaymentService {
         }
       } catch (err) {
         if (pgCode(err) === '23505') {
-          // a concurrent command claimed this client_doc_id first — replay it
-          if (dto.clientDocId != null && dto.clientDocId !== '') {
-            const existing = await ctx.query<{ id: string }>(
-              `SELECT id FROM supplier_advance_application WHERE tenant_id = $1 AND client_doc_id = $2`,
-              [ctx.tenantId, dto.clientDocId],
-            );
-            if (existing.rows.length > 0) {
-              return this.getAdvanceApplicationWithinCtx(ctx, String(existing.rows[0]!.id));
-            }
-          }
-          throw new ConflictError(`advance application code "${code}" already exists`);
+          // Defense-in-depth ONLY: under the idempotency claim this race
+          // is structurally closed (same-key requests serialize at the
+          // advisory lock and the claim-holder re-reads before posting).
+          // A 23505 reaching here means a lock-domain bug — and the
+          // transaction is ABORTED (SQLSTATE 25P02 forbids further
+          // queries on it), so the old re-SELECT path could only ever
+          // have produced a 500. Report the constraint decisively, with
+          // no further DB access on this connection.
+          const constraint =
+            typeof err === 'object' && err !== null && 'constraint' in err
+              ? String((err as { constraint?: unknown }).constraint)
+              : 'unknown';
+          throw new ConflictError(
+            constraint.includes('client_doc_id')
+              ? `duplicate advance application (client doc ${dto.clientDocId ?? ''} already claimed — idempotency lock-domain bug, please report)`
+              : `advance application code "${code}" already exists`,
+          );
         }
         throw err;
       }

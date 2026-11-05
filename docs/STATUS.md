@@ -303,21 +303,16 @@ totals — never "the endpoint responded"):
 
 ## Verification summary (Phase 4 — current head)
 
-- 114 unit tests + 310 integration tests green, including the NEW 16-test
-  advance/AR-reversal suite (review round 3), the 36-test financial-corrections
+- 121 unit tests + 315 integration tests green, including the NEW 21-test
+  advance/AR-reversal suite (review round 3 + the round-4 idempotency and
+  conservation adversarial additions), the 36-test financial-corrections
   suite (12 cash-flow scenarios, 9 reconciliation scenarios, 8
   synchronous-posting/period-lock/rollback tests, 4 as-of timelines, 4
   statement-chronology tests), 16 purchasing E2E, 8 concurrency/atomicity with
   full-table snapshot proofs, 12 accounting statements/periods/backfill, 8
   banking, 11 migration smoke incl. rerun idempotency, 84 RBAC matrix cases, 6
   independent-review regressions, plus all Phase 1–3 suites.
-  financial-corrections suite (12 cash-flow scenarios, 9 reconciliation
-  scenarios, 8 synchronous-posting/period-lock/rollback tests, 4 as-of
-  timelines, 4 statement-chronology tests), 16 purchasing E2E, 8
-  concurrency/atomicity with full-table snapshot proofs, 12 accounting
-  statements/periods/backfill, 8 banking, 11 migration smoke incl. rerun
-  idempotency, 84 RBAC matrix cases, 6 independent-review regressions,
-  plus all Phase 1–3 suites.
+
 - Independent final review round (blockers fixed at head):
   - **AP status truthfulness** — the payment status is recomputed from
     the canonical AP equation (`paid ⟺ open ≤ 0`) by one shared
@@ -379,6 +374,42 @@ totals — never "the endpoint responded"):
 - Financial invariants proven in tests: ΣD=ΣC (TB balanced), Assets =
   Liabilities + Equity, COGS ↔ stock ledger, AR/AP/deposit/advance control
   tie-outs, cash-flow unexplained == 0, period locks block posting.
+
+## Fourth review round — idempotency trust boundary + conservation (head after 3cfa761)
+
+- **Apply-advance idempotency is a COMMAND identity, not just a document
+  lookup.** Every application persists the canonical request fingerprint
+  (tenant + command type + payment + application business date + sorted
+  allocation legs with normalized amounts — domain
+  `applyAdvanceRequestFingerprint`, SHA-256 over canonical JSON). A retry
+  with the same key and the same normalized payload replays the original
+  document; the same key with ANY different material field (amount,
+  invoice, payment, date — or a different command type) is a controlled
+  HTTP 409 `idempotency_key_reuse`, never a replay of the original
+  document for a different request and never a silent second effect.
+  Benign retry noise (leg order, "40" vs "40.0000", reworded notes) stays
+  a replay. Pre-fingerprint rows keep legacy replay semantics (NULL
+  fingerprint, same compat rule as the Phase 3 sync registry).
+- **Concurrent same-key retries serialize at the transaction boundary.**
+  The command first claims a transaction-scoped advisory lock over
+  (tenant, clientDocId) — BEFORE the payment row lock and every
+  invoice-domain lock (fixed widening order, deadlock-free) — then
+  re-reads and compares the fingerprint under the claim. Two truly
+  simultaneous same-key/same-payload requests produce one effect and both
+  receive the same logical response; same-key/different-payload produces
+  one winner + one 409. The old unlocked pre-check let both callers pass
+  the SELECT, the loser then hit the `(tenant_id, client_doc_id)` UNIQUE
+  on an aborted transaction (raw 23505, then 25P02 on the catch's
+  re-SELECT) and surfaced as HTTP 500 — now structurally impossible, with
+  the residual 23505 path translated decisively without further queries.
+- **Header ↔ lines conservation invariant (migration 0016, additive).**
+  A deferrable-at-COMMIT constraint trigger on both
+  `supplier_advance_application` and `supplier_advance_application_line`
+  enforces header `amount` = Σ line amounts: forged or incomplete
+  application headers (amount ≠ Σ legs, or a header with no legs) abort
+  the whole transaction — journal included. Deferral respects the
+  header-then-lines construction order; migration 0015's Σ ≤ payment guard
+  is unchanged and 0001–0015 remain untouched.
 
 ## Known limitations / deferred (deliberate)
 

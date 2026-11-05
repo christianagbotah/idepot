@@ -50,6 +50,37 @@ export async function lockApInvoiceDomain(ctx: UowContext, invoiceId: string): P
   );
 }
 
+/** Deterministic advisory-lock key space for the apply-advance command's
+ *  IDEMPOTENCY domain: one lock per (tenant, client doc id). */
+export function advanceApplicationIdemLockKey(tenantId: string, clientDocId: string): string {
+  return `saa-idem:${tenantId}:${clientDocId}`;
+}
+
+/** Transaction-scoped advisory lock on the idempotency domain of one
+ *  apply-advance command (review round 4, blocker 2). Taken FIRST —
+ *  before the payment row lock and every invoice-domain lock — so two
+ *  concurrent retries of the SAME client-doc key serialize at the
+ *  transaction boundary: the loser waits here, then re-reads the
+ *  application document UNDER the claim and either replays it (same
+ *  normalized payload) or receives the controlled `idempotency_key_reuse`
+ *  409 (different payload). Without this claim the unlocked pre-check
+ *  could pass for both callers, the loser would then hit the
+ *  `(tenant_id, client_doc_id)` UNIQUE with a raw 23505 on an ABORTED
+ *  transaction (25P02 on the catch's re-SELECT) and surface as HTTP 500.
+ *  xact-scoped: released at COMMIT/ROLLBACK — a crashed transaction
+ *  never leaks its claim. Lock order is fixed everywhere:
+ *  idempotency claim → payment row → invoice domains (sorted) → invoice
+ *  rows, so the widening order is deadlock-free. */
+export async function lockAdvanceApplicationIdemDomain(
+  ctx: UowContext,
+  clientDocId: string,
+): Promise<void> {
+  await ctx.query(
+    `SELECT pg_advisory_xact_lock(('x' || substr(md5($1::text), 1, 16))::bit(64)::bigint)`,
+    [advanceApplicationIdemLockKey(ctx.tenantId, clientDocId)],
+  );
+}
+
 /** Recomputes a supplier invoice's payment status from the CANONICAL AP
  *  equation — the same one openApForInvoice derives:
  *

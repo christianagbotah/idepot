@@ -28,6 +28,18 @@ export class ConflictError extends DomainError {
   }
 }
 
+/** Same idempotency key (client doc id) reused for a DIFFERENT command
+ *  payload. The Phase 3 contract: a retry is a replay only when the
+ *  normalized request is identical — a recycled key carrying different
+ *  business facts is a controlled conflict (HTTP 409), never a silent
+ *  duplicate and never a replay of the ORIGINAL amount for a DIFFERENT
+ *  request. */
+export class IdempotencyKeyReuseError extends DomainError {
+  constructor(message: string) {
+    super(message, 'idempotency_key_reuse');
+  }
+}
+
 export class ForbiddenError extends DomainError {
   constructor(message = 'forbidden') {
     super(message, 'forbidden');

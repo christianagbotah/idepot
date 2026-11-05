@@ -14,6 +14,7 @@
  * numeric(9,6) fractions (e.g. '0.050000' = 5%).
  */
 import { MONEY_SCALE, QTY_SCALE, RATE_SCALE, cmpScaled, parseDecimal, subScaled } from './decimal.js';
+import { fingerprint } from './canonical.js';
 import { ValidationError } from './errors.js';
 import { formatMoney, parseMoney } from './sales.js';
 
@@ -249,4 +250,47 @@ export function signedMovement(debit: string, credit: string): bigint {
 /** Compare two money strings (convenience for tests + read models). */
 export function moneyCompare(a: string, b: string): number {
   return cmpScaled(parseMoney(a), MONEY_SCALE, parseMoney(b), MONEY_SCALE);
+}
+
+/* ------------------- advance-application idempotency -------------------- */
+
+/** The structurally-relevant shape of an apply-advance command (the wire
+ *  DTO satisfies this structurally — the domain stays framework-free). */
+export interface AdvanceApplicationCommandShape {
+  paymentId: string;
+  businessDate: string;
+  allocations: ReadonlyArray<{ supplierInvoiceId: string; amount: string }>;
+}
+
+/** Command-type constant embedded in the request fingerprint: the same
+ *  client-doc key can never silently alias two DIFFERENT commands. */
+export const ADVANCE_APPLICATION_COMMAND = 'apply_supplier_advance';
+
+/**
+ * Deterministic CANONICAL REQUEST FINGERPRINT of an apply-advance command
+ * (review round 4, blocker 1). Identity = tenant + command type + payment
+ * + application business date + the SORTED allocation legs with NORMALIZED
+ * amounts — nothing else is materially relevant to the ledger effect, so
+ * benign retry noise (leg order in the JSON array, "40" vs "40.0000",
+ * descriptive notes, test-only failure injection) does NOT change it,
+ * while any change to amount, invoice, payment, date, tenant or command
+ * type DOES. Persisted with the application document and compared on every
+ * replay: equal ⇒ replay of the original result; different ⇒ controlled
+ * `idempotency_key_reuse` conflict — a recycled key can never return the
+ * ORIGINAL document for a DIFFERENT request.
+ */
+export function applyAdvanceRequestFingerprint(
+  tenantId: string,
+  command: AdvanceApplicationCommandShape,
+): string {
+  const legs = command.allocations
+    .map((a) => ({ invoice: a.supplierInvoiceId, amount: formatMoney(parseMoney(a.amount)) }))
+    .sort((a, b) => (a.invoice < b.invoice ? -1 : a.invoice > b.invoice ? 1 : 0));
+  return fingerprint({
+    tenant: tenantId,
+    command: ADVANCE_APPLICATION_COMMAND,
+    paymentId: command.paymentId,
+    businessDate: command.businessDate,
+    allocations: legs,
+  });
 }

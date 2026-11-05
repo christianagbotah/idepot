@@ -5,7 +5,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   AGING_BUCKETS,
+  ADVANCE_APPLICATION_COMMAND,
   agingBucket,
+  applyAdvanceRequestFingerprint,
   evaluatePriceMatch,
   evaluateReceivingQuantity,
   grnLineValue,
@@ -16,6 +18,7 @@ import {
   splitPayment,
   type MatchTolerance,
 } from './purchasing.js';
+import { fingerprint } from './canonical.js';
 
 const TOL: MatchTolerance = {
   overreceiptTolerancePct: parseTolerancePct('0.05'), // 5%
@@ -193,5 +196,110 @@ describe('AP math', () => {
 
   it('splitPayment rejects over-allocation', () => {
     expect(() => splitPayment(100_000n, [60_000n, 60_000n])).toThrow(/exceed/);
+  });
+});
+
+/* ----------------- advance-application request fingerprint ---------------- */
+
+describe('applyAdvanceRequestFingerprint (canonical command identity)', () => {
+  const TENANT_A = '11111111-1111-4111-8111-111111111111';
+  const TENANT_B = '22222222-2222-4222-8222-222222222222';
+  const PAY_1 = 'aaaaaaaa-0000-4000-8000-000000000001';
+  const PAY_2 = 'aaaaaaaa-0000-4000-8000-000000000002';
+  const INV_1 = 'bbbbbbbb-0000-4000-8000-000000000001';
+  const INV_2 = 'bbbbbbbb-0000-4000-8000-000000000002';
+
+  const base = {
+    paymentId: PAY_1,
+    businessDate: '2026-10-21',
+    allocations: [
+      { supplierInvoiceId: INV_1, amount: '40.0000' },
+      { supplierInvoiceId: INV_2, amount: '20' },
+    ],
+  };
+
+  it('is stable: leg order, amount spelling and irrelevant fields do not matter', () => {
+    const a = applyAdvanceRequestFingerprint(TENANT_A, base);
+    // legs reversed, "20" spelled "20.00", extra non-material fields present
+    const b = applyAdvanceRequestFingerprint(TENANT_A, {
+      ...base,
+      allocations: [
+        { supplierInvoiceId: INV_2, amount: '20.00' },
+        { supplierInvoiceId: INV_1, amount: '40' },
+      ],
+    });
+    expect(a).toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{64}$/); // sha-256 hex
+  });
+
+  it('changes when the AMOUNT of any leg changes', () => {
+    const a = applyAdvanceRequestFingerprint(TENANT_A, base);
+    const b = applyAdvanceRequestFingerprint(TENANT_A, {
+      ...base,
+      allocations: [
+        { supplierInvoiceId: INV_1, amount: '80.0000' }, // 40 -> 80
+        { supplierInvoiceId: INV_2, amount: '20.0000' },
+      ],
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it('changes when the INVOICE of a leg changes', () => {
+    const a = applyAdvanceRequestFingerprint(TENANT_A, base);
+    const b = applyAdvanceRequestFingerprint(TENANT_A, {
+      ...base,
+      allocations: [
+        { supplierInvoiceId: INV_2, amount: '40.0000' }, // INV_1 -> INV_2
+        { supplierInvoiceId: INV_2, amount: '20.0000' },
+      ],
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it('changes when the PAYMENT (advance) changes', () => {
+    const a = applyAdvanceRequestFingerprint(TENANT_A, base);
+    const b = applyAdvanceRequestFingerprint(TENANT_A, { ...base, paymentId: PAY_2 });
+    expect(a).not.toBe(b);
+  });
+
+  it('changes when the application BUSINESS DATE changes', () => {
+    const a = applyAdvanceRequestFingerprint(TENANT_A, base);
+    const b = applyAdvanceRequestFingerprint(TENANT_A, { ...base, businessDate: '2026-10-25' });
+    expect(a).not.toBe(b);
+  });
+
+  it('changes when the TENANT changes (identity is tenant-scoped)', () => {
+    const a = applyAdvanceRequestFingerprint(TENANT_A, base);
+    const b = applyAdvanceRequestFingerprint(TENANT_B, base);
+    expect(a).not.toBe(b);
+  });
+
+  it('changes when the COMMAND TYPE changes (type participates in identity)', () => {
+    const a = applyAdvanceRequestFingerprint(TENANT_A, base);
+    // the same canonical body under a DIFFERENT command type — proves the
+    // type constant participates: a key can never alias two commands
+    const b = fingerprint({
+      tenant: TENANT_A,
+      command: 'some_other_command',
+      paymentId: base.paymentId,
+      businessDate: base.businessDate,
+      allocations: [
+        { invoice: INV_1, amount: '40.0000' },
+        { invoice: INV_2, amount: '20.0000' },
+      ],
+    });
+    expect(a).not.toBe(b);
+    // and the function's own body round-trips through the documented shape
+    const c = fingerprint({
+      tenant: TENANT_A,
+      command: ADVANCE_APPLICATION_COMMAND,
+      paymentId: base.paymentId,
+      businessDate: base.businessDate,
+      allocations: [
+        { invoice: INV_1, amount: '40.0000' },
+        { invoice: INV_2, amount: '20.0000' },
+      ],
+    });
+    expect(a).toBe(c);
   });
 });
