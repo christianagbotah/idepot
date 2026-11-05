@@ -6,7 +6,6 @@ import { useSession } from '../../../../lib/session';
 import { useReferenceData } from '../../../../lib/use-reference';
 import { formatMoney, formatQty } from '../../../../lib/format';
 import { StatusBadge } from '../../../../components/status-badge';
-import type { ListDto } from '../../../../lib/types';
 import type { GrnWebDto, PurchaseOrderWebDto } from '../../../../lib/types-phase4';
 
 interface LineDraft {
@@ -43,8 +42,8 @@ export default function GrnsPage() {
   const load = useCallback(async (token: string) => {
     setLoading(true);
     try {
-      const res = await apiFetch<ListDto<GrnWebDto>>(`/purchasing/grns${qs({ limit: '100' })}`, { token });
-      setGrns(res.items);
+      const res = await apiFetch<GrnWebDto[]>(`/purchasing/grns${qs({ limit: '100' })}`, { token });
+      setGrns(res);
     } catch (err) {
       setLoadError(apiErrorMessage(err));
     } finally {
@@ -60,10 +59,10 @@ export default function GrnsPage() {
   // load the open POs for the picker (approved/issued/partially received)
   useEffect(() => {
     if (!session) return;
-    void apiFetch<ListDto<PurchaseOrderWebDto>>(`/purchasing/purchase-orders${qs({ limit: '100' })}`, {
+    void apiFetch<PurchaseOrderWebDto[]>(`/purchasing/purchase-orders${qs({ limit: '100' })}`, {
       token: session.accessToken,
     }).then(
-      (res) => setOpenOrders(res.items.filter((o) => ['approved', 'issued', 'partially_received'].includes(o.status))),
+      (res) => setOpenOrders(res.filter((o) => ['approved', 'issued', 'partially_received'].includes(o.status))),
       () => undefined,
     );
   }, [session]);
