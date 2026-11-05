@@ -565,7 +565,7 @@ describe('Blocker 1: supplier advance applications are dated documents', () => {
     expect(Number(rows.rows[0]!.n)).toBe(1);
     expect(rows.rows[0]!.amount).toBe(winner.body.amount);
     const st = await statement(sup, OCT26);
-    expect(st.advanceBalance).toBe(`80.0000` === winner.body.amount ? '40.0000' : '50.0000');
+    expect(st.advanceBalance).toBe(winner.body.amount === '40.0000' ? '40.0000' : '50.0000');
     const r = await recon(OCT26);
     expect(r.get('supplier_advance')!.passed).toBe(true);
   });
