@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS credit_note (
   business_date date NOT NULL,
   -- gross customer entitlement = net revenue + reversible tax
   total numeric(18,4) NOT NULL CHECK (total > 0),
+  -- the TAX-PRORATION AXIS slice (Σ effective-net slices of returned
+  -- lines + adjustment): cumulative Σ credited_net over all credit
+  -- notes of an invoice is the axis the per-component tax reversal
+  -- prorates on (see trg_return credit math in the service)
+  credited_net numeric(18,4) NOT NULL CHECK (credited_net >= 0),
   net_revenue_reversal numeric(18,4) NOT NULL CHECK (net_revenue_reversal >= 0),
   tax_reversal_total numeric(18,4) NOT NULL DEFAULT 0 CHECK (tax_reversal_total >= 0),
   -- settlement decomposition (sums to total by CHECK)
@@ -320,6 +325,12 @@ BEGIN
   IF v_limit IS NULL THEN
     RETURN NULL; -- credit note removed, rows cascaded: vacuous
   END IF;
+  -- VOIDED store credits convert their liability back into refundable
+  -- entitlement (the void posts Dr store_credit_liability / Cr
+  -- refunds_payable), so they widen the available pool symmetrically
+  -- with the service-side outstanding calculation
+  v_limit := v_limit + COALESCE((SELECT SUM(sc.amount) FROM store_credit sc
+    WHERE sc.credit_note_id = v_note AND sc.status = 'void'), 0);
   SELECT
     COALESCE((SELECT SUM(amount) FROM refund
       WHERE credit_note_id = v_note
