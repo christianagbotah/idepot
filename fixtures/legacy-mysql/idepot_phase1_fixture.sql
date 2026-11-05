@@ -4,6 +4,10 @@ SET NAMES utf8mb4;
 
 DROP TABLE IF EXISTS opening_stock_count;
 DROP TABLE IF EXISTS suppliers;
+DROP TABLE IF EXISTS accounts;
+DROP TABLE IF EXISTS purchase_order;
+DROP TABLE IF EXISTS accounts_payable;
+DROP TABLE IF EXISTS general_journal;
 DROP TABLE IF EXISTS customers;
 DROP TABLE IF EXISTS units_items;
 DROP TABLE IF EXISTS units;
@@ -81,7 +85,10 @@ CREATE TABLE suppliers (
   phone VARCHAR(40),
   email VARCHAR(200),
   address VARCHAR(300),
-  created_date DATETIME
+  created_date DATETIME,
+  opening_balance DOUBLE DEFAULT 0,
+  balance_due DOUBLE DEFAULT 0,
+  opening_accounts_payable_id INT
 );
 
 -- Synthetic pre-cutover physical count sheet (count-first authority, strategy §4).
@@ -205,9 +212,9 @@ INSERT INTO customers (customer_id, customer_name, contact_person, mobile, phone
   (4,'Walk-in Guest',NULL,'0000000000',NULL,NULL,'active','1',NULL,'2022-02-01 08:00:00');
 
 -- suppliers
-INSERT INTO suppliers (supplier_id, supplier_name, contact_person, mobile, phone, email, address, created_date) VALUES
-  (1,'Ghacem Depot','S. Amankwah','0271000001',NULL,NULL,'Tema','2021-01-05 08:00:00'),
-  (2,'Rock Chemicals','M. Osei','0271000002','0303000002','sales@rockchem.example','Spintex, Accra','2021-04-11 14:00:00');
+INSERT INTO suppliers (supplier_id, supplier_name, contact_person, mobile, phone, email, address, created_date, opening_balance, balance_due, opening_accounts_payable_id) VALUES
+  (1,'Ghacem Depot','S. Amankwah','0271000001',NULL,NULL,'Tema','2021-01-05 08:00:00',300.00,300.00,NULL),
+  (2,'Rock Chemicals','M. Osei','0271000002','0303000002','sales@rockchem.example','Spintex, Accra','2021-04-11 14:00:00',0.00,0.00,NULL);
 
 -- physical count sheet: 101 exact (clean), 102 + 108 variances (I1 records),
 -- 110 unimportable (orphan count row quarantined). 106/107 deliberately ABSENT
@@ -328,3 +335,97 @@ INSERT INTO invoice_code (id, code, status, reason, customer_id, code_range, cre
 INSERT INTO waybill_code (id, code, status, reason, customer_id, code_range, created_by, created_date) VALUES
   (1,'WB-3001','closed',NULL,2,'WB-3001..WB-3002',1,'2023-06-01 07:00:00'),
   (2,'WB-0002','open',NULL,NULL,'WB-3001..WB-3002',1,'2023-06-01 07:00:00');
+
+-- ============================================================
+-- Phase 4 purchasing / AP / banking / journals (synthetic, no PII)
+-- ============================================================
+
+-- legacy chart-of-accounts-as-payment-methods (defective model: a
+-- "payment method" is an accounts row; balances are mutable snapshots)
+CREATE TABLE accounts (
+  account_id INT PRIMARY KEY AUTO_INCREMENT,
+  name VARCHAR(100) NOT NULL,
+  account_type INT NOT NULL,
+  opening_balance DOUBLE,
+  current_balance DOUBLE,
+  account_is_bank TINYINT DEFAULT 0,
+  account_is_transferrable TINYINT DEFAULT 0
+);
+INSERT INTO accounts (account_id, name, account_type, opening_balance, current_balance, account_is_bank, account_is_transferrable) VALUES
+  (1,'Main Cash',1,500.00,745.00,0,1),
+  (2,'GCB Operations',1,2000.00,1895.50,1,1),
+  (3,'MTN MoMo Wallet',1,100.00,60.00,0,1),
+  (4,'Cheques in Transit',1,0.00,0.00,0,1),
+  (5,'Accounts Payable',3,0.00,-620.00,0,0),
+  (6,'General Products Purchased',4,0.00,-1200.00,0,0);
+
+-- legacy collapsed purchase orders (row per line; header fields
+-- duplicated per row — R14 pattern; supplier 1, items 101/102)
+CREATE TABLE purchase_order (
+  po_id INT PRIMARY KEY AUTO_INCREMENT,
+  po_code VARCHAR(50) NOT NULL,
+  supplier_id INT NOT NULL,
+  item_id INT NOT NULL,
+  status TEXT,
+  quantity LONGTEXT,
+  price DOUBLE,
+  amount DOUBLE,
+  grand_total DOUBLE,
+  amount_paid DOUBLE,
+  amount_due DOUBLE,
+  track_code VARCHAR(50),
+  item_balance DOUBLE,
+  date_timestamp LONGTEXT
+);
+-- PO-5001: 10 cement @ 85 + 5 roofing @ 240 = 2050; fully paid
+INSERT INTO purchase_order (po_id, po_code, supplier_id, item_id, status, quantity, price, amount, grand_total, amount_paid, amount_due, track_code, item_balance, date_timestamp) VALUES
+  (1,'PO-5001',1,101,'Paid','10',85.00,850.00,2050.00,2050.00,0.00,'trk5001a',10.00,'2023-07-01 09:00:00'),
+  (2,'PO-5001',1,102,'Paid','5',240.00,1200.00,2050.00,2050.00,0.00,'trk5001b',5.00,'2023-07-01 09:00:00');
+-- PO-5002: 4 cement @ 85 = 340; partially paid 200 (R14 divergence: one
+-- row carries a stale grand_total — the corrected import must record it)
+INSERT INTO purchase_order (po_id, po_code, supplier_id, item_id, status, quantity, price, amount, grand_total, amount_paid, amount_due, track_code, item_balance, date_timestamp) VALUES
+  (3,'PO-5002',1,101,'Partially Paid','4',85.00,340.00,335.00,200.00,140.00,'trk5002a',4.00,'2023-07-05 10:30:00');
+
+-- legacy AP rows (per PO; the paid-from account is an accounts row id)
+CREATE TABLE accounts_payable (
+  accounts_payable_id INT PRIMARY KEY AUTO_INCREMENT,
+  supplier_id INT NOT NULL,
+  po_code VARCHAR(50),
+  amount DOUBLE,
+  amount_paid DOUBLE,
+  amount_due DOUBLE,
+  payment_method TEXT,
+  payment_details TEXT,
+  account_id INT,
+  status TEXT,
+  track_code VARCHAR(50),
+  p_prev_paid DOUBLE,
+  prev_paid DOUBLE,
+  date_timestamp LONGTEXT
+);
+INSERT INTO accounts_payable (accounts_payable_id, supplier_id, po_code, amount, amount_paid, amount_due, payment_method, payment_details, account_id, status, track_code, p_prev_paid, prev_paid, date_timestamp) VALUES
+  (1,1,'PO-5001',2050.00,2050.00,0.00,'Bank','GCB transfer',2,'Paid','trkap1',0.00,0.00,'2023-07-01 09:05:00'),
+  (2,1,'PO-5002',340.00,200.00,140.00,'Cash',NULL,1,'Partially Paid','trkap2',0.00,0.00,'2023-07-05 10:35:00');
+
+-- legacy GL (reference-only import — D8/D9: never canonical truth)
+CREATE TABLE general_journal (
+  journal_id INT PRIMARY KEY AUTO_INCREMENT,
+  journal VARCHAR(50),
+  reference VARCHAR(100),
+  po_code VARCHAR(50),
+  so_code VARCHAR(50),
+  invoice_code VARCHAR(50),
+  supplier_id INT,
+  customer_id INT,
+  payment_id INT,
+  debit_amount DOUBLE,
+  credit_amount DOUBLE,
+  account_name VARCHAR(100),
+  account_balance DOUBLE,
+  date_timestamp LONGTEXT
+);
+INSERT INTO general_journal (journal_id, journal, reference, po_code, so_code, invoice_code, supplier_id, customer_id, payment_id, debit_amount, credit_amount, account_name, account_balance, date_timestamp) VALUES
+  (1,'Purchases','PO-5001','PO-5001',NULL,NULL,1,NULL,NULL,2050.00,0.00,'General Products Purchased',-1200.00,'2023-07-01 09:00:00'),
+  (2,'Purchases','PO-5001','PO-5001',NULL,NULL,1,NULL,NULL,0.00,2050.00,'Accounts Payable',-620.00,'2023-07-01 09:00:00'),
+  (3,'Payments','PO-5001','PO-5001',NULL,NULL,1,NULL,NULL,2050.00,0.00,'Accounts Payable',-620.00,'2023-07-02 08:00:00'),
+  (4,'Payments','PO-5001','PO-5001',NULL,NULL,1,NULL,NULL,0.00,2050.00,'GCB Operations',1895.50,'2023-07-02 08:00:00');

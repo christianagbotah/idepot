@@ -21,3 +21,8 @@ regexes = [
 description = "Legacy Envato template-author token, hardcoded in the purchased CodeIgniter template. Redacted from the tree on the Phase 1 branch (getenv placeholder, see legacy/SECURITY-NOTE.md); the original value remains reachable in Phase 0 git history (commits predating this gate). Assessed low risk: template-author credential duplicated across public copies of that template, no access to iDepot systems. Advisory: rotate if the Envato account is yours."
 regexTarget = "match"
 regexes = ['FkA9UyDiQT0YiKwYLK3ghyFNRVV9SeUn']
+
+[[allowlists]]
+description = "Throwaway reversal-replay idempotency token in the round-3 advance/AR-reversal integration test. Fixed, public, protects nothing: a client_doc_id exercising the duplicate-idempotency path of the invoice-reversal command against an ephemeral embedded test database. Replaced on the working tree by randomUUID() at commit e3b0727; the literal remains reachable in git history at 933bb30, which full-history scanning must still tolerate."
+regexTarget = "match"
+regexes = ['9f1c3b2a-7d4e-4f50-8a61-b2c3d4e5f607']

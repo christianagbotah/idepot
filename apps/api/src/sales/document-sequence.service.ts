@@ -15,7 +15,22 @@ function pgCode(err: unknown): string | undefined {
   return undefined;
 }
 
-export type SequenceDocType = 'QUOTATION' | 'SALE_ORDER' | 'INVOICE' | 'RECEIPT' | 'WAYBILL' | 'DEPOSIT' | 'INVOICE_REVERSAL';
+export type SequenceDocType =
+  | 'QUOTATION'
+  | 'SALE_ORDER'
+  | 'INVOICE'
+  | 'RECEIPT'
+  | 'WAYBILL'
+  | 'DEPOSIT'
+  | 'INVOICE_REVERSAL'
+  // Phase 4
+  | 'PURCHASE_ORDER'
+  | 'GRN'
+  | 'SUPPLIER_INVOICE'
+  | 'SUPPLIER_PAYMENT'
+  | 'SUPPLIER_ADVANCE_APPLICATION'
+  | 'SUPPLIER_ADJUSTMENT'
+  | 'BANK_TRANSFER';
 
 const DEFAULT_PREFIX: Record<SequenceDocType, string> = {
   QUOTATION: 'QT',
@@ -25,6 +40,13 @@ const DEFAULT_PREFIX: Record<SequenceDocType, string> = {
   WAYBILL: 'WB',
   DEPOSIT: 'DEP',
   INVOICE_REVERSAL: 'RVI',
+  PURCHASE_ORDER: 'PO',
+  GRN: 'GRN',
+  SUPPLIER_INVOICE: 'SI',
+  SUPPLIER_PAYMENT: 'SP',
+  SUPPLIER_ADVANCE_APPLICATION: 'SAA',
+  SUPPLIER_ADJUSTMENT: 'ADJ',
+  BANK_TRANSFER: 'TRF',
 };
 
 const DEFAULT_PADDING: Record<SequenceDocType, number> = {
@@ -35,6 +57,13 @@ const DEFAULT_PADDING: Record<SequenceDocType, number> = {
   WAYBILL: 5,
   DEPOSIT: 5,
   INVOICE_REVERSAL: 5,
+  PURCHASE_ORDER: 5,
+  GRN: 5,
+  SUPPLIER_INVOICE: 5,
+  SUPPLIER_PAYMENT: 5,
+  SUPPLIER_ADVANCE_APPLICATION: 5,
+  SUPPLIER_ADJUSTMENT: 5,
+  BANK_TRANSFER: 5,
 };
 
 export interface SequencePrincipal {

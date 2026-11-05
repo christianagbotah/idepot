@@ -27,7 +27,23 @@ export type GlPurpose =
   | 'momo_clearing'
   | 'cheque_clearing'
   | 'customer_deposit_liability'
-  | 'tax_payable';
+  | 'tax_payable'
+  // Phase 4 — purchasing & accounting purposes (migration 0009)
+  | 'accounts_payable'
+  | 'grni_clearing'
+  | 'supplier_advance'
+  | 'input_tax_recoverable'
+  | 'purchase_expense'
+  | 'purchase_price_variance'
+  | 'inventory_adjustment_gain'
+  | 'inventory_adjustment_loss'
+  | 'opening_balance_equity'
+  | 'retained_earnings'
+  | 'bank_fee_expense'
+  // Phase 4 review hardening — internal transfers carry their value in a
+  // separate in-transit asset while the goods are between warehouses
+  // (no P&L impact: the movement is inventory ↔ inventory, never revenue)
+  | 'inventory_in_transit';
 
 /** The tender→control-account purposes (payment-transaction-map). */
 export const TENDER_GL_PURPOSE: Record<string, GlPurpose> = {
@@ -35,6 +51,18 @@ export const TENDER_GL_PURPOSE: Record<string, GlPurpose> = {
   momo: 'momo_clearing',
   cheque: 'cheque_clearing',
   bank_transfer: 'bank_clearing',
+};
+
+/** Supplier-payment tender→control-account purposes (Phase 4). When the
+ *  tender names a concrete bank_account, its own GL account is used instead
+ *  of the generic clearing purpose — resolution happens in the posting
+ *  service, this map is only the default. */
+export const SUPPLIER_TENDER_GL_PURPOSE: Record<string, GlPurpose> = {
+  cash: 'cash',
+  momo: 'momo_clearing',
+  cheque: 'cheque_clearing',
+  bank_transfer: 'bank_clearing',
+  other: 'cash',
 };
 
 export interface JournalLineSpec {

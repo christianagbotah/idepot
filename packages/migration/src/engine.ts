@@ -29,6 +29,7 @@ import {
 } from './transform-phase2.js';
 import { transformOpeningStock } from './opening-stock.js';
 import { transformSalesCycle } from './transform-phase3.js';
+import { transformPhase4 } from './transform-phase4.js';
 
 export interface MigrationRunConfig {
   pgAdminUrl: string;
@@ -47,6 +48,9 @@ export interface MigrationRunResult {
 export async function runMigration(config: MigrationRunConfig): Promise<MigrationRunResult> {
   const specs = config.specs ?? FIXTURE_TABLES;
   const startedAt = new Date();
+  let phase4Stats: ReconciliationArtifact['phase4'] | undefined;
+  let phase4Records: ReconciliationRecord[] = [];
+  let phase4Warnings: Array<{ code: string; table: string; message: string }> = [];
   let phase3Stats: ReconciliationArtifact['phase3'] | undefined;
   let phase3Records: ReconciliationRecord[] = [];
   let phase3Warnings: Array<{ code: string; table: string; message: string }> = [];
@@ -235,6 +239,34 @@ export async function runMigration(config: MigrationRunConfig): Promise<Migratio
       phase3Records = salesResult.records;
       phase3Warnings = salesResult.warnings;
 
+      // Phase 4 — purchasing / AP / banking master + supplier openings +
+      // reference-only legacy journals + the opening trial balance
+      // (explicit, quantified equity plug when legacy defects leave one)
+      const phase4SupplierMaps = await pg.query<{ legacy_id: string; target_id: string }>(
+        `SELECT legacy_id, target_id FROM legacy_id_map WHERE legacy_table = 'suppliers' AND target_table = 'supplier'`,
+      );
+      const supplierByLegacy = new Map(phase4SupplierMaps.rows.map((r) => [r.legacy_id, r.target_id]));
+      const phase4Result = await transformPhase4(
+        pg,
+        {
+          purchaseOrder: clean('purchase_order'),
+          accountsPayable: clean('accounts_payable'),
+          accounts: clean('accounts'),
+          generalJournal: clean('general_journal'),
+          suppliers: clean('suppliers'),
+        },
+        {
+          tenantId: config.tenantId,
+          runId,
+          supplierByLegacy,
+          productByItem: productsResult.info.productByItem,
+          defaultWarehouseId,
+        },
+      );
+      phase4Stats = phase4Result.stats;
+      phase4Records = phase4Result.records;
+      phase4Warnings = phase4Result.warnings;
+
       // transform-level rejects land in quarantine with reasons (never silent)
       for (const rej of transformRejects) {
         await pg.query(
@@ -283,7 +315,7 @@ export async function runMigration(config: MigrationRunConfig): Promise<Migratio
         (r) => !isQuarantined(outcome.findings, 'payment', r[paymentSpec.pk] ?? ''),
       );
       const recon = reconcile(invoiceRows, paymentRows);
-      const allRecords = [...recon.records, ...openingResult.records, ...phase3Records];
+      const allRecords = [...recon.records, ...openingResult.records, ...phase3Records, ...phase4Records];
       for (const rec of allRecords) {
         await pg.query(
           `INSERT INTO reconciliation_record
@@ -338,10 +370,12 @@ export async function runMigration(config: MigrationRunConfig): Promise<Migratio
           ...recon.warnings.map((w) => ({ code: 'reconcile', table: '-', message: w })),
           ...productsResult.roundingWarnings.map((w) => ({ code: 'rounding_normalization', table: 'item', message: w })),
           ...phase3Warnings,
+        ...phase4Warnings,
         ],
         transform: transformStats,
         phase2: phase2Stats,
         phase3: phase3Stats,
+        phase4: phase4Stats,
       };
 
       await pg.query(

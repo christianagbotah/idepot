@@ -43,6 +43,10 @@ export interface TaxComponentRule {
   inclusive: boolean;
   /** deterministic evaluation order (seq, then name) */
   seq: number;
+  /** Phase 4 (purchasing): a PURCHASE-side component may be recoverable
+   *  input tax (Dr input_tax_recoverable) rather than a cost. Sales-side
+   *  evidence ignores this flag; supplier-side evidence stores it. */
+  recoverable?: boolean;
 }
 
 export interface TaxComponentEvidence {
@@ -52,6 +56,8 @@ export interface TaxComponentEvidence {
   inclusive: boolean;
   taxableBasis: bigint; // scaled MONEY_SCALE
   taxAmount: bigint; // scaled MONEY_SCALE
+  /** recoverable input tax (purchase side; carried verbatim to evidence) */
+  recoverable: boolean;
 }
 
 export interface TaxComputationResult {
@@ -129,6 +135,7 @@ export function computeTaxEvidence(
         inclusive: true,
         taxableBasis: gross,
         taxAmount: amount,
+        recoverable: r.recoverable === true,
       });
       taxTotal = addScaled(taxTotal, MONEY_SCALE, amount, MONEY_SCALE).value;
       taxInclusiveTotal = addScaled(taxInclusiveTotal, MONEY_SCALE, amount, MONEY_SCALE).value;
@@ -149,6 +156,7 @@ export function computeTaxEvidence(
       inclusive: false,
       taxableBasis: net,
       taxAmount: amount,
+      recoverable: r.recoverable === true,
     });
     taxTotal = addScaled(taxTotal, MONEY_SCALE, amount, MONEY_SCALE).value;
   }

@@ -1,0 +1,66 @@
+{
+  "startedAt": "2026-11-05T10:03:48.245Z",
+  "environment": {
+    "platform": "linux",
+    "arch": "x64",
+    "cpus": 2,
+    "cpuModel": "Intel(R) Xeon(R) Processor",
+    "totalMemGb": 3.9,
+    "node": "v24.22.2",
+    "database": "embedded-postgresql (local)",
+    "concurrency": 1,
+    "note": "local sandbox evidence; CI re-runs the same suite"
+  },
+  "scenarios": {
+    "grnPosting": {
+      "samples": 30,
+      "warmup": 5,
+      "min": 6.313546999999744,
+      "p50": 8.84657100000004,
+      "p95": 26.69739000000027,
+      "max": 27.941217999999935,
+      "mean": 10.84,
+      "unit": "ms"
+    },
+    "supplierInvoicePosting": {
+      "samples": 30,
+      "warmup": 5,
+      "min": 8.526800999999978,
+      "p50": 9.72675500000014,
+      "p95": 24.993319000000156,
+      "max": 27.554791999999907,
+      "mean": 11.72,
+      "unit": "ms"
+    },
+    "apPaymentPosting": {
+      "samples": 30,
+      "warmup": 5,
+      "min": 7.042500999999902,
+      "p50": 7.532318999999916,
+      "p95": 15.24934100000064,
+      "max": 16.432976000000053,
+      "mean": 8.43,
+      "unit": "ms"
+    },
+    "trialBalanceQuery": {
+      "samples": 30,
+      "warmup": 5,
+      "min": 8.774185999999645,
+      "p50": 9.001027999999678,
+      "p95": 9.47292600000037,
+      "max": 10.527043000000049,
+      "mean": 9.09,
+      "unit": "ms"
+    },
+    "apAgingQuery": {
+      "samples": 30,
+      "warmup": 5,
+      "min": 3.3217429999995147,
+      "p50": 3.620765000000574,
+      "p95": 4.67490700000053,
+      "max": 5.591503999999986,
+      "mean": 3.75,
+      "unit": "ms"
+    }
+  }
+}

@@ -112,6 +112,19 @@ export class ReversalService {
     if (invRes.rows.length === 0) throw new NotFoundError('invoice', invoiceId);
     const invoice = invRes.rows[0]!;
     if (String(invoice.status) !== 'posted') {
+      // concurrent idempotent replay (round 3): two requests with the SAME
+      // clientDocId serialize on the invoice row lock — the loser observes
+      // status='reversed' written by the winner. When a reversal with THIS
+      // command identity exists, the replay returns that original document
+      // (the command already happened); only a genuinely different command
+      // receives the one-reversal-per-invoice conflict.
+      if (dto.clientDocId) {
+        const replay = await ctx.query<{ id: string }>(
+          `SELECT id FROM invoice_reversal WHERE tenant_id = $1 AND client_doc_id = $2`,
+          [ctx.tenantId, dto.clientDocId],
+        );
+        if (replay.rows.length > 0) return this.loadReversal(ctx, String(replay.rows[0]!.id));
+      }
       throw new ConflictError(`invoice ${String(invoice.code)} is ${String(invoice.status)} — only a posted invoice can be reversed`);
     }
     const customerId = invoice.customer_id ? String(invoice.customer_id) : null;
@@ -238,10 +251,19 @@ export class ReversalService {
       inverted.set(acc, row);
     }
     if (clearing > 0n) {
-      const ar = inverted.get(accounts.get('accounts_receivable')!) ?? { debit: 0n, credit: 0n };
+      // Round-3 fix: `inverted.get(acc) ?? {...}` alone MUTATES A DETACHED
+      // object when the sale journal had no leg on that account — the
+      // restored-deposit credit (and any AR debit for an invoice settled
+      // only AFTER the sale) silently vanished and the journal failed its
+      // balance check. Both aggregation rows are written back explicitly.
+      const arKey = accounts.get('accounts_receivable')!;
+      const ar = inverted.get(arKey) ?? { debit: 0n, credit: 0n };
       ar.debit = addScaled(ar.debit, MONEY_SCALE, clearing, MONEY_SCALE).value;
-      const dep = inverted.get(depositAccountId) ?? { debit: 0n, credit: 0n };
+      inverted.set(arKey, ar);
+      const depKey = depositAccountId;
+      const dep = inverted.get(depKey) ?? { debit: 0n, credit: 0n };
       dep.credit = addScaled(dep.credit, MONEY_SCALE, clearing, MONEY_SCALE).value;
+      inverted.set(depKey, dep);
     }
     const journalSpecs: JournalLineSpec[] = [];
     for (const [accountId, amounts] of inverted) {
@@ -261,6 +283,9 @@ export class ReversalService {
       event: 'invoice_reversed',
       description: `Reversal of invoice ${invoiceCode}`,
       createdBy: principal.userId,
+      // a reversal is a CORRECTION document: it may post into a
+      // soft-closed period (never a closed one)
+      allowSoftClosedPeriod: true,
       lines: journalSpecs,
     });
 
@@ -342,6 +367,14 @@ export class ReversalService {
       journalId: journal?.id ?? null,
       restoredDepositId,
     });
+
+    // TEST ONLY: deterministic failure AFTER every financial write (stock
+    // inverse, reversal journal, restored deposit, reversal row, status
+    // flip, audit, outbox) — the whole UnitOfWork transaction must roll
+    // back to zero partial effects
+    if (dto.simulateFailure === 'after_financial_writes') {
+      throw new Error('simulated failure after_financial_writes (atomicity test)');
+    }
 
     return {
       id: reversalId,

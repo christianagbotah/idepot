@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Current phase** | Phase 3 — sales & POS (+ financial hardening + review hardening + final hardening rounds) — implemented on this branch |
+| **Current phase** | Phase 4 — purchasing & accounting (+ migration: AP & books) — implemented on this branch |
 | **Previous phases** | Phase 0 — forensic audit & architecture ✅ (merged); Phase 1 — monorepo foundation + migration engineering foundation ✅ (merged); Phase 2 — master data & inventory ✅ (merged) |
 | **Branch** | `phase-3/sales-pos` (from main @ `b07e80a6`) |
 | **Repo state** | Phase 3 complete through the final hardening round: corrected sale posting, payments/deposits/allocations, orders/fulfillments, shifts, receipts, offline sync engine with concurrency-safe idempotency, migration of the legacy sales cycle, effective-dated tax engine with server-authoritative exemptions, synchronous GL journals, AVCO costing, price authority, invoice reversal, full quotation lifecycle, composite tenant FKs (independent review findings 1–5, second-review blockers 1–4, final-review blockers 1–5) |
@@ -128,12 +128,312 @@ The last focused round on the same head, preserving every existing behaviour; NO
 - The change-feed projection with per-tenant monotonic seq stays on the outbox-cursor protocol until the first relay consumer needs compaction.
 - Quotation → order conversion imports proforma history; quotation printing (A4 proforma layout) arrives with the Phase 5 template gallery. Offline devices do not carry quotation lifecycle events (they are online counter workflows); the sync event set stays sale/payment/deposit/customer.
 
-## Next actions (Phase 4 — Purchasing & accounting)
+## Completed capabilities (Phase 4 — this branch)
 
-1. Phase 4 posting engine: chart-of-accounts administration, statements, closing; GL journals for non-sale inventory documents (adjustments/transfers/opening balances); back-fill GL + tax evidence for pre-hardening Phase 3 documents (identifiable by cost_method IS NULL with a purchase-price cost_at_sale).
-2. PO/GRN/supplier invoice 3-way match; debit notes; AP payments/allocations (mirroring the Phase 3 allocation engine).
-3. Banking (accounts, transfers, statement import + matching); AR/AP subledgers with control-account reconciliation job.
-4. Migration: POs, GRNs, AP, banking references, chart of accounts; opening balances + opening trial-balance tie-out with the accountant sign-off.
+**Accounting foundation.** Chart of accounts with statement classes
+(8 canonical classes), parent hierarchy with cycle guard, normal balance,
+posting/non-posting and control designations, effective dates and safe
+deactivation only (blocked while financial evidence references the
+account). Purpose catalog widened from 10 to 22 posting purposes (the second
+review round added `inventory_in_transit`) — the posting engine resolves
+accounts by purpose, never by hard-coded ids.
+Accounting periods (fiscal monthly, overlap-guarded) with
+open/soft-closed/closed + audited reopen; the period lock is enforced at
+the single journal choke point so EVERY financially coupled document
+inherits it (corrections may post into soft-closed periods, never closed).
+Journal entries gained business date, document reference and append-only
+reversal linkage. GL inquiry with date/account/source/reference filters
+and pagination; account-ledger drilldown; approved manual journals with
+live balance preview and reversal-as-new-entry.
+
+**Purchasing.** Full corrected lifecycle: purchase orders (draft→submitted
+→approved→issued→partially_received→received→closed/cancelled) as pure
+commitment documents; GRNs as the stock authority (AVCO layers at receipt
+cost, Dr Inventory / Cr GR-IR in the same transaction, over-receipt
+tolerance with verified supervisor approval); supplier invoices as the AP
+authority with the PO↔GRN↔invoice 3-way match (price/quantity evidence,
+configurable tolerances, exception approval — never a silent invoice
+rewrite; invoice-before-receipt structurally prevented). PPV posts
+explicitly; inventory is never re-valued at invoice time. Recoverable vs
+non-recoverable purchase tax with transaction-time evidence.
+
+**AP subledger.** Supplier payments with tenders (cash/momo/cheque/bank via
+each bank account's own GL account) and explicit allocations serialized by
+per-invoice advisory locks; advances (unapplied remainders) and later
+application; append-only debit/credit notes (stock returns at AVCO cost in
+the same transaction); AP aging (current/1-30/31-60/61-90/90+) and supplier
+statements regenerated from documents with running balances. The open AP is
+always ledger/allocation-derived — never a mutable snapshot.
+
+**Banking.** Bank account master FK'd to the chart; transfers with explicit
+fees (balanced journals, duplicate client-doc protection); statement import
+treating uploads as untrusted input (5MB/20k-line bounds, strict per-field
+validation, parameterized SQL only) with file-sha256 + per-line identity
+dedupe; deterministic match suggestions (exact amount, opposite direction,
+±3-day window, reference-boosted confidence) that NEVER auto-post; manual
+match/unmatch with direction and amount guards and split support;
+reconciliation finalization recording explicit GL-vs-statement differences.
+
+**Financial statements.** Trial balance (opening + period + closing, ties to
+the BS by construction), accrual P&L (COGS reconciles with the AVCO stock
+ledger — never supplier payments), balance sheet (Assets = Liabilities +
+Equity with real equity accounts and current earnings), and the indirect
+cash flow with a documented canonical method
+(docs/accounting/cash-flow-method.md) asserting
+netCashFromOperations == netCashMovement (unexplained must be zero).
+AR/AP/deposit/advance/COGS control reconciliation surfaces differences
+explicitly — no plugs.
+
+**GL backfill (idempotent).** Journals for non-sale inventory documents
+(opening stock, adjustments, count variances), pre-hardening Phase 3
+invoices/payments/deposits/credit applications, and party opening
+balances — keyed by the journal unique constraint with pre-loaded skip
+sets (a second run posts nothing).
+
+**Migration workstream.** Legacy purchase orders (collapsed PO+GRN+
+invoice, R14 per-row duplication) → PO + lines + server-computed supplier
+invoices + historical payments/allocations; legacy accounts
+(chart-as-payment-methods) → the corrected banking master with
+snapshot-drift evidence; supplier opening balances → explicit documents;
+legacy journals counted and reconcined as REFERENCE ONLY (D8/D9); the
+opening trial balance posted from canonical documents with the explicit,
+quantified equity plug requiring accountant sign-off (workflow exercised
+on the fixture). Reruns are idempotent — one opening TB per tenant, ever.
+
+**Web UI.** Thirteen responsive screens: purchase orders, GRNs, supplier
+invoices with match review, supplier payments, debit/credit notes, AP
+aging + statements, chart of accounts, journal inquiry + manual journals,
+periods & close (+ backfill trigger), financial reports (P&L/BS/TB/CF),
+control reconciliation, bank accounts, transfers, statement import &
+matching — with ₵ money formatting and role-aware navigation (the server
+remains the authorization authority).
+
+**RBAC.** purchasing/receiving/ap/accounting/banking/financial-report
+permissions plus the accountant and procurement roles; 84-case
+authorization matrix including negative and cross-tenant cases.
+
+**Posting rules** for every document type are documented in
+docs/accounting/posting-rules.md.
+
+**Second independent review round (accounting corrections, blockers 1–5).**
+The holistic review of the Phase 4 accounting engine found five material
+defects the existing tests did not exercise; all are fixed and pinned by a
+dedicated 36-test regression suite (real API/DB evidence, exact expected
+totals — never "the endpoint responded"):
+
+- **BLOCKER 1 — cash-flow signs & classification.** The indirect build-up
+  pushed credit-normal LIABILITIES with the raw debit−credit, so an unpaid
+  GRN reported its GR/IR funding as −100 instead of +100 (net cash movement
+  misstated whenever working capital moved), and equity financing was mixed
+  into `netCashFromOperations`. Rebuilt from the ledger identity
+  Σ(debits−credits)=0: every non-cash balance-sheet account contributes
+  `credit − debit` (assets negative when growing, liabilities positive,
+  equity positive), classified into OPERATING (net profit + working
+  capital), INVESTING (purpose-designated long-lived assets; honestly empty
+  in the seed chart) and FINANCING (equity class — injections positive,
+  distributions negative). `netIncreaseDecreaseInCash` = the three
+  activities summed, and the statement now also reports opening/closing
+  cash & equivalents, reconciling EXACTLY to the direct ledger Σ over the
+  configured cash accounts (unexplained surfaced, never plugged). Proven by
+  a 12-scenario E2E timeline (unpaid GRN → invoiced → partially paid →
+  settled, deposits received/consumed, supplier advance, capital injection,
+  owner distribution, bank-to-bank transfer + fee, operating expense,
+  purchase + sale) asserting exact totals at every milestone.
+- **BLOCKER 2 — reconciliation sign normalization & posted-only scope.**
+  `controlBalance` normalizes the GL movement by the control account's
+  configured `normal_balance` (credit-normal AP/deposits present as
+  positive liabilities; debit-normal AR/advances stay as-is; linear
+  formula so REVERSING balances still reconcile exactly), and the AP
+  subledger now counts only authoritatively POSTED invoices
+  (posted/partially_paid/paid) plus their as-of-dated corrections,
+  allocations and standalone notes — a pending_match invoice (which has no
+  AP journal) moves NEITHER side. Adjustments against unposted invoices are
+  refused outright (409) so no AP evidence can exist without its invoice.
+  Nine scenarios pinned with exact control == subledger values.
+- **BLOCKER 3 — synchronous GL posting + period locks for inventory
+  documents.** Stock adjustments, count variances, write-offs, opening
+  stock and internal transfers now post their journals INSIDE the posting
+  transaction through the StockPoster (per-movement journals keyed
+  `source_kind='stock_movement'`/movement id — the unique constraint makes
+  double-posting structurally impossible): Dr Inventory / Cr adjustment
+  gains for upward movements, Dr shrinkage & write-offs / Cr Inventory for
+  downward ones, Cr opening-balance equity for `opening_balance`, and
+  reversal movements MIRROR the original movement's counterpart account
+  (a reversed write-off never books a fictitious gain). Transfers move the
+  carried AVCO value inventory ↔ `inventory_in_transit` (new purpose 1210)
+  — value-preserving, zero P&L by construction (proven). The backfill
+  skips movements that already carry a synchronous journal, so it remains
+  a historical-gaps tool only (idempotency re-proven). Accounting-period
+  enforcement is inherited at the journal choke point AND serialized
+  against closes with a per-period advisory lock (posting takes it SHARED,
+  closing EXCLUSIVE — the concurrent close/posting race is deterministic
+  and tested: a close can never slip under a passed check, and a poster
+  that waits out a close re-reads the status and is rejected). Deep
+  rollback re-proven across stock balance, cost state, GL, audit and
+  outbox.
+- **BLOCKER 4 — as-of correctness everywhere.** AP aging, customer-deposit
+  and supplier-advance reconciliation, and the COGS↔ledger check now cut
+  every document, allocation and application at its own authoritative
+  business/posting date (applications take effect on the payment's journal
+  date; credit applications on their own posting date — never the
+  deposit's; future events cannot leak backwards). Timeline tests on three
+  distinct dates per family: AP 100 → 40 → 0 (Oct 1/10/20), deposits
+  200 → 50, advances 80 → 40, COGS 0 → equal-at-every-cut. Two chronology
+  guards make the windows trustworthy at WRITE time: a payment/allocation
+  may not predate its invoice's document date, and a note may not predate
+  the invoice it corrects.
+- **BLOCKER 5 — supplier statement double-count.** The statement folded
+  debit/credit notes into the invoice row AND unioned them again as
+  separate rows. Now the invoice row carries the original posted value
+  exactly once, each note appears once on its own business date, each
+  payment allocation once on the payment's date, only posted invoices
+  appear, standalone notes appear as their own documents, and the
+  unapplied advance remainder is reported SEPARATELY (`advanceBalance` —
+  an asset, not a payable). The closing balance reconciles exactly with
+  the canonical AP equation AND the normalized GL control at every
+  before/between/after checkpoint.
+- **Holistic defects fixed on top of the five:** AP-aging bucket mapping
+  crashed with `money "undefined"` for ANY invoice 1–90 days past due (the
+  raw bucket label was used as the DTO key); the aging now omits
+  fully-settled suppliers instead of presenting all-zero rows; the
+  COGS↔ledger check subtracts reversal movements symmetrically with the
+  compensating reversal journals (previously a reversed sale broke the
+  check); the reconciliation JOIN now derives `normal_balance` correctly
+  under aggregation.
+
+## Verification summary (Phase 4 — current head)
+
+- 121 unit tests + 315 integration tests green, including the NEW 21-test
+  advance/AR-reversal suite (review round 3 + the round-4 idempotency and
+  conservation adversarial additions), the 36-test financial-corrections
+  suite (12 cash-flow scenarios, 9 reconciliation scenarios, 8
+  synchronous-posting/period-lock/rollback tests, 4 as-of timelines, 4
+  statement-chronology tests), 16 purchasing E2E, 8 concurrency/atomicity with
+  full-table snapshot proofs, 12 accounting statements/periods/backfill, 8
+  banking, 11 migration smoke incl. rerun idempotency, 84 RBAC matrix cases, 6
+  independent-review regressions, plus all Phase 1–3 suites.
+
+- Independent final review round (blockers fixed at head):
+  - **AP status truthfulness** — the payment status is recomputed from
+    the canonical AP equation (`paid ⟺ open ≤ 0`) by one shared
+    `refreshInvoiceStatus` helper used by payments, advance application
+    and debit/credit notes. Previously an allocation greater than HALF
+    the open balance marked the invoice `paid` prematurely (60 of 100 →
+    `paid` with 40 open), advance application never refreshed the status,
+    and adjustments never re-evaluated it (pinned by 4 regression tests).
+  - **GR/IR proration** — a partial-quantity (progress-billed) supplier
+    invoice clears only the BILLED PROPORTION of the receipt accrual
+    (`round4(billed qty × receipt cost)`, the exact GRN basis) and PPV
+    is measured on that proportion; previously the FULL GRN line value
+    was debited, destroying the accrual for uninvoiced goods and booking
+    a fictitious favourable price variance (pinned by 2 regression tests).
+  - **`supplier_payment.bank_account_id`** now carries the composite
+    tenant FK to `bank_account` (house pattern; previously the only
+    cross-document reference without one), and the bank-tendered payment
+    path (bank's OWN GL account, inactive-account refusal) is tested.
+- Review round 3 (supplier advance lifecycle + reversal-aware AR):
+  - **Supplier advance applications are dated documents** — an advance paid
+    Oct 1 can be applied to an invoice dated Oct 20 (the advance was paid
+    BEFORE the goods existed). Each application is an append-only
+    `supplier_advance_application` document (independent ID/code `SAA…`,
+    composite tenant FKs, APPLICATION business date, client idempotency
+    identity, journal linkage, created-by/approved-by evidence, audit +
+    outbox) written in the same UnitOfWork transaction as its journal
+    (Dr AP / Cr supplier advances) booked on the APPLICATION's date.
+    Successive applications of one advance carry DISTINCT journal identities
+    (the old `(supplier_payment, paymentId, advance_applied)` identity
+    collided with the journal unique constraint, and
+    `UNIQUE (payment_id, supplier_invoice_id)` forbade a second application
+    to the same invoice outright). The AP equation, aging, supplier
+    statement and supplier-advance reconciliation apply each leg from its
+    OWN date only.
+  - **AR reconciliation is reversal-aware and as-of correct** — the
+    append-only `invoice_reversal` record cancels the outstanding exposure
+    from the reversal journal's effective date onward; reports dated BEFORE
+    the reversal still show the original exposure; no fake payment rows.
+  - **Reversal clearing-pair fix** — the restored-deposit/AR clearing legs
+    were dropped when the sale journal had no leg on that account (detached
+    map-object mutation), producing an unbalanced journal and a 400 on every
+    reversal of an invoice settled after the sale. Fixed and pinned.
+  - **Concurrent idempotent replay** — two reversals with the same
+    clientDocId now both return the original document (the loser previously
+    hit the one-reversal conflict before reaching the replay check).
+- Deep atomicity: failures injected after the journal and after the
+  deepest counter writes prove ZERO partial state across 19 tables
+  (canonical row snapshots, not row counts).
+- Concurrency: simultaneous GRNs vs one PO (exactly one commits), duplicate
+  invoice submission, simultaneous AP allocations (deterministic
+  over-allocation conflict), duplicate transfer client-docs.
+- Benchmarks (local embedded PG, Node 24.22.2, 30 samples each): GRN
+  posting p50 7.5ms / p95 19.6ms; supplier invoice p50 9.8ms / p95
+  27.2ms; AP payment p50 6.8ms / p95 16.0ms; trial balance p50 9.3ms /
+  p95 10.4ms; sale posting cash p50 14.9ms / p95 34.2ms, credit p50
+  13.4ms / p95 34.1ms (benchmarks/*/results/latest.json — the synchronous
+  inventory-GL hook adds no measurable cost to the GRN/sale paths, which
+  do not use it).
+- Financial invariants proven in tests: ΣD=ΣC (TB balanced), Assets =
+  Liabilities + Equity, COGS ↔ stock ledger, AR/AP/deposit/advance control
+  tie-outs, cash-flow unexplained == 0, period locks block posting.
+
+## Fourth review round — idempotency trust boundary + conservation (head after 3cfa761)
+
+- **Apply-advance idempotency is a COMMAND identity, not just a document
+  lookup.** Every application persists the canonical request fingerprint
+  (tenant + command type + payment + application business date + sorted
+  allocation legs with normalized amounts — domain
+  `applyAdvanceRequestFingerprint`, SHA-256 over canonical JSON). A retry
+  with the same key and the same normalized payload replays the original
+  document; the same key with ANY different material field (amount,
+  invoice, payment, date — or a different command type) is a controlled
+  HTTP 409 `idempotency_key_reuse`, never a replay of the original
+  document for a different request and never a silent second effect.
+  Benign retry noise (leg order, "40" vs "40.0000", reworded notes) stays
+  a replay. Pre-fingerprint rows keep legacy replay semantics (NULL
+  fingerprint, same compat rule as the Phase 3 sync registry).
+- **Concurrent same-key retries serialize at the transaction boundary.**
+  The command first claims a transaction-scoped advisory lock over
+  (tenant, clientDocId) — BEFORE the payment row lock and every
+  invoice-domain lock (fixed widening order, deadlock-free) — then
+  re-reads and compares the fingerprint under the claim. Two truly
+  simultaneous same-key/same-payload requests produce one effect and both
+  receive the same logical response; same-key/different-payload produces
+  one winner + one 409. The old unlocked pre-check let both callers pass
+  the SELECT, the loser then hit the `(tenant_id, client_doc_id)` UNIQUE
+  on an aborted transaction (raw 23505, then 25P02 on the catch's
+  re-SELECT) and surfaced as HTTP 500 — now structurally impossible, with
+  the residual 23505 path translated decisively without further queries.
+- **Header ↔ lines conservation invariant (migration 0016, additive).**
+  A deferrable-at-COMMIT constraint trigger on both
+  `supplier_advance_application` and `supplier_advance_application_line`
+  enforces header `amount` = Σ line amounts: forged or incomplete
+  application headers (amount ≠ Σ legs, or a header with no legs) abort
+  the whole transaction — journal included. Deferral respects the
+  header-then-lines construction order; migration 0015's Σ ≤ payment guard
+  is unchanged and 0001–0015 remain untouched.
+
+## Known limitations / deferred (deliberate)
+
+- Payment/receipt/deposit reversals and customer returns/credit notes
+  remain Phase 5 (invoice reversal is delivered).
+- Purchase requisitions are not implemented (the legacy app had none and
+  the audit register does not require them; POs support the full
+  draft→approval path).
+- Landed-cost/freight allocation on purchase lines is not implemented
+  (documented as a future posting rule; supplier invoice expense lines
+  cover direct charges today).
+- Period-close automated checklist execution (unrecon items blocking close)
+  is present as the reconciliation screen; a hard gate on close is a
+  policy decision left to the accountant (surfaced, not forced).
+- Bank statement import is CSV with a documented header; OFX/MT940 parsers
+  arrive with the Phase 6/7 integrations.
+
+## Next actions (Phase 5 — Returns, reporting, loyalty & administration)
+
+Per docs/ROADMAP.md Phase 5: return orders/credit notes/store credits/
+refunds with approvals + audit; the operational + financial report suite;
+KPI snapshots; loyalty (validate demand first); configuration UX; audit
+search/export. Migration: returns/refunds/store-credit import and
+reporting parity checks.
 
 ---
 

@@ -357,7 +357,17 @@ export class StockCountService {
         reversalOf: 'reversalOf' in l && l.reversalOf != null ? String(l.reversalOf) : null,
         unitCost: 'unitCost' in l && l.unitCost != null ? String(l.unitCost) : null,
       })),
-      { sourceDocumentType: 'stock_adjustment', sourceDocumentId: adjustmentId, createdBy: principal.userId },
+      {
+        sourceDocumentType: 'stock_adjustment',
+        sourceDocumentId: adjustmentId,
+        createdBy: principal.userId,
+        // Phase 4 review hardening: every financially relevant movement
+        // posts its GL journal SYNCHRONOUSLY in this same transaction
+        // (inventory ↔ gain/loss/opening-equity) — the backfill is for
+        // historical gaps only and skips movements that already have one.
+        glPosting: { mode: 'adjustment' },
+        documentCode: code,
+      },
     );
     await ctx.audit.record({
       tenantId: ctx.tenantId,

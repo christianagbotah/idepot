@@ -42,11 +42,28 @@ export const PERMISSIONS = [
   // Phase 3 hardening — financial configuration & evidence
   'tax:manage',       // configure effective-dated tax profiles/versions/components
   'gl:read',          // chart of accounts, control mappings, journal evidence
+  // Phase 4 — purchasing & accounting
+  'purchasing:read',  // view POs, GRNs, supplier invoices, match review
+  'purchasing:write', // create/edit draft POs, supplier invoices
+  'purchasing:approve', // approve POs, match exceptions, tolerance overrides
+  'receiving:read',   // view GRNs
+  'receiving:write',  // post goods receipts
+  'ap:read',          // view AP subledger, statements, aging
+  'ap:write',         // record supplier adjustments (debit/credit notes)
+  'ap:pay',           // post supplier payments + allocations
+  'accounting:read',  // periods, reconciliation, close checklist
+  'accounting:journal',   // approved manual journals + reversals
+  'accounting:configure', // chart-of-accounts + purpose mapping administration
+  'accounting:close',     // period close / soft-close / reopen
+  'banking:read',     // view bank accounts, transfers, statements
+  'banking:write',    // create bank accounts, transfers, import statements
+  'banking:reconcile', // match/unmatch statement lines, finalize reconciliations
+  'financial-report:read', // trial balance, P&L, balance sheet, cash flow
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
 
-export const ROLES = ['owner', 'admin', 'manager', 'cashier', 'auditor'] as const;
+export const ROLES = ['owner', 'admin', 'manager', 'cashier', 'auditor', 'accountant', 'procurement'] as const;
 export type Role = (typeof ROLES)[number];
 
 const MANAGER_PERMISSIONS: readonly Permission[] = [
@@ -82,6 +99,21 @@ const MANAGER_PERMISSIONS: readonly Permission[] = [
   'sync:device',
   'tax:manage',
   'gl:read',
+  // Phase 4 — full operational purchasing/accounting authority
+  'purchasing:read',
+  'purchasing:write',
+  'purchasing:approve',
+  'receiving:read',
+  'receiving:write',
+  'ap:read',
+  'ap:write',
+  'ap:pay',
+  'accounting:read',
+  'accounting:journal',
+  'banking:read',
+  'banking:write',
+  'banking:reconcile',
+  'financial-report:read',
 ];
 
 const CASHIER_PERMISSIONS: readonly Permission[] = [
@@ -120,6 +152,56 @@ const AUDITOR_PERMISSIONS: readonly Permission[] = [
   'payment:read',
   'shift:read',
   'gl:read',
+  // Phase 4 — read-only across purchasing/accounting/banking
+  'purchasing:read',
+  'receiving:read',
+  'ap:read',
+  'accounting:read',
+  'banking:read',
+  'financial-report:read',
+];
+
+/** Accountant (Phase 4): books, journals, banking, close — not POS. */
+const ACCOUNTANT_PERMISSIONS: readonly Permission[] = [
+  'audit:read',
+  'catalog:read',
+  'party:read',
+  'pricing:read',
+  'inventory:read',
+  'stockcount:read',
+  'sales:read',
+  'payment:read',
+  'shift:read',
+  'gl:read',
+  'tax:manage',
+  // Phase 4
+  'purchasing:read',
+  'receiving:read',
+  'ap:read',
+  'ap:write',
+  'ap:pay',
+  'accounting:read',
+  'accounting:journal',
+  'accounting:configure',
+  'accounting:close',
+  'banking:read',
+  'banking:write',
+  'banking:reconcile',
+  'financial-report:read',
+];
+
+/** Procurement officer (Phase 4): POs, receipts, supplier records view. */
+const PROCUREMENT_PERMISSIONS: readonly Permission[] = [
+  'catalog:read',
+  'party:read',
+  'inventory:read',
+  'warehouse:read',
+  'purchasing:read',
+  'purchasing:write',
+  'purchasing:approve',
+  'receiving:read',
+  'receiving:write',
+  'ap:read',
 ];
 
 export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
@@ -128,6 +210,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   manager: MANAGER_PERMISSIONS,
   cashier: CASHIER_PERMISSIONS,
   auditor: AUDITOR_PERMISSIONS,
+  accountant: ACCOUNTANT_PERMISSIONS,
+  procurement: PROCUREMENT_PERMISSIONS,
 };
 
 export function isRole(value: string): value is Role {

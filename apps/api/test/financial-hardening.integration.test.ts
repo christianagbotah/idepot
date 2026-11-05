@@ -821,7 +821,9 @@ describe('financial hardening (tax / GL / AVCO / overrides / sync identity)', ()
     expect(def).toBeTruthy();
     expect(def.isDefault).toBe(true);
     const mappings = await api().get('/api/gl/mappings').set(tenantBtoken).expect(200).then((r) => r.body);
-    expect(mappings).toHaveLength(10);
+    // Phase 4 extended the control chart from 10 to 22 purposes
+    // (review round 2 added inventory_in_transit)
+    expect(mappings).toHaveLength(22);
     const costPolicies = await sql<{ method: string }>(
       `SELECT method FROM cost_policy_version WHERE tenant_id = $1`,
       [fx.tenantB.tenantId],
