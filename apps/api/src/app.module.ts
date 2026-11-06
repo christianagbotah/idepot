@@ -70,6 +70,12 @@ import { ReturnsService } from './returns/returns.service.js';
 import { RefundService } from './returns/refund.service.js';
 import { StoreCreditService } from './returns/store-credit.service.js';
 import { ExchangeService } from './returns/exchange.service.js';
+// Phase 5 — reporting, KPI, admin, loyalty
+import { ReportsController } from './reporting/reporting.controller.js';
+import { OperationalReportsService } from './reporting/operational-reports.service.js';
+import { KpiService } from './reporting/kpi.service.js';
+import { LoyaltyController } from './admin/loyalty.controller.js';
+import { AdminService } from './admin/admin.service.js';
 
 @Module({
   imports: [DbModule],
@@ -111,6 +117,8 @@ import { ExchangeService } from './returns/exchange.service.js';
     BankingController,
     // Phase 5 — returns & refunds
     ReturnsController,
+    ReportsController,
+    LoyaltyController,
   ],
   providers: [
     AuthService,
@@ -168,6 +176,10 @@ import { ExchangeService } from './returns/exchange.service.js';
     RefundService,
     StoreCreditService,
     ExchangeService,
+    // Phase 5 — reporting, KPI, admin/audit/settings, loyalty foundation
+    OperationalReportsService,
+    KpiService,
+    AdminService,
     // global guard chain: authentication -> authorization
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RbacGuard },

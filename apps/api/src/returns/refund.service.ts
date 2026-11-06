@@ -44,8 +44,10 @@ import {
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime classes
 import { UnitOfWork, type UowContext } from '../db/unit-of-work.js';
-import type { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
-import type { DocumentSequenceService } from '../sales/document-sequence.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { DocumentSequenceService } from '../sales/document-sequence.service.js';
 import { assertTenantRefs } from '../inventory/inventory-refs.js';
 import {
   dateCol,
@@ -227,7 +229,7 @@ export class RefundService {
             id, ctx.tenantId, code, dto.creditNoteId, dto.amount, dto.method,
             dto.bankAccountId ?? null, dto.momoProvider ?? null, dto.momoPhone ?? null,
             dto.reference ?? null, dto.note ?? null, dto.clientDocId ?? null, fingerprint,
-            dto.businessDate ?? null, principal.userId,
+            dto.businessDate ?? new Date().toISOString().slice(0, 10), principal.userId,
           ],
         );
       } catch (err) {

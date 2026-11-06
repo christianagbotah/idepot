@@ -1155,11 +1155,16 @@ export class SalePoster {
       taxAmount: String(r.tax_amount),
     }));
 
-    // AR subledger derivation (C-16/C-17): paid = Σ allocations + Σ credits
+    // AR subledger derivation (C-16/C-17 + Phase 5): paid = Σ allocations +
+    // Σ deposit credits + Σ credit-note AR settlements + Σ store-credit
+    // redemptions — every document class that settles an invoice's AR.
     const allocRes = await ctx.query<{ paid: string }>(
       `SELECT
          (COALESCE((SELECT SUM(a.amount) FROM payment_allocation a WHERE a.tenant_id = $1 AND a.invoice_id = $2), 0)
-        + COALESCE((SELECT SUM(ca.amount) FROM credit_application ca WHERE ca.tenant_id = $1 AND ca.invoice_id = $2), 0))::text AS paid`,
+        + COALESCE((SELECT SUM(ca.amount) FROM credit_application ca WHERE ca.tenant_id = $1 AND ca.invoice_id = $2), 0)
+        + COALESCE((SELECT SUM(cn.ar_amount) FROM credit_note cn WHERE cn.tenant_id = $1 AND cn.invoice_id = $2), 0)
+        + COALESCE((SELECT SUM(scr.amount) FROM store_credit_redemption scr WHERE scr.tenant_id = $1 AND scr.invoice_id = $2), 0)
+        + COALESCE((SELECT SUM(exc.consumed_refund_amount) FROM exchange exc WHERE exc.tenant_id = $1 AND exc.replacement_invoice_id = $2), 0))::text AS paid`,
       [ctx.tenantId, invoiceId],
     );
     const amountPaid = parseMoney(allocRes.rows[0]!.paid);

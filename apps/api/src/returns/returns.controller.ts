@@ -280,7 +280,7 @@ export class ReturnsController {
   @RequirePermissions('returns:write')
   submitReturn(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string, @Body() body: unknown) {
     const dto = parseBody(SubmitReturnSchema, body);
-    return this.returns.submitReturn(principalOf(req), { id, clientDocId: dto.clientDocId });
+    return this.returns.submitReturn(principalOf(req), { id, clientDocId: dto.clientDocId ?? null });
   }
 
   @Post(':id/approve')
@@ -308,8 +308,10 @@ export class ReturnsController {
 
   @Post(':id/process')
   @RequirePermissions('returns:approve')
-  processReturn(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string) {
-    return this.returns.processReturn(principalOf(req), id);
+  processReturn(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string, @Body() body: unknown) {
+    const simulateFailure =
+      (body as { simulateFailure?: 'after_writes' } | null | undefined)?.simulateFailure;
+    return this.returns.processReturn(principalOf(req), id, simulateFailure);
   }
 
   @Post(':id/cancel')

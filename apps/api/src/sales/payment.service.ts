@@ -608,11 +608,20 @@ export class PaymentService {
   }
 
   async invoicePaidAmount(ctx: UowContext, invoiceId: string): Promise<bigint> {
+    // Phase 5: credit-note AR settlements and store-credit redemptions
+    // settle the invoice exactly like payments do — without them a returned
+    // invoice could be overpaid (double settlement of the same AR).
     const res = await ctx.query<{ paid: string }>(
       `SELECT (COALESCE((SELECT SUM(a.amount) FROM payment_allocation a
                          WHERE a.tenant_id = $1 AND a.invoice_id = $2), 0)
              + COALESCE((SELECT SUM(ca.amount) FROM credit_application ca
-                         WHERE ca.tenant_id = $1 AND ca.invoice_id = $2), 0))::text AS paid`,
+                         WHERE ca.tenant_id = $1 AND ca.invoice_id = $2), 0)
+             + COALESCE((SELECT SUM(cn.ar_amount) FROM credit_note cn
+                         WHERE cn.tenant_id = $1 AND cn.invoice_id = $2), 0)
+             + COALESCE((SELECT SUM(scr.amount) FROM store_credit_redemption scr
+                         WHERE scr.tenant_id = $1 AND scr.invoice_id = $2), 0)
+             + COALESCE((SELECT SUM(exc.consumed_refund_amount) FROM exchange exc
+                         WHERE exc.tenant_id = $1 AND exc.replacement_invoice_id = $2), 0))::text AS paid`,
       [ctx.tenantId, invoiceId],
     );
     return parseMoney(res.rows[0]!.paid);

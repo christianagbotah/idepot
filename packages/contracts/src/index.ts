@@ -1787,22 +1787,16 @@ export const CreateReturnSchema = z.object({
 export type CreateReturn = z.infer<typeof CreateReturnSchema>;
 
 export const SubmitReturnSchema = z.object({
-  id: uuid(),
   clientDocId: z.string().min(6).max(100).nullish(),
 });
-export const ApproveReturnSchema = z.object({
-  id: uuid(),
-});
+export const ApproveReturnSchema = z.object({});
 export const RejectReturnSchema = z.object({
-  id: uuid(),
   reason: z.string().min(10).max(500),
 });
 export const ReceiveReturnSchema = z.object({
-  id: uuid(),
   inspectionNote: z.string().max(1000).nullish(),
 });
 export const CancelReturnSchema = z.object({
-  id: uuid(),
   reason: z.string().min(10).max(500),
 });
 

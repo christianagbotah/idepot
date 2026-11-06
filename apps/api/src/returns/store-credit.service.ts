@@ -28,7 +28,8 @@ import {
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime classes
 import { UnitOfWork, type UowContext } from '../db/unit-of-work.js';
-import type { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
 import {
   dateCol,
   tsCol,
@@ -258,7 +259,8 @@ export class StoreCreditService {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
           [
             redemptionId, ctx.tenantId, dto.storeCreditId, dto.invoiceId, dto.amount,
-            journal?.id ?? null, dto.businessDate ?? null, dto.clientDocId ?? null, fingerprint, principal.userId,
+            journal?.id ?? null, dto.businessDate ?? new Date().toISOString().slice(0, 10),
+            dto.clientDocId ?? null, fingerprint, principal.userId,
           ],
         );
       } catch (err) {

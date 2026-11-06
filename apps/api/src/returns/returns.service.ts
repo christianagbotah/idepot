@@ -47,9 +47,12 @@ import {
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime classes
 import { UnitOfWork, type UowContext } from '../db/unit-of-work.js';
-import type { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
-import type { StockPoster } from '../inventory/stock-poster.js';
-import type { DocumentSequenceService } from '../sales/document-sequence.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { StockPoster } from '../inventory/stock-poster.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { DocumentSequenceService } from '../sales/document-sequence.service.js';
 import {
   dateCol,
   tsCol,
@@ -385,6 +388,11 @@ export class ReturnsService {
 
       // validate invoice + load evidence
       const evidence = await this.loadInvoiceEvidence(ctx, dto.invoiceId);
+      if (evidence.customerId == null) {
+        throw new ValidationError(
+          'the invoice has no customer — returns require a customer (record the walk-in as a customer before returning)',
+        );
+      }
       const reason = await this.loadReasonByCode(ctx, dto.reasonCode);
       if (!reason.isActive) throw new ValidationError(`return reason '${dto.reasonCode}' is inactive`);
       if (dto.lines.length > 0 && parseMoney(dto.adjustmentAmount) > 0n) {
@@ -399,6 +407,17 @@ export class ReturnsService {
 
       // per-line validation + evidence snapshot
       const lineRows = this.buildLineRows(evidence, dto, reason);
+      // reserved-quantity check under the invoice-domain lock (the DB
+      // deferred trigger is the second wall; this is the clean 409)
+      for (const line of lineRows) {
+        const cumBefore = await this.cumReturnedBase(ctx, String(line.invoiceLineId));
+        const lineBase = parseQuantity(String(evidence.lineMap.get(String(line.invoiceLineId))!.quantity_base));
+        if (cumBefore + parseQuantity(String(line.quantityBase)) > lineBase) {
+          throw new ConflictError(
+            `return quantity exceeds the remaining returnable quantity for line ${String(line.invoiceLineId)} (returnable ${formatQuantity(lineBase - cumBefore)})`,
+          );
+        }
+      }
 
       // policy: refund deadline
       this.assertRefundDeadline(reason, evidence.invoiceDate, dto.businessDate ?? dateCol(new Date()));
@@ -608,9 +627,13 @@ export class ReturnsService {
   // PROCESS — the financial core (ONE transaction)
   // =========================================================================
 
-  async processReturn(principal: ReturnsPrincipal, returnId: string): Promise<ReturnOrderDto> {
+  async processReturn(
+    principal: ReturnsPrincipal,
+    returnId: string,
+    simulateFailure?: string,
+  ): Promise<ReturnOrderDto> {
     return this.uow.run({ tenantId: principal.tenantId, userId: principal.userId }, async (ctx) => {
-      return (await this.processWithinCtx(ctx, principal, returnId)).dto;
+      return (await this.processWithinCtx(ctx, principal, returnId, { simulateFailure })).dto;
     });
   }
 
@@ -619,7 +642,7 @@ export class ReturnsService {
     ctx: UowContext,
     principal: ReturnsPrincipal,
     returnId: string,
-    opts: { forceRefundDisposition?: boolean } = {},
+    opts: { forceRefundDisposition?: boolean; simulateFailure?: string } = {},
   ): Promise<{ dto: ReturnOrderDto; creditNoteId: string; refundAmount: string }> {
     const row = await this.lockReturn(ctx, returnId);
     // pure price-adjustment returns (no lines) may go approved → processed
@@ -662,13 +685,15 @@ export class ReturnsService {
     let creditedNetSlice = parseMoney(row.adjustment_amount);
     let cogsReversal = 0n;
     const restockEntries: MovementEntry[] = [];
+    const lineSlices: Array<{ lineId: string; creditNet: bigint; cogs: bigint }> = [];
     for (const line of lines) {
       const lineAxis = parseMoney(line.effective_net);
       const lineQty = parseQuantity(line.quantity_base);
       const cumReturnedBefore = await this.cumReturnedBase(ctx, line.invoice_line_id);
       const cumReturnedAfter = cumReturnedBefore + lineQty;
-      const netSlice = prorateCumulative(lineAxis, parseQuantity(line.originalQuantityBase), cumReturnedBefore, cumReturnedAfter);
+      const netSlice = prorateCumulative(lineAxis, parseQuantity(line.original_quantity_base), cumReturnedBefore, cumReturnedAfter);
       creditedNetSlice += netSlice;
+      let lineCogsSlice = 0n;
 
       if (dispositionRestocks(line.disposition as never)) {
         if (reason != null && !reason.restockPermitted) {
@@ -676,8 +701,9 @@ export class ReturnsService {
         }
         const cogs = line.cogs_at_sale ? parseMoney(line.cogs_at_sale) : null;
         if (cogs != null) {
-          const cogsSlice = prorateCumulative(cogs, parseQuantity(line.originalQuantityBase), cumReturnedBefore, cumReturnedAfter);
+          const cogsSlice = prorateCumulative(cogs, parseQuantity(line.original_quantity_base), cumReturnedBefore, cumReturnedAfter);
           cogsReversal += cogsSlice;
+          lineCogsSlice = cogsSlice;
         }
         // restock at ORIGINAL cost evidence (never the day's AVCO price)
         restockEntries.push({
@@ -690,6 +716,7 @@ export class ReturnsService {
           unitCost: line.cost_at_sale ?? undefined,
         });
       }
+      lineSlices.push({ lineId: line.id, creditNet: netSlice, cogs: lineCogsSlice });
     }
     if (creditedNetSlice <= 0n) {
       throw new ValidationError('return has no positive credit value');
@@ -839,6 +866,13 @@ export class ReturnsService {
     }
 
     // ---- 8. return-order lifecycle update ----------------------------
+    // persist the per-line credit evidence (margin reports + statements)
+    for (const slice of lineSlices) {
+      await ctx.query(
+        `UPDATE return_order_line SET credit_net_slice = $2, cogs_reversal = $3 WHERE id = $1`,
+        [slice.lineId, formatMoney(slice.creditNet), formatMoney(slice.cogs)],
+      );
+    }
     const refundAmountScaled = parseMoney(decomposition.refundAmount);
     const completed = refundAmountScaled === 0n;
     await ctx.query(
@@ -871,6 +905,10 @@ export class ReturnsService {
       total: formatMoney(total), arAmount: decomposition.arAmount,
       refundAmount: decomposition.refundAmount, storeCreditAmount: decomposition.storeCreditAmount,
     });
+
+    if (opts.simulateFailure === 'after_writes') {
+      throw new ValidationError('simulated failure after return processing writes (atomicity test)');
+    }
 
     return {
       dto: await this.getReturnWithinCtx(ctx, ctx.tenantId, returnId),
@@ -1095,7 +1133,7 @@ export class ReturnsService {
     return {
       invoiceId: String(inv.id),
       invoiceCode: String(inv.code),
-      customerId: String(inv.customer_id),
+      customerId: inv.customer_id == null ? null : String(inv.customer_id),
       warehouseId: String(inv.warehouse_id),
       invoiceDate: dateCol(inv.business_date),
       subtotal: String(inv.subtotal),
@@ -1170,7 +1208,7 @@ export class ReturnsService {
         WHERE rol.return_order_id = $1 ORDER BY rol.created_at`,
       [returnId],
     );
-    return r.rows as unknown as Array<ReturnLineRow & { originalQuantityBase: string }>;
+    return r.rows as unknown as Array<ReturnLineRow & { original_quantity_base: string }>;
   }
 
   /** Cumulative returned base quantity for an invoice line across ALL
@@ -1191,7 +1229,7 @@ export class ReturnsService {
    *  Σ effective nets + adjustment, no tax netting). */
   private async estimateGrossCredit(ctx: UowContext, row: ReturnRow): Promise<bigint> {
     const r = await ctx.query<{ total: string | null }>(
-      `SELECT SUM(effective_net)::text AS total FROM return_order_line WHERE return_order_id = $1`,
+      `SELECT COALESCE(ROUND(SUM(rol.effective_net * rol.quantity_base / il.quantity_base), 4), 0)::text AS total FROM return_order_line rol JOIN invoice_line il ON il.id = rol.invoice_line_id WHERE rol.return_order_id = $1`,
       [row.id],
     );
     return parseMoney(String(r.rows[0]!.total ?? '0')) + parseMoney(String(row.adjustment_amount));

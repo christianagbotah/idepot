@@ -219,6 +219,10 @@ CREATE TABLE IF NOT EXISTS return_order_line (
   effective_net numeric(18,4) NOT NULL CHECK (effective_net >= 0),
   cost_at_sale numeric(18,4) CHECK (cost_at_sale IS NULL OR cost_at_sale >= 0),
   cogs_at_sale numeric(18,4) CHECK (cogs_at_sale IS NULL OR cogs_at_sale >= 0),
+  -- per-line credit slices, written ONCE at processing (margin reports
+  -- and statements derive per-product returns from this evidence)
+  credit_net_slice numeric(18,4),
+  cogs_reversal numeric(18,4),
   note text,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (return_order_id, invoice_line_id),
@@ -340,5 +344,8 @@ END $$;
 GRANT SELECT, INSERT, UPDATE ON return_reason TO idepot_app;
 -- the return order header carries lifecycle evidence (status + stamps)
 GRANT SELECT, INSERT, UPDATE ON return_order TO idepot_app;
--- lines are append-only financial evidence
+-- lines are append-only financial evidence, EXCEPT the two computed
+-- credit slices written once at processing (column-level grant keeps
+-- every evidence column immutable)
 GRANT SELECT, INSERT ON return_order_line TO idepot_app;
+GRANT UPDATE (credit_net_slice, cogs_reversal) ON return_order_line TO idepot_app;

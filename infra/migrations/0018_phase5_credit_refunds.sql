@@ -319,7 +319,8 @@ BEGIN
   IF TG_TABLE_NAME = 'refund' THEN
     v_note := CASE WHEN TG_OP = 'DELETE' THEN OLD.credit_note_id ELSE NEW.credit_note_id END;
   ELSE
-    v_note := NEW.credit_note_id;
+    -- exchange rows reference the RETURN ORDER; resolve its credit note
+    SELECT credit_note_id INTO v_note FROM return_order WHERE id = NEW.return_order_id;
   END IF;
   SELECT refund_amount, tenant_id INTO v_limit, v_tenant FROM credit_note WHERE id = v_note;
   IF v_limit IS NULL THEN

@@ -35,11 +35,14 @@ import { hasPermission } from '@idepot/auth';
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime classes
 import { UnitOfWork, type UowContext } from '../db/unit-of-work.js';
-import type { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
-import type { DocumentSequenceService } from '../sales/document-sequence.service.js';
-import type { SalePoster} from '../sales/sale-poster.js';
-import { type SaleInput } from '../sales/sale-poster.js';
-import type { ReturnsService } from './returns.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { FinancialConfigurationService } from '../finance/financial-configuration.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { DocumentSequenceService } from '../sales/document-sequence.service.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { SalePoster, type SaleInput } from '../sales/sale-poster.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
+import { ReturnsService } from './returns.service.js';
 import { dateCol, tsCol, mapUniqueViolation, type ReturnsPrincipal } from './returns-common.js';
 
 @Injectable()
@@ -142,6 +145,7 @@ export class ExchangeService {
         lines: dto.replacement.lines.map((l) => ({
           productId: l.productId,
           unitId: l.unitId ?? null,
+          quantityBase: l.quantity,
           quantityTransacted: l.quantityTransacted ?? null,
           conversionFactor: l.conversionFactor ?? null,
           unitPrice: l.unitPrice,
@@ -198,7 +202,7 @@ export class ExchangeService {
             id, ctx.tenantId, code, returnId, sale.invoice.id, customerId ?? null,
             formatMoney(entitlement), formatMoney(replacementTotal), formatMoney(difference),
             settlement, formatMoney(consume), journalEntryId,
-            dto.businessDate ?? null, dto.clientDocId ?? null, fingerprint, principal.userId,
+            dto.businessDate ?? new Date().toISOString().slice(0, 10), dto.clientDocId ?? null, fingerprint, principal.userId,
           ],
         );
       } catch (err) {
