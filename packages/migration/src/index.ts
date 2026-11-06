@@ -9,5 +9,6 @@ export * from './transform-phase3.js';
 export * from './opening-stock.js';
 export * from './exact.js';
 export * from './engine.js';
+export * from './transform-phase5.js';
 export * from './dump-parser.js';
 export * from './source-mysql.js';
