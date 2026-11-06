@@ -48,6 +48,30 @@ const NAV: Array<{ group: string; links: NavLink[]; roles?: string[] }> = [
     ],
   },
   {
+    group: 'Returns & Refunds',
+    links: [
+      { href: '/returns', label: 'Returns' },
+      { href: '/returns/new', label: 'New Return' },
+      { href: '/returns/credit-notes', label: 'Credit Notes' },
+      { href: '/returns/store-credits', label: 'Store Credits' },
+    ],
+  },
+  {
+    group: 'Insights',
+    links: [
+      { href: '/reports', label: 'Reports' },
+      { href: '/kpi', label: 'KPI Dashboard' },
+    ],
+  },
+  {
+    group: 'Administration',
+    roles: ['owner', 'admin', 'manager', 'accountant', 'auditor'],
+    links: [
+      { href: '/admin/audit', label: 'Audit Trail' },
+      { href: '/admin/settings', label: 'Settings' },
+    ],
+  },
+  {
     group: 'Purchasing',
     // nav visibility only — the server enforces the real permissions
     roles: ['owner', 'admin', 'manager', 'accountant', 'procurement', 'auditor'],

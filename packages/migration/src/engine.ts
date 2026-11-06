@@ -30,6 +30,7 @@ import {
 import { transformOpeningStock } from './opening-stock.js';
 import { transformSalesCycle } from './transform-phase3.js';
 import { transformPhase4 } from './transform-phase4.js';
+import { transformPhase5Returns } from './transform-phase5.js';
 
 export interface MigrationRunConfig {
   pgAdminUrl: string;
@@ -49,6 +50,8 @@ export async function runMigration(config: MigrationRunConfig): Promise<Migratio
   const specs = config.specs ?? FIXTURE_TABLES;
   const startedAt = new Date();
   let phase4Stats: ReconciliationArtifact['phase4'] | undefined;
+  let phase5Stats: ReconciliationArtifact['phase5'] | undefined;
+  let phase5Records: ReconciliationRecord[] = [];
   let phase4Records: ReconciliationRecord[] = [];
   let phase4Warnings: Array<{ code: string; table: string; message: string }> = [];
   let phase3Stats: ReconciliationArtifact['phase3'] | undefined;
@@ -267,6 +270,20 @@ export async function runMigration(config: MigrationRunConfig): Promise<Migratio
       phase4Records = phase4Result.records;
       phase4Warnings = phase4Result.warnings;
 
+      // Phase 5 — returns/refund/store-credit EVIDENCE: verifies the dead
+      // returns DDL, flags post-payment amendments as ambiguity records
+      // and NEVER synthesizes return documents
+      const phase5Result = await transformPhase5Returns(
+        pg,
+        {
+          salesOrder: clean('sales_order'),
+          paymentWithGoods: clean('payment_with_goods'),
+        },
+        { tenantId: config.tenantId, runId },
+      );
+      phase5Stats = phase5Result.stats;
+      phase5Records = phase5Result.records;
+
       // transform-level rejects land in quarantine with reasons (never silent)
       for (const rej of transformRejects) {
         await pg.query(
@@ -315,7 +332,7 @@ export async function runMigration(config: MigrationRunConfig): Promise<Migratio
         (r) => !isQuarantined(outcome.findings, 'payment', r[paymentSpec.pk] ?? ''),
       );
       const recon = reconcile(invoiceRows, paymentRows);
-      const allRecords = [...recon.records, ...openingResult.records, ...phase3Records, ...phase4Records];
+      const allRecords = [...recon.records, ...openingResult.records, ...phase3Records, ...phase4Records, ...phase5Records];
       for (const rec of allRecords) {
         await pg.query(
           `INSERT INTO reconciliation_record
@@ -376,6 +393,7 @@ export async function runMigration(config: MigrationRunConfig): Promise<Migratio
         phase2: phase2Stats,
         phase3: phase3Stats,
         phase4: phase4Stats,
+        phase5: phase5Stats,
       };
 
       await pg.query(

@@ -43,7 +43,11 @@ export type GlPurpose =
   // Phase 4 review hardening — internal transfers carry their value in a
   // separate in-transit asset while the goods are between warehouses
   // (no P&L impact: the movement is inventory ↔ inventory, never revenue)
-  | 'inventory_in_transit';
+  | 'inventory_in_transit'
+  // Phase 5 — returns & refunds: the customer-entitlement liabilities
+  | 'refunds_payable'
+  | 'store_credit_liability'
+  | 'refund_breakage_income';
 
 /** The tender→control-account purposes (payment-transaction-map). */
 export const TENDER_GL_PURPOSE: Record<string, GlPurpose> = {

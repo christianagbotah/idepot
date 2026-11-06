@@ -64,6 +64,18 @@ import { BackfillService } from './accounting/backfill.service.js';
 // Phase 4 — banking
 import { BankingController } from './banking/banking.controller.js';
 import { BankService } from './banking/bank.service.js';
+// Phase 5 — returns, refunds, store credit, exchanges
+import { ReturnsController } from './returns/returns.controller.js';
+import { ReturnsService } from './returns/returns.service.js';
+import { RefundService } from './returns/refund.service.js';
+import { StoreCreditService } from './returns/store-credit.service.js';
+import { ExchangeService } from './returns/exchange.service.js';
+// Phase 5 — reporting, KPI, admin, loyalty
+import { ReportsController } from './reporting/reporting.controller.js';
+import { OperationalReportsService } from './reporting/operational-reports.service.js';
+import { KpiService } from './reporting/kpi.service.js';
+import { LoyaltyController } from './admin/loyalty.controller.js';
+import { AdminService } from './admin/admin.service.js';
 
 @Module({
   imports: [DbModule],
@@ -103,6 +115,10 @@ import { BankService } from './banking/bank.service.js';
     ApController,
     AccountingController,
     BankingController,
+    // Phase 5 — returns & refunds
+    ReturnsController,
+    ReportsController,
+    LoyaltyController,
   ],
   providers: [
     AuthService,
@@ -154,6 +170,16 @@ import { BankService } from './banking/bank.service.js';
     BackfillService,
     // Phase 4 — banking
     BankService,
+    // Phase 5 — returns (lifecycle, credit notes via the same UoW,
+    // refund engine, store credit, exchanges)
+    ReturnsService,
+    RefundService,
+    StoreCreditService,
+    ExchangeService,
+    // Phase 5 — reporting, KPI, admin/audit/settings, loyalty foundation
+    OperationalReportsService,
+    KpiService,
+    AdminService,
     // global guard chain: authentication -> authorization
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RbacGuard },

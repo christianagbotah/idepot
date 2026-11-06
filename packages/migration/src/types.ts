@@ -61,6 +61,17 @@ export interface ValidatorFinding {
   quarantine: boolean;
 }
 
+export interface Phase5ReturnsStats {
+  deadReturnsTablesFound: string[];
+  deadReturnsRows: number;
+  ordersScanned: number;
+  pwgRowsScanned: number;
+  ambiguityRecords: number;
+  returnsSynthesized: 0;
+  creditBalancesVerified: number;
+  legacyStoreCreditsFound: number;
+}
+
 export interface ReconciliationRecord {
   legacy_table: string;
   legacy_id: string;
@@ -103,6 +114,7 @@ export interface ReconciliationArtifact {
   phase3?: Phase3TransformStats;
   /** Phase 4 purchasing/AP/banking import stats (additive). */
   phase4?: Phase4TransformStats;
+  phase5?: Phase5ReturnsStats;
 }
 
 export interface Phase4TransformStats {
