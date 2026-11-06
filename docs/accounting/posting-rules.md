@@ -214,3 +214,71 @@ documents.
 | Duplicate payments / transfers | UNIQUE (tenant, client_doc_id) | 409 duplicate |
 | Period close vs posting | period row status read in the posting tx | 409 period closed |
 | Numbering | row-locked counter UPDATE | never duplicated |
+
+## Phase 5 — returns, refunds, store credit, exchanges
+
+### Return processing (credit note) — the single journal per return
+ONE credit-note document posts every authoritative effect of a return in
+the SAME transaction: tax evidence, stock disposition, GL, store-credit
+issuance, return lifecycle. Corrections may post into a soft-closed
+period (never closed).
+
+```
+Dr sales_revenue        net revenue reversal (Σ effective-net slices,
+                         order-discount prorated)
+Dr tax_payable          per component, TRANSACTION-TIME evidence,
+                         cumulative-proration capped at the original
+Cr accounts_receivable  settlement of outstanding AR FIRST
+Cr refunds_payable      residual (disposition = refund)
+Cr store_credit_liability  residual (disposition = store credit)
+Dr inventory / Cr cogs  restocked value at ORIGINAL cost-at-sale
+```
+
+- `total = net_revenue_reversal + tax_reversal_total` and
+  `total = ar_amount + refund_amount + store_credit_amount` are DB CHECKs.
+- The two residuals are DISJOINT by construction — a refund and a store
+  credit can never double-settle one entitlement.
+- Tax proration axis: cumulative `Σ credited_net` over all credit notes
+  of the invoice ÷ `subtotal − order_discount`; each component reverses
+  `prorate(tax_amount)` with the last slice absorbing the rounding
+  residue (the cap can never be exceeded).
+- Restock movements are `receipt` rows with `reason='customer_return'`
+  at `unit_cost = cost_at_sale` (AVCO layers preserved). Scrap /
+  no-restock dispositions post NO inventory legs — the cost stays in
+  COGS transparently.
+
+### Refund (money out)
+```
+posted:    Dr refunds_payable / Cr <tender control or named bank GL>
+settled:   status transition + external reference (never assumed)
+failed:    Dr <tender> / Cr refunds_payable  (clean reversal, safe retry)
+```
+Cash refunds settle at posting (drawer payout is immediate). The
+entitlement guard (DB trigger) enforces
+`Σ committed refunds + Σ exchange consumptions ≤ refund_amount (+ voided
+store credits)`.
+
+### Store credit
+```
+issue:     (part of the credit-note journal — Cr store_credit_liability)
+redeem:    Dr store_credit_liability / Cr accounts_receivable
+expiry:    Dr store_credit_liability / Cr refund_breakage_income (explicit,
+           permissioned, audited — never silent)
+void:      Dr store_credit_liability / Cr refunds_payable
+```
+Balances are DERIVED (`amount − Σ redemptions`), never mutated.
+
+### Exchange settlement (atomic with the replacement sale)
+```
+Dr refunds_payable   consumed entitlement
+Cr accounts_receivable  replacement invoice settled
+```
+Additional payment arrives as normal sale tenders; a cheaper replacement
+leaves the residual entitlement outstanding for a later refund.
+
+### AR integration
+The invoice paid derivation counts payment allocations + deposit credit
+applications + credit-note AR settlements + store-credit redemptions +
+exchange consumptions — every document class that settles AR. An
+invoice with returns can no longer be reversed (the returns module owns
+its correction path).
