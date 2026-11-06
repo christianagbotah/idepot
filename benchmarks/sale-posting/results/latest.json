@@ -1,6 +1,6 @@
 {
   "benchmark": "sale-posting (full synchronous path)",
-  "generatedAt": "2026-11-06T00:16:56.211Z",
+  "generatedAt": "2026-11-06T00:32:05.662Z",
   "environment": {
     "node": "v24.22.2",
     "platform": "linux x64",
@@ -15,33 +15,33 @@
       "description": "2 lines, exclusive+inclusive tax, cash over-tender with change",
       "samples": 50,
       "warmup": 8,
-      "min": 12.184376000000157,
-      "p50": 14.037209999999959,
-      "p95": 34.11093800000026,
-      "max": 73.15108899999996,
-      "mean": 18.45,
+      "min": 12.203711999999996,
+      "p50": 14.083092999999735,
+      "p95": 35.174590999999964,
+      "max": 62.330707000000075,
+      "mean": 18.72,
       "unit": "ms"
     },
     "creditSale": {
       "description": "customer sale: deposit credit 20 + cash 20, remainder in AR",
       "samples": 50,
       "warmup": 8,
-      "min": 12.817234000000099,
-      "p50": 14.394405000000006,
-      "p95": 31.90180599999985,
-      "max": 32.50419300000067,
-      "mean": 17.54,
+      "min": 12.294118000000253,
+      "p50": 13.72066199999972,
+      "p95": 32.20900299999994,
+      "max": 32.383600000000115,
+      "mean": 16.92,
       "unit": "ms"
     }
   },
   "gate": "p50 < 1000ms per scenario (Phase 3: a normal local sale commit below 1 second)",
   "p50ms": {
-    "cashSale": 14.037209999999959,
-    "creditSale": 14.394405000000006
+    "cashSale": 14.083092999999735,
+    "creditSale": 13.72066199999972
   },
   "p95ms": {
-    "cashSale": 34.11093800000026,
-    "creditSale": 31.90180599999985
+    "cashSale": 35.174590999999964,
+    "creditSale": 32.20900299999994
   },
   "sampleSize": {
     "cashSale": 50,

@@ -1200,7 +1200,7 @@ export class ReturnsService {
     return rows;
   }
 
-  private async loadLines(ctx: UowContext, returnId: string): Promise<Array<ReturnLineRow & { originalQuantityBase: string }>> {
+  private async loadLines(ctx: UowContext, returnId: string): Promise<Array<ReturnLineRow & { original_quantity_base: string }>> {
     const r = await ctx.query(
       `SELECT rol.*, il.quantity_base AS original_quantity_base
          FROM return_order_line rol
