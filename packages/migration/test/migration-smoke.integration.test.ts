@@ -8,7 +8,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client } from 'pg';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { getTestPostgres } from '@idepot/testing';
 import { runMigrations } from '../../../infra/migrations/runner.js';
 import { createMySqlStagingSource } from '../src/source-mysql.js';
@@ -489,6 +490,68 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
     } finally {
       await c.end();
     }
+  });
+
+  it('verifies Phase 5 returns evidence: dead tables staged for real, nothing synthesized, surprises withheld', async () => {
+    // Since migration 0020 the six designed-but-DEAD legacy returns tables are
+    // staged (empty on the fixture) so the no-synthesis verification reads REAL
+    // row counts instead of passing vacuously on absent tables.
+    const tables = Object.fromEntries(first.artifact.tables.map((t) => [t.table, t]));
+    const deadTables = [
+      'return_reasons',
+      'sales_returns',
+      'sales_return_items',
+      'refund_transactions',
+      'store_credits',
+      'returns_audit_trail',
+    ] as const;
+    for (const t of deadTables) {
+      expect(tables[t], `staged ${t}`).toBeDefined();
+      expect(tables[t]!.stagedRows, `stagedRows ${t}`).toBe(0);
+      expect(tables[t]!.checksumMatch, `checksum ${t}`).toBe(true);
+    }
+    expect(first.artifact.phase5!.deadReturnsTablesFound).toEqual([...deadTables]);
+    expect(first.artifact.phase5!.deadReturnsRows).toBe(0);
+    expect(first.artifact.phase5!.returnsSynthesized).toBe(0);
+
+    // A dump that surprises us with rows in a dead table must surface a
+    // manual-approval reconciliation record — and must NEVER import them.
+    const poisonedPath = join(__dirname, `../../../migration-artifacts/poisoned-${Date.now()}.sql`);
+    mkdirSync(dirname(poisonedPath), { recursive: true });
+    writeFileSync(
+      poisonedPath,
+      readFileSync(FIXTURE, 'utf8') +
+        "\nINSERT INTO sales_returns (return_id, return_code, original_so_code, customer_id) VALUES (1,'RTN-X1','SO-3001',1);\n",
+    );
+    const poisoned = await runMigration({
+      pgAdminUrl: adminUrl,
+      source: createParsedDumpSource(poisonedPath),
+      tenantId,
+      artifactsDir: join(__dirname, '../../migration-artifacts'),
+    });
+    const surprise = poisoned.artifact.reconciliation.records.find(
+      (r) => r.legacy_table === 'sales_returns' && r.legacy_id === '(all)',
+    );
+    expect(surprise, 'dead-table row must produce a reconciliation record').toBeDefined();
+    expect(surprise!.requires_manual_approval).toBe(true);
+    expect(surprise!.new_system_value).toEqual({ imported: 0 });
+    expect(poisoned.artifact.phase5!.deadReturnsRows).toBe(1);
+
+    // nothing was ever synthesized into the Phase 5 targets for this tenant
+    const c = new Client({ connectionString: adminUrl });
+    await c.connect();
+    try {
+      for (const target of ['return_order', 'return_order_line', 'credit_note', 'refund', 'store_credit']) {
+        const n = await c.query<{ n: string }>(
+          `SELECT count(*)::text n FROM ${target} WHERE tenant_id = $1`,
+          [tenantId],
+        );
+        expect(Number(n.rows[0]!.n), `${target} rows`).toBe(0);
+      }
+    } finally {
+      await c.end();
+    }
+    rmSync(poisonedPath, { force: true });
   });
 
   it('is idempotent: re-run reuses mappings, never duplicates targets or evidence', async () => {

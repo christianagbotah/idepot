@@ -2,6 +2,12 @@
 -- Schema is a reduced, faithful verbatim layout; every column is TEXT in legacy_raw.
 SET NAMES utf8mb4;
 
+DROP TABLE IF EXISTS returns_audit_trail;
+DROP TABLE IF EXISTS store_credits;
+DROP TABLE IF EXISTS refund_transactions;
+DROP TABLE IF EXISTS sales_return_items;
+DROP TABLE IF EXISTS sales_returns;
+DROP TABLE IF EXISTS return_reasons;
 DROP TABLE IF EXISTS opening_stock_count;
 DROP TABLE IF EXISTS suppliers;
 DROP TABLE IF EXISTS accounts;
@@ -278,6 +284,54 @@ CREATE TABLE invoice_code (
 CREATE TABLE waybill_code (
   id INT PRIMARY KEY, code VARCHAR(40), status VARCHAR(20), reason TEXT,
   customer_id INT, code_range VARCHAR(80), created_by INT, created_date DATETIME
+);
+
+-- Legacy returns subsystem: designed-but-DEAD DDL (columns mirror the
+-- 2026-11-06 owner schema dump verbatim). Present but EMPTY so the Phase 5
+-- no-synthesis verification reads real row counts (0) instead of passing
+-- vacuously on absent tables. Any rows a real dump surprises us with are
+-- quarantined by transform-phase5 — never imported, never synthesized.
+CREATE TABLE return_reasons (
+  reason_id INT PRIMARY KEY, reason_name VARCHAR(120), reason_description TEXT,
+  requires_approval INT, is_active INT, sort_order INT, created_timestamp DATETIME
+);
+
+CREATE TABLE sales_returns (
+  return_id INT PRIMARY KEY, return_code VARCHAR(40), original_so_code VARCHAR(40),
+  original_invoice_code VARCHAR(40), customer_id INT, return_date VARCHAR(20),
+  return_timestamp DATETIME, return_reason_id INT, return_reason_description TEXT,
+  return_status VARCHAR(30), total_items_returned INT, total_refund_amount DOUBLE,
+  refund_method VARCHAR(30), refund_account_id INT, approved_by INT,
+  approved_timestamp DATETIME, processed_by INT, processed_timestamp DATETIME,
+  notes TEXT, internal_notes TEXT, track_code VARCHAR(40), created_by INT,
+  created_timestamp DATETIME, updated_by INT, updated_timestamp DATETIME
+);
+
+CREATE TABLE sales_return_items (
+  return_item_id INT PRIMARY KEY, return_id INT, original_so_item_id INT,
+  item_id INT, quantity_returned DOUBLE, unit_price DOUBLE, total_amount DOUBLE,
+  return_condition VARCHAR(30), restock_status VARCHAR(30), restock_location_id INT,
+  restock_timestamp DATETIME, notes TEXT
+);
+
+CREATE TABLE refund_transactions (
+  refund_id INT PRIMARY KEY, return_id INT, refund_code VARCHAR(40),
+  refund_amount DOUBLE, refund_method VARCHAR(30), refund_account_id INT,
+  refund_status VARCHAR(30), transaction_reference VARCHAR(120), processed_by INT,
+  processed_timestamp DATETIME, notes TEXT, created_timestamp DATETIME
+);
+
+CREATE TABLE store_credits (
+  credit_id INT PRIMARY KEY, customer_id INT, return_id INT, credit_code VARCHAR(40),
+  credit_amount DOUBLE, balance_amount DOUBLE, credit_status VARCHAR(30),
+  expiry_date VARCHAR(20), issued_timestamp DATETIME, issued_by INT, notes TEXT
+);
+
+CREATE TABLE returns_audit_trail (
+  audit_id INT PRIMARY KEY, return_id INT, action_type VARCHAR(40),
+  previous_status VARCHAR(30), new_status VARCHAR(30), action_description TEXT,
+  performed_by INT, performed_timestamp DATETIME, ip_address VARCHAR(60),
+  user_agent VARCHAR(255)
 );
 
 -- SO-3001: clean cash sale (2 lines, fully picked) — prices per items table

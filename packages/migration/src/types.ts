@@ -40,6 +40,16 @@ export const FIXTURE_TABLES: TableSpec[] = [
   { table: 'accounts', columns: ['account_id', 'name', 'account_type', 'opening_balance', 'current_balance', 'account_is_bank', 'account_is_transferrable'], pk: 'account_id' },
   { table: 'general_journal', columns: ['journal_id', 'journal', 'reference', 'po_code', 'so_code', 'invoice_code', 'supplier_id', 'customer_id', 'payment_id', 'debit_amount', 'credit_amount', 'account_name', 'account_balance', 'date_timestamp'], pk: 'journal_id' },
   { table: 'opening_stock_count', columns: ['id', 'item_id', 'store_id', 'counted_quantity', 'counted_by', 'counted_date'], pk: 'id' },
+  // Phase 5: legacy returns subsystem — designed-but-DEAD DDL, staged so the
+  // no-synthesis verification (transform-phase5) reads REAL row counts from
+  // the dump instead of passing vacuously when the table is absent.
+  // Column names mirror legacy/intake/2026-11-06/depot_schema_only_sanitized.sql.
+  { table: 'return_reasons', columns: ['reason_id', 'reason_name', 'reason_description', 'requires_approval', 'is_active', 'sort_order', 'created_timestamp'], pk: 'reason_id' },
+  { table: 'sales_returns', columns: ['return_id', 'return_code', 'original_so_code', 'original_invoice_code', 'customer_id', 'return_date', 'return_timestamp', 'return_reason_id', 'return_reason_description', 'return_status', 'total_items_returned', 'total_refund_amount', 'refund_method', 'refund_account_id', 'approved_by', 'approved_timestamp', 'processed_by', 'processed_timestamp', 'notes', 'internal_notes', 'track_code', 'created_by', 'created_timestamp', 'updated_by', 'updated_timestamp'], pk: 'return_id' },
+  { table: 'sales_return_items', columns: ['return_item_id', 'return_id', 'original_so_item_id', 'item_id', 'quantity_returned', 'unit_price', 'total_amount', 'return_condition', 'restock_status', 'restock_location_id', 'restock_timestamp', 'notes'], pk: 'return_item_id' },
+  { table: 'refund_transactions', columns: ['refund_id', 'return_id', 'refund_code', 'refund_amount', 'refund_method', 'refund_account_id', 'refund_status', 'transaction_reference', 'processed_by', 'processed_timestamp', 'notes', 'created_timestamp'], pk: 'refund_id' },
+  { table: 'store_credits', columns: ['credit_id', 'customer_id', 'return_id', 'credit_code', 'credit_amount', 'balance_amount', 'credit_status', 'expiry_date', 'issued_timestamp', 'issued_by', 'notes'], pk: 'credit_id' },
+  { table: 'returns_audit_trail', columns: ['audit_id', 'return_id', 'action_type', 'previous_status', 'new_status', 'action_description', 'performed_by', 'performed_timestamp', 'ip_address', 'user_agent'], pk: 'audit_id' },
 ];
 
 /** A legacy source: yields canonical row batches per table (staging backend). */
