@@ -44,6 +44,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify legacy-schema parity checker (66 tables, no drift)
+        run: |
+          python3 scripts/schema_diff.py
+          python3 - <<'PY'
+          import json
+          import sys
+          sys.path.insert(0, 'scripts')
+          from schema_diff import norm_type, parse_index_lines
+
+          assert norm_type('decimal', '15,2') != norm_type('decimal', '15,4'), 'decimal precision drift must be detected'
+          assert norm_type('enum', "'Open','Closed'") != norm_type('enum', "'Open','Cancelled'"), 'enum member drift must be detected'
+          first = parse_index_lines("KEY `Composite Index` (`item_id`,`customer_id`(50))", alter=False)
+          second = parse_index_lines("UNIQUE KEY `Composite Index` (`item_id`,`customer_id`(50))", alter=False)
+          assert first['Composite Index']['columns'] == 'item_id,customer_id(50)', 'composite/prefix index must be complete'
+          assert first != second, 'index uniqueness drift must be detected'
+
+          d = json.load(open('docs/migration/schema_drift.json'))
+          assert d['table_count'] == {'old': 66, 'new': 66, 'common': 66}, d['table_count']
+          assert not d['only_in_new'] and not d['only_in_old']
+          for table, delta in d['tables'].items():
+              assert not any(value for value in delta.values()), f'{table}: {delta}'
+          print('LEGACY SCHEMA PARITY PASS: 66 tables, column/index/PK/autoincrement identical')
+          PY
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24
