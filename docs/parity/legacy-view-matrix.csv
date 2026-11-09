@@ -1,0 +1,267 @@
+legacy_view,module,classification,capability,target_web,target_api,test_reference,parity_status,notes
+add_creditor_order_row.php,root,active,Creditor order-row adder,"/pos, /sales-orders (cart/line editors)","server-side line computation in POST /sales/commit, POST /sales-orders",sales-flows.e2e,implemented-changed,"Legacy client-side row math (R14 duplication) replaced by server-authoritative line.net (half-even, once)"
+add_debtor_order_row.php,root,active,Debtor order-row adder,"/pos, /sales-orders (cart/line editors)","server-side line computation in POST /sales/commit, POST /sales-orders",sales-flows.e2e,implemented-changed,"Legacy client-side row math (R14 duplication) replaced by server-authoritative line.net (half-even, once)"
+add_order_row.php,root,active,AJAX order-row adder,"/pos, /sales-orders (cart/line editors)","server-side line computation in POST /sales/commit, POST /sales-orders",sales-flows.e2e,implemented-changed,"Legacy client-side row math (R14 duplication) replaced by server-authoritative line.net (half-even, once)"
+add_order_row_negative_bal.php,root,active,Negative-bal order-row adder,"/pos, /sales-orders (cart/line editors)","server-side line computation in POST /sales/commit, POST /sales-orders",sales-flows.e2e,implemented-changed,"Legacy client-side row math (R14 duplication) replaced by server-authoritative line.net (half-even, once)"
+add_order_row_pos.php,root,active,POS order-row adder,"/pos, /sales-orders (cart/line editors)","server-side line computation in POST /sales/commit, POST /sales-orders",sales-flows.e2e,implemented-changed,"Legacy client-side row math (R14 duplication) replaced by server-authoritative line.net (half-even, once)"
+add_order_row_pos_unit.php,root,active,POS unit order-row adder,"/pos, /sales-orders (cart/line editors)","server-side line computation in POST /sales/commit, POST /sales-orders",sales-flows.e2e,implemented-changed,"Legacy client-side row math (R14 duplication) replaced by server-authoritative line.net (half-even, once)"
+add_order_row_pos_unit_fixed_quantity.php,root,active,POS fixed-qty unit row adder,"/pos, /sales-orders (cart/line editors)","server-side line computation in POST /sales/commit, POST /sales-orders",sales-flows.e2e,implemented-changed,"Legacy client-side row math (R14 duplication) replaced by server-authoritative line.net (half-even, once)"
+add_proforma_invoice_row.php,root,active,Proforma row adder,"/pos, /sales-orders (cart/line editors)","server-side line computation in POST /sales/commit, POST /sales-orders",sales-flows.e2e,implemented-changed,"Legacy client-side row math (R14 duplication) replaced by server-authoritative line.net (half-even, once)"
+admin_list.php,root,active,User/staff management list,— (user management UI pending),— (no user-management controller yet),rbac-matrix (permission model only),pending,GAP: user CRUD + role assignment API and page not yet implemented; RBAC catalog exists and is matrix-tested
+attendance_list.php,root,active,Staff attendance,/shifts,"GET /shifts, POST /shifts/:id/close, review-variance",sales-flows.e2e,implemented-changed,Clock in/out → cashier shifts with derived expected cash + supervisor variance review
+backups_creditors.php,root,active,Maintenance archive of frozen creditor snapshots,—,—,—,dropped-dead,Obsolete: AP is derived from documents; no frozen snapshot to archive
+banking.php,root,active,Banking section shell,/banking/*,GET/POST /banking/*,banking-flows,implemented-changed,
+banking/account_enquiry.php,banking,active,Bank account enquiry with running ledger,"/banking/accounts, /banking/statements","GET /banking/accounts, GET /banking/statements, GET /banking/statements/:id",banking-flows,implemented,Legacy read mutable accounts.current_balance; new GL-derived
+banking/account_transfer.php,banking,active,Bank-to-bank transfer,/banking/transfers,"POST /banking/transfers (explicit fees, balanced journal, client-doc dedupe)",banking-flows,implemented,
+banking/add_express_top_up.php,banking,dead,0-byte file,—,—,—,dropped-dead,No loader; empty file
+banking/get_bank_enquery_print.php,banking,active,Print bank enquiry,/banking (browser print),GET /banking/statements,banking-flows,implemented-changed,Browser print from the same data; no separate print endpoint
+customer_statement-old.php,root,dead,Backup,—,—,—,dropped-dead,
+dashboard.php,root,active,Home dashboard,/kpi (KPI dashboard); login lands on /catalog,GET /reports/kpi/*,—,implemented-changed,"Legacy dashboard aggregates → KPI dashboard (13 metrics, snapshots, targets); no legacy-style landing page — register in UAT"
+dates_selection/date_selection_accounts_payable_report.php,dates_selection,active,Date-picker dialog driving the report,date-range inputs on the report pages,—,—,implemented-changed,Folded into web report filters (from/to); no modal dialog needed
+dates_selection/date_selection_accounts_receivable_report.php,dates_selection,active,Date-picker dialog driving the report,date-range inputs on the report pages,—,—,implemented-changed,Folded into web report filters (from/to); no modal dialog needed
+dates_selection/date_selection_all_items_report.php,dates_selection,active,Date-picker dialog driving the report,date-range inputs on the report pages,—,—,implemented-changed,Folded into web report filters (from/to); no modal dialog needed
+dates_selection/date_selection_backlog_report.php,dates_selection,active,Date-picker dialog driving the report,date-range inputs on the report pages,—,—,implemented-changed,Folded into web report filters (from/to); no modal dialog needed
+dates_selection/date_selection_balance_sheet_report.php,dates_selection,active,Date-picker dialog driving the report,date-range inputs on the report pages,—,—,implemented-changed,Folded into web report filters (from/to); no modal dialog needed
+dates_selection/date_selection_cash_flow_report.php,dates_selection,active,Date-picker dialog driving the report,date-range inputs on the report pages,—,—,implemented-changed,Folded into web report filters (from/to); no modal dialog needed
+dates_selection/date_selection_creditors_report.php,dates_selection,active,Date-picker dialog driving the report,date-range inputs on the report pages,—,—,implemented-changed,Folded into web report filters (from/to); no modal dialog needed
+dates_selection/date_selection_customer_statement.php,dates_selection,active,Date-picker dialog driving the report,date-range inputs on the report pages,—,—,implemented-changed,Folded into web report filters (from/to); no modal dialog needed
+dates_selection/date_selection_daily_stock_report.php,dates_selection,active,Date-picker dialog driving the report,date-range inputs on the report pages,—,—,implemented-changed,Folded into web report filters (from/to); no modal dialog needed
+dates_selection/date_selection_income_statement_report.php,dates_selection,active,Date-picker dialog driving the report,date-range inputs on the report pages,—,—,implemented-changed,Folded into web report filters (from/to); no modal dialog needed
+dates_selection/date_selection_inventory_report.php,dates_selection,active,Date-picker dialog driving the report,date-range inputs on the report pages,—,—,implemented-changed,Folded into web report filters (from/to); no modal dialog needed
+dates_selection/date_selection_invoice_report.php,dates_selection,active,Date-picker dialog driving the report,date-range inputs on the report pages,—,—,implemented-changed,Folded into web report filters (from/to); no modal dialog needed
+dates_selection/date_selection_item_history.php,dates_selection,active,Date-picker dialog driving the report,date-range inputs on the report pages,—,—,implemented-changed,Folded into web report filters (from/to); no modal dialog needed
+dates_selection/date_selection_stock_margin_report.php,dates_selection,active,Date-picker dialog driving the report,date-range inputs on the report pages,—,—,implemented-changed,Folded into web report filters (from/to); no modal dialog needed
+dates_selection/date_selection_trial_balance_report.php,dates_selection,active,Date-picker dialog driving the report,date-range inputs on the report pages,—,—,implemented-changed,Folded into web report filters (from/to); no modal dialog needed
+enter_payable.php,root,active,Root duplicate of purchases/enter_payable,—,—,—,duplicate,See purchases/enter_payable.php row
+items_transfers/add_item_transfer.php,items_transfers,active,Stock transfer document,/inventory/transfers,POST /transfers (+ lines),stock-operations.e2e,implemented,
+items_transfers/add_item_transfer_row.php,items_transfers,active,Stock transfer document,/inventory/transfers,POST /transfers (+ lines),stock-operations.e2e,implemented,line editor inside the transfer form
+items_transfers/edit_item_transfer.php,items_transfers,active,Edit transfer,/inventory/transfers,"POST /transfers/:id/dispatch, POST /transfers/:id/receive",stock-operations.e2e,implemented-changed,State machine draft→dispatched→received with value carry; free-text receiver replaced by staff/location evidence
+items_transfers/edit_item_transfer_row.php,items_transfers,active,Edit transfer line,/inventory/transfers,PATCH /transfers/:id/lines,stock-operations.e2e,implemented-changed,
+items_transfers/get_item_transfer.php,items_transfers,active,Transfer list/feed,/inventory/transfers,GET /transfers,stock-operations.e2e,implemented,
+items_transfers/items_transfer_list.php,items_transfers,active,Transfer list,/inventory/transfers,GET /transfers,stock-operations.e2e,implemented,
+items_transfers/tt.php,items_transfers,dead,Pasted controller code inside a view,—,—,—,dropped-dead,Dev debris
+journal/get_all_journal.php,journal,active,Journal register (per type),/accounting/journals,GET /accounting/journals (source/type/reference/date filters),accounting-statements,implemented-changed,"Six legacy per-type feeds → one GL inquiry with filters; append-only journals, ΣD=ΣC enforced"
+journal/get_general_journal.php,journal,active,Journal register (per type),/accounting/journals,GET /accounting/journals (source/type/reference/date filters),accounting-statements,implemented-changed,"Six legacy per-type feeds → one GL inquiry with filters; append-only journals, ΣD=ΣC enforced"
+journal/get_payments_journal.php,journal,active,Journal register (per type),/accounting/journals,GET /accounting/journals (source/type/reference/date filters),accounting-statements,implemented-changed,"Six legacy per-type feeds → one GL inquiry with filters; append-only journals, ΣD=ΣC enforced"
+journal/get_purchases_journal.php,journal,active,Journal register (per type),/accounting/journals,GET /accounting/journals (source/type/reference/date filters),accounting-statements,implemented-changed,"Six legacy per-type feeds → one GL inquiry with filters; append-only journals, ΣD=ΣC enforced"
+journal/get_receipts_journal.php,journal,active,Journal register (per type),/accounting/journals,GET /accounting/journals (source/type/reference/date filters),accounting-statements,implemented-changed,"Six legacy per-type feeds → one GL inquiry with filters; append-only journals, ΣD=ΣC enforced"
+journal/get_sales_journal.php,journal,active,Journal register (per type),/accounting/journals,GET /accounting/journals (source/type/reference/date filters),accounting-statements,implemented-changed,"Six legacy per-type feeds → one GL inquiry with filters; append-only journals, ΣD=ΣC enforced"
+manage_profile.php,root,active,Own profile management,— (profile page pending),GET /auth/me (read-only),—,pending,GAP: password change + profile edit not implemented (auth/me is read-only)
+modal_admin_add.php,root,active,Add user modal,— (pending),—,—,pending,GAP: see admin_list.php
+modal_admin_edit.php,root,active,Edit user modal,— (pending),—,—,pending,GAP: see admin_list.php
+modal_forgot_to_clockout.php,root,dead,Posts to dead endpoint,—,—,—,dropped-dead,
+modal_goodbye.php,root,active,Logout/goodbye modal,auth flows (login page),"POST /auth/login, /auth/refresh",rbac-matrix,implemented-changed,Token pair + device registry
+modal_logout.php,root,active,Logout modal,auth flows,POST /auth/refresh (rotation),rbac-matrix,implemented-changed,
+modal_welcome.php,root,active,Welcome modal,login → app shell,—,—,implemented-changed,
+modern-dashboard.php,root,dead,Modern skin experiment,—,—,—,dropped-dead,
+pay_payable.php,root,dead,Root mockup duplicate,—,—,—,dropped-dead,
+payments.php,root,dead,Static-ish page posting w/o param,—,—,—,dropped-dead,
+pos-old/calendar.php,pos-old,dead,Old POS backup tree,—,—,—,dropped-dead,Superseded by pages/pos; no loader
+pos-old/closing_stock_summary.php,pos-old,dead,Old POS backup tree,—,—,—,dropped-dead,Superseded by pages/pos; no loader
+pos-old/css.php,pos-old,dead,Old POS backup tree,—,—,—,dropped-dead,Superseded by pages/pos; no loader
+pos-old/header.php,pos-old,dead,Old POS backup tree,—,—,—,dropped-dead,Superseded by pages/pos; no loader
+pos-old/includes_bottom.php,pos-old,dead,Old POS backup tree,—,—,—,dropped-dead,Superseded by pages/pos; no loader
+pos-old/includes_top.php,pos-old,dead,Old POS backup tree,—,—,—,dropped-dead,Superseded by pages/pos; no loader
+pos-old/modal.php,pos-old,dead,Old POS backup tree,—,—,—,dropped-dead,Superseded by pages/pos; no loader
+pos-old/opening_stock_summary.php,pos-old,dead,Old POS backup tree,—,—,—,dropped-dead,Superseded by pages/pos; no loader
+pos-old/payments.php,pos-old,dead,Old POS backup tree,—,—,—,dropped-dead,Superseded by pages/pos; no loader
+pos-old/pos_page.php,pos-old,dead,Old POS backup tree,—,—,—,dropped-dead,Superseded by pages/pos; no loader
+pos-old/top-header.php,pos-old,dead,Old POS backup tree,—,—,—,dropped-dead,Superseded by pages/pos; no loader
+pos/account_field.php,pos,active,Payment-account picker fragment,"/pos, /payments",structured tenders in POST /payments,sales-flows.e2e,implemented-changed,Accounts-as-payment-methods → typed tenders (cash/momo/cheque/bank)
+pos/account_field_edit.php,pos,active,Payment-account edit fragment,/payments,structured tenders,sales-flows.e2e,implemented-changed,
+pos/account_field_payment.php,pos,active,Payment-account payment fragment,/payments,structured tenders,sales-flows.e2e,implemented-changed,
+pos/add_invoice.php,pos,active,Create POS invoice,/pos,POST /sales/commit (server computes totals),sales-flows.e2e,implemented-changed,Server-authoritative totals; C-2 header math; DB CHECK
+pos/add_item.php,pos,active,Quick item create,/catalog,POST /products,vertical-slice.e2e,implemented,
+pos/add_sales_order_negative_bal.php,pos,active,Negative-balance (deposit) order,/deposits,POST /deposits,sales-flows.e2e,implemented,Explicit customer_deposit documents; no negative invoice rows
+pos/calendar.php,pos,school-only,Noticeboard remnant inside POS,—,—,—,dropped-school,School-era content (view-classification §9)
+pos/closing_stock_summary.php,pos,active,Closing stock summary,/reports (daily-stock tab),GET /reports/daily-stock,—,implemented,Ledger-derived closing (legacy defect: closing only when sale+transfer both exist)
+pos/create_proforma_invoice.php,pos,active,Create proforma (quotation),— (web UI pending),"POST /quotations, POST /quotations/:id/issue|accept|convert",review-hardening,partial,API + lifecycle + tests done; quotation web page + A4 print pending
+pos/css.php,pos,active,Theme shell/fragment,web app shell (layout),—,—,implemented-changed,Replaced by the Next.js app shell
+pos/edit_creditor_opening_balance.php,pos,active,Creditor opening balance,— (back-office API),POST /party-opening-balances (supplier),purchasing-flows.e2e,implemented,
+pos/edit_customer.php,pos,active,Quick customer edit,/customers,PATCH /customers/:id (party CRUD),sales-flows.e2e,implemented,
+pos/edit_debtor_opening_balance.php,pos,active,Debtor opening balance,— (back-office API),POST /party-opening-balances,sales-flows.e2e,implemented,Explicit opening-balance documents
+pos/edit_invoice.php,pos,dead,Edit posted invoice,—,—,—,dropped-dead,Invoices immutable by design; reversal is a new document (POST /sales/invoices/:id/reverse)
+pos/edit_item.php,pos,active,Quick item edit,/catalog,PATCH /products/:id,vertical-slice.e2e,implemented,
+pos/edit_payment_with_goods.php,pos,active-broken,Edit credit application (posts to missing endpoint),—,—,—,dropped-dead,Explicit credit_application rows replace PWG edits
+pos/edit_payments.php,pos,active,Edit payment,/payments,append-only payments; corrections are reversals,sales-flows.e2e,implemented-changed,Legacy destructive edits structurally impossible
+pos/edit_sales_order.php,pos,active,Edit sales order,/sales-orders,PATCH before confirm; state machine,sales-flows.e2e,implemented-changed,
+pos/edit_sales_order_negative_bal.php,pos,active,Edit deposit order,/deposits,credit applications are explicit rows (POST /credits/apply),sales-flows.e2e,implemented-changed,Append-only credit_application waterfall replaces destructive edits
+pos/get_all_customers.php,pos,active,Customer feed,/pos (customer search),GET /customers,sales-flows.e2e,implemented,
+pos/get_all_invoice_items.php,pos,active,Invoice items feed,/sales (invoice drilldown),GET /sales/invoices/:id,sales-flows.e2e,implemented,
+pos/get_confirm_item.php,pos,active,Item confirm fragment,/pos (cart),— (client-side cart; server recomputes),sales-flows.e2e,implemented-changed,Client amounts advisory; server computes line.net
+pos/get_invoice_for_verification.php,pos,active,Invoice code verification,— (verification API),GET /sequences (booklet verification),sales-flows.e2e,implemented,
+pos/get_item_unit_list.php,pos,active,Item unit list,/pos (unit picker),GET /products/:id/units,sales-flows.e2e,implemented,
+pos/get_main_page.php,pos,active,POS landing content,/pos,"GET /products (search), GET /products/:id/units",sales-flows.e2e,implemented,
+pos/get_waybill_for_verification.php,pos,active,Waybill code verification,— (verification API),GET /sequences,sales-flows.e2e,implemented,
+pos/header.php,pos,active,Theme shell/fragment,web app shell (layout),—,—,implemented-changed,Replaced by the Next.js app shell
+pos/includes_bottom.php,pos,active,Theme shell/fragment,web app shell (layout),—,—,implemented-changed,Replaced by the Next.js app shell
+pos/includes_top.php,pos,active,Theme shell/fragment,web app shell (layout),—,—,implemented-changed,Replaced by the Next.js app shell
+pos/modal.php,pos,active,Theme shell/fragment,web app shell (layout),—,—,implemented-changed,Replaced by the Next.js app shell
+pos/modern-pos.php,pos,dead,Modern skin experiment,—,—,—,dropped-dead,Unreferenced
+pos/opening_stock_summary.php,pos,active,Opening stock summary,/reports (daily-stock tab),GET /reports/daily-stock,—,implemented,
+pos/payment_with_goods.php,pos,active,Payment-with-goods (credit),/payments (credit tender),POST /credits/apply,sales-flows.e2e,implemented-changed,PWG mirror table dropped; explicit credit applications + advisory-lock waterfall
+pos/payments.php,pos,active,POS payments,/payments,POST /payments (typed tenders + allocations),sales-flows.e2e,implemented,
+pos/pos_page.php,pos,active,POS main screen,/pos (offline-first),"POST /sales/commit, POST /sync/push, GET /sync/pull","sales-flows.e2e, sales-sync-chaos",implemented,Keyboard-first; IndexedDB outbox; same posting coordinator online/offline
+pos/receipt_modal.php,pos,active,Receipt modal/payload,/print/receipt/[id],GET /sales/invoices/:id/receipt,sales-flows.e2e,implemented,Thermal-80mm/A4 from ONE payload; balance-owed = this invoice's due
+pos/sales_order_list.php,pos,active,POS order list,/sales-orders,GET /sales-orders,sales-flows.e2e,implemented-changed,Legacy delete URL was broken; fixed
+pos/styles.php,pos,active,Theme shell/fragment,web app shell (layout),—,—,implemented-changed,Replaced by the Next.js app shell
+pos/top-header.php,pos,active,Theme shell/fragment,web app shell (layout),—,—,implemented-changed,Replaced by the Next.js app shell
+pos/view_invoices.php,pos,active,POS invoice list,/sales,GET /sales/invoices,sales-flows.e2e,implemented-changed,Legacy delete URL broken; reversal flow instead
+pos/view_items.php,pos,active,POS item list,/catalog,GET /products,vertical-slice.e2e,implemented,
+pos/view_payments.php,pos,active,POS payments list,/payments,GET /payments,sales-flows.e2e,implemented,
+pos/view_receipts.php,pos,active,POS receipts list,/payments + /print/receipt/[id],"GET /payments, GET /sales/invoices/:id/receipt",sales-flows.e2e,implemented,
+purchase_order_list.php,root,active,Root duplicate of purchases/purchase_order_list,—,—,—,duplicate,See purchases row
+purchases.php,root,active,Purchasing section shell,"/purchasing/*, /ap","GET/POST /purchasing/*, /ap/*",purchasing-flows.e2e,implemented-changed,
+purchases/accounts_payable.php,purchases,active,AP workbench,/ap,"GET /ap/aging, GET /ap/statements/:supplierId","purchasing-flows.e2e, accounting-statements",implemented,
+purchases/add_purchase_order.php,purchases,active,Create PO,/purchasing/orders,POST /purchasing/purchase-orders (submit/approve/issue),purchasing-flows.e2e,implemented,Pure commitment document; 3-way match downstream
+purchases/add_supplier.php,purchases,active,Create supplier,/suppliers,POST /suppliers (party CRUD),purchasing-flows.e2e,implemented,
+purchases/credit_purchases.php,purchases,active,Credit purchases list,/ap,GET /ap/aging (derived open AP),purchasing-flows.e2e,implemented-changed,Open AP always ledger/allocation-derived — never a mutable snapshot
+purchases/edit_enter_payable.php,purchases,active,Edit payable,/purchasing,supplier adjustments (append-only),purchasing-flows.e2e,implemented-changed,
+purchases/edit_payments.php,purchases,active,Edit supplier payment,/purchasing/payments,append-only; advance application is explicit (POST .../apply-advance),purchasing-flows.e2e,implemented-changed,Legacy destructive edits impossible
+purchases/edit_purchase_order.php,purchases,active,Edit PO,/purchasing/orders,PATCH /purchasing/purchase-orders/:id (before submit),purchasing-flows.e2e,implemented,
+purchases/edit_supplier.php,purchases,active,Edit supplier,/suppliers,PATCH /suppliers/:id,purchasing-flows.e2e,implemented,
+purchases/enter_payable.php,purchases,active,Enter other payable,/purchasing (manual docs),POST /purchasing/supplier-invoices; supplier debit/credit notes,purchasing-flows.e2e,implemented-changed,LPAY manual payables → explicit supplier documents (append-only)
+purchases/get_account_paid_from.php,purchases,active,Paid-from account picker,/purchasing/payments,GET /banking/accounts,purchasing-flows.e2e,implemented,
+purchases/get_accounts_payable_list.php,purchases,active,AP list feed,/ap,GET /ap/aging,purchasing-flows.e2e,implemented,
+purchases/get_accounts_payable_listOLD.php,purchases,dead,OLD backup,—,—,—,dropped-dead,
+purchases/get_credit_purchases_list.php,purchases,active,Credit purchases feed,/ap,GET /ap/aging,purchasing-flows.e2e,implemented-changed,
+purchases/get_creditor_by_name.php,purchases,dead,Unused feed,—,—,—,dropped-dead,
+purchases/get_creditors_list.php,purchases,active,Creditors list,"/ap, /suppliers","GET /ap/aging, GET /suppliers",accounting-statements,implemented-changed,Legacy creditors snapshot table was FROZEN; new figures regenerate from documents
+purchases/get_expenses_list.php,purchases,active,Expenses list,/accounting/journals,POST /accounting/journals (manual),accounting-statements,implemented-changed,Expenses = approved manual journals with live preview
+purchases/get_orders_list_bydate.php,purchases,active,PO list by date,/purchasing/orders,GET /purchasing/purchase-orders?from&to,purchasing-flows.e2e,implemented,
+purchases/get_payables_taken_list.php,purchases,active,Payables-taken list,/ap (statement lines),GET /ap/statements/:supplierId,accounting-statements,implemented,
+purchases/get_payables_taken_list_below_date.php,purchases,active,Payables below date,/ap,GET /ap/statements/:supplierId?asOf=,accounting-statements,implemented-changed,As-of statements never see future transactions
+purchases/pay_payable.php,purchases,dead,Static mockup posting to non-existent endpoint,—,—,—,dropped-dead,Pay flow lives at /purchasing/payments
+purchases/payables_taken.php,purchases,active,Payables taken,/ap,GET /ap/statements/:supplierId,accounting-statements,implemented,
+purchases/payables_taken_page.php,purchases,dead,0-byte file,—,—,—,dropped-dead,
+purchases/payments.php,purchases,active,Supplier payment,/purchasing/payments,POST /purchasing/supplier-payments (tenders + allocations + advances),"purchasing-flows.e2e, purchasing-concurrency",implemented,
+purchases/payments_history.php,purchases,active,Payment history,/ap (statements),GET /ap/statements/:supplierId,accounting-statements,implemented,
+purchases/preview_order.php,purchases,active,PO preview,/purchasing/orders (review step),GET /purchasing/purchase-orders/:id,purchasing-flows.e2e,implemented-changed,
+purchases/purchase_order_list.php,purchases,active,PO list,/purchasing/orders,GET /purchasing/purchase-orders,purchasing-flows.e2e,implemented,
+purchases/suppliers_list.php,purchases,active,Supplier list,/suppliers,GET /suppliers,purchasing-flows.e2e,implemented,
+purchases/view_accounts_payable.php,purchases,active,AP detail view,/ap,GET /ap/aging,purchasing-flows.e2e,implemented,
+reports.php,root,active,Reports section shell,"/reports, /accounting/reports, /kpi","GET /reports/*, /accounting/*",accounting-statements,implemented-changed,
+reports/accounts_payable_report.php,reports,active,AP aging report,/reports (ap-aging) + /ap,GET /reports/ap-aging,—,implemented,Reversal-aware open equation
+reports/accounts_payable_report2.php,reports,dead,Debug backdoor via /test,—,—,—,dropped-dead,Security hazard removed
+reports/accounts_payable_report_old.php,reports,dead,Old backup,—,—,—,dropped-dead,
+reports/accounts_receivable_report.php,reports,active,AR aging report,/reports (ar-aging),GET /reports/ar-aging,—,implemented,
+reports/all_sales_order_report.php,reports,active,All sales orders report,"/reports (daily-sales, sales-by-*)",GET /reports/daily-sales,—,implemented-changed,
+reports/backlog.php,reports,active,Backlog report,/reports (backlog),GET /reports/backlog,—,implemented-changed,Legacy queried a nonexistent item_units table; new backlog from the order state machine
+reports/backlog_closing_stock.php,reports,dead,Orphan variant,—,—,—,dropped-dead,
+reports/balance_sheet_report.php,reports,active,Balance sheet,/accounting/reports (BS),GET /accounting/balance-sheet,accounting-statements,implemented,A=L+E with real equity + current earnings
+reports/cash_flow_report.php,reports,active,Cash flow statement,/accounting/reports (CF),GET /accounting/cash-flow,financial-corrections,implemented-changed,Corrected indirect method (legacy sign errors fixed); ties to ledger cash exactly
+reports/cash_received_report-edited.php,reports,dead,Dev artifact,—,—,—,dropped-dead,
+reports/cash_received_report.php,reports,active,Daily cash received,/reports (tender-totals),GET /reports/tender-totals,—,implemented-changed,
+reports/credit_purchases_report.php,reports,active,Credit purchases report,/ap,GET /ap/aging,purchasing-flows.e2e,implemented-changed,
+reports/creditors_report.php,reports,active,Creditors report,/ap,GET /ap/aging,accounting-statements,implemented-changed,FROZEN snapshot → derived subledger
+reports/daily_stock_report.php,reports,active,Daily stock report,/reports (daily-stock),GET /reports/daily-stock,—,implemented-changed,Corrected formula; ledger-derived closing
+reports/expenses_report.php,reports,active,Expenses report,/accounting/journals,GET /accounting/journals,accounting-statements,implemented-changed,
+reports/get_backlog_report.php,reports,active,Backlog data feed,/reports (backlog),GET /reports/backlog,—,implemented-changed,
+reports/get_daily_sales_order_report.php,reports,active,Daily sales order feed,/reports (daily-sales),GET /reports/daily-sales,—,implemented,
+reports/get_daily_stock_report.php,reports,active,Daily stock feed,/reports (daily-stock),GET /reports/daily-stock,—,implemented-changed,
+reports/get_stock_margin_report_daily.php,reports,active,Stock margin feed (daily),/reports (item-margin),GET /reports/item-margin,—,implemented-changed,
+reports/get_stock_margin_report_monthly.php,reports,active,Stock margin feed (monthly),/reports (item-margin),GET /reports/item-margin,—,implemented-changed,
+reports/get_stock_margin_report_weekly.php,reports,active,Stock margin feed (weekly),/reports (item-margin),GET /reports/item-margin,—,implemented-changed,
+reports/income_statement_report.php,reports,active,Income statement,/accounting/reports (P&L),GET /accounting/profit-and-loss,accounting-statements,implemented,COGS ties to AVCO ledger
+reports/inventory_report.php,reports,active,Inventory report,/reports (stock-valuation),GET /reports/stock-valuation,—,implemented,
+reports/inventory_reportOld.php,reports,dead,Old backup,—,—,—,dropped-dead,
+reports/invoice_report.php,reports,active,Invoice report,/sales (filters),GET /sales/invoices?from&to,sales-flows.e2e,implemented-changed,
+reports/item_transfer_report.php,reports,active,Item transfer report,/inventory/movements,GET /inventory/movements (type filter),stock-operations.e2e,implemented,
+reports/purchase_order_report.php,reports,active,PO report,/purchasing/orders,GET /purchasing/purchase-orders,purchasing-flows.e2e,implemented,
+reports/sales_order_daily_summary_report.php,reports,active,SO daily summary,/reports (daily-sales),GET /reports/daily-sales,—,implemented,
+reports/sales_order_report.php,reports,active,Sales order report,/reports (sales-by-*),GET /reports/sales-by-customer|product|user|warehouse,—,implemented,
+reports/sales_order_summary_report.php,reports,active,SO summary report,/reports (daily-sales),GET /reports/daily-sales,—,implemented,
+reports/stock_margin_report_daily.php,reports,active,Stock margin report (daily),/reports (item-margin),GET /reports/item-margin,—,implemented-changed,Legacy had 3 inconsistent margin tabs; canonical cost-at-sale AVCO basis
+reports/stock_margin_report_monthly.php,reports,active,Stock margin report (monthly),/reports (item-margin),GET /reports/item-margin,—,implemented-changed,Legacy had 3 inconsistent margin tabs; canonical cost-at-sale AVCO basis
+reports/stock_margin_report_weekly.php,reports,active,Stock margin report (weekly),/reports (item-margin),GET /reports/item-margin,—,implemented-changed,Legacy had 3 inconsistent margin tabs; canonical cost-at-sale AVCO basis
+reports/trial_balance_report.php,reports,active,Trial balance,/accounting/reports (TB),GET /accounting/trial-balance,accounting-statements,implemented,Opening+period+closing; ties to BS by construction
+sales.php,root,active,Sales section shell,"/sales, /payments, /deposits","GET /sales/invoices, /payments, /deposits",sales-flows.e2e,implemented-changed,
+sales/accounts_receivable.php,sales,active,AR workbench,/reports (ar-aging),GET /reports/ar-aging,—,implemented,Subledger-derived customer balances
+sales/add_creditor_opening_balance.php,sales,active,Creditor opening balance,—,POST /party-opening-balances,purchasing-flows.e2e,implemented,
+sales/add_customer.php,sales,active,Create customer,/customers,POST /customers,sales-flows.e2e,implemented,
+sales/add_customer_pos.php,sales,active,POS quick customer,/pos (quick add),POST /customers,sales-flows.e2e,implemented,
+sales/add_debtor_opening_balance.php,sales,active,Debtor opening balance,— (back-office API),POST /party-opening-balances,sales-flows.e2e,implemented,
+sales/add_invoice.php,sales,active-broken,Create invoice,— (via orders/POS),POST /sales-orders/:id/confirm posts the invoice,sales-flows.e2e,implemented-changed,Legacy posted to missing admin/sales_order/create; fixed semantics
+sales/add_item.php,sales,active,Create item,/catalog,POST /products,vertical-slice.e2e,implemented,
+sales/add_item_category.php,sales,active,Create category,/categories,POST /categories,vertical-slice.e2e,implemented,
+sales/add_item_main_category.php,sales,active,Create main category,/categories,POST /categories (parent),vertical-slice.e2e,implemented,
+sales/add_item_script.php,sales,dead,Script debris,—,—,—,dropped-dead,
+sales/add_item_to_price_list.php,sales,active,Add item to price list,—,POST /price-lists/:id/items,—,partial,See pricing.php
+sales/add_sales_order.php,sales,active-broken,Create sales order,/sales-orders,POST /sales-orders,sales-flows.e2e,implemented-changed,Legacy broken endpoint fixed
+sales/add_sales_order_negative_bal.php,sales,active,Deposit (negative-bal) order,/deposits,POST /deposits,sales-flows.e2e,implemented,
+sales/all_items_report.php,sales,active,All items report,/reports (stock-valuation),GET /reports/stock-valuation,—,implemented,
+sales/cash_goods.php,sales,active,Cash+goods sale,/pos (split tenders),POST /sales/commit (mixed tenders),sales-flows.e2e,implemented,
+sales/create_proforma_invoice.php,sales,active,Create proforma/quotation,— (web UI pending),POST /quotations (+ lifecycle),review-hardening,partial,API + tests done; web page pending
+sales/css.php,sales,active,Theme shell/fragment,web app shell (layout),—,—,implemented-changed,Replaced by the Next.js app shell
+sales/customer_statement-old.php,sales,dead,Backup,—,—,—,dropped-dead,
+sales/customer_statement.php,sales,active,Customer statement,/reports (customer-statement),GET /reports/customer-statement,—,implemented,One running balance: invoices/payments/returns/credit notes/store credit
+sales/customer_statement_optimized.php,sales,dead,Experiment,—,—,—,dropped-dead,
+sales/customers_list.php,sales,active,Customer list,/customers,GET /customers,sales-flows.e2e,implemented,
+sales/daily_cash_received.php,sales,active,Daily cash received,/reports (tender-totals),GET /reports/tender-totals,—,implemented-changed,
+sales/deposit.php,sales,dead,Dead deposit view,—,—,—,dropped-dead,Capability delivered by /deposits page + POST /deposits
+sales/edit_creditor_opening_balance.php,sales,active,Edit creditor opening,—,append-only documents,purchasing-flows.e2e,implemented-changed,
+sales/edit_customer.php,sales,active,Edit customer,/customers,PATCH /customers/:id,sales-flows.e2e,implemented,
+sales/edit_debtor_opening_balance.php,sales,active,Edit debtor opening,—,opening balances are explicit documents (append-only adjustments),sales-flows.e2e,implemented-changed,
+sales/edit_deposit.php,sales,active,Edit deposit,/deposits,deposits are documents; consumption via POST /credits/apply,sales-flows.e2e,implemented-changed,
+sales/edit_enter_payable.php,sales,active,Edit payable,—,append-only,sales-flows.e2e,implemented-changed,
+sales/edit_invoice.php,sales,dead,Edit invoice,—,—,—,dropped-dead,Immutability; reversal instead
+sales/edit_item.php,sales,active,Edit item,/catalog,PATCH /products/:id,vertical-slice.e2e,implemented,
+sales/edit_item_category.php,sales,active,Edit category,/categories,PATCH /categories/:id,vertical-slice.e2e,implemented,
+sales/edit_item_main_category.php,sales,active,Edit main category,/categories,PATCH /categories/:id,vertical-slice.e2e,implemented,
+sales/edit_items_bulk.php,sales,active-broken,Bulk item edit (missing item/bulk_update endpoint),—,—,—,dropped-dead,Broken in legacy; not ported — register as candidate enhancement
+sales/edit_payment_with_goods.php,sales,active-broken,Broken PWG editor,—,—,—,dropped-dead,Replaced by append-only credit applications
+sales/edit_payments.php,sales,active,Edit payment,/payments,append-only + reversals,sales-flows.e2e,implemented-changed,
+sales/edit_sales_order.php,sales,active,Edit sales order,/sales-orders,PATCH /sales-orders/:id (before confirm),sales-flows.e2e,implemented-changed,
+sales/edit_sales_order_negative_bal.php,sales,active,Edit deposit order,/deposits,explicit credit applications,sales-flows.e2e,implemented-changed,
+sales/enter_payable.php,sales,active,Enter payable (sales side),—,customer docs via party APIs,sales-flows.e2e,implemented-changed,
+sales/get_accounts_receivable_list.php,sales,active,AR list feed,/reports (ar-aging),GET /reports/ar-aging,—,implemented,
+sales/get_added_units_list_for_item.php,sales,active,Item units list,—,GET /products/:id/units,sales-flows.e2e,implemented,
+sales/get_available_units_ids.php,sales,active,Available units,—,GET /products/:id/units,sales-flows.e2e,implemented,
+sales/get_cash_received_list.php,sales,active,Cash received feed,/reports (tender-totals),GET /reports/tender-totals,—,implemented-changed,
+sales/get_deposit_list.php,sales,active,Deposit list feed,/deposits,GET /deposits,sales-flows.e2e,implemented,
+sales/get_invoice_list_bydate.php,sales,active,Invoices by date,/sales,GET /sales/invoices?from&to,sales-flows.e2e,implemented,
+sales/get_item_history.php,sales,active,Item history feed,/inventory/movements,GET /inventory/movements,stock-operations.e2e,implemented,
+sales/get_item_history_purchase_dates.php,sales,active,Purchase dates,/inventory/movements,GET /inventory/movements (receipt layers),stock-operations.e2e,implemented-changed,AVCO layers carry receipt cost evidence
+sales/get_orders.php,sales,active,Orders feed,/sales-orders,GET /sales-orders,sales-flows.e2e,implemented,
+sales/get_orders_list.php,sales,active,Orders list feed,/sales-orders,GET /sales-orders,sales-flows.e2e,implemented,(loader was commented out in legacy)
+sales/get_orders_list_bydate.php,sales,active,Orders by date,/sales-orders,GET /sales-orders?from&to,sales-flows.e2e,implemented,
+sales/get_payables_order_so_codes.php,sales,active,Payables SO code lookup,—,allocation references,sales-flows.e2e,implemented-changed,
+sales/get_payment_with_goods_order.php,sales,active,PWG order lookup,—,credit applications carry order references,sales-flows.e2e,implemented-changed,
+sales/get_price_item_list.php,sales,active,Price item feed,—,GET /price-lists,—,partial,See pricing.php
+sales/get_price_list.php,sales,active,Price list feed,—,GET /price-lists,—,partial,See pricing.php
+sales/get_receipt_list.php,sales,active,Receipt list feed,/payments,GET /payments,sales-flows.e2e,implemented,
+sales/get_unpicked_order.php,sales,active,Unpicked orders,/sales-orders (fulfillment),"GET /fulfillments, POST /fulfillments/:id/dispatch|deliver",sales-flows.e2e,implemented,Fulfillment documents track the physical handover
+sales/includes_bottom.php,sales,active,Theme shell/fragment,web app shell (layout),—,—,implemented-changed,Replaced by the Next.js app shell
+sales/includes_top.php,sales,active,Theme shell/fragment,web app shell (layout),—,—,implemented-changed,Replaced by the Next.js app shell
+sales/invoice_print.php,sales,active,Invoice print,/sales (print view),GET /sales/invoices/:id,sales-flows.e2e,implemented,
+sales/item_history.php,sales,active,Item history,/inventory/movements,GET /inventory/movements?productId,stock-operations.e2e,implemented,
+sales/modal.php,sales,active,Theme shell/fragment,web app shell (layout),—,—,implemented-changed,Replaced by the Next.js app shell
+sales/modern-add-item.php,sales,dead,Modern skin,—,—,—,dropped-dead,
+sales/modern-edit-item.php,sales,dead,Modern skin,—,—,—,dropped-dead,
+sales/payment_with_goods.php,sales,active,Payment with goods (credit),/payments (credit tender),POST /credits/apply,sales-flows.e2e,implemented-changed,
+sales/payment_with_goods_loan.php,sales,dead,Loan variant,—,—,—,dropped-dead,
+sales/payments.php,sales,active,Payments,/payments,POST /payments (typed tenders + explicit allocations),sales-flows.e2e,implemented,
+sales/payments_select.php,sales,active,Payment invoice selection,/payments,allocation rows in POST /payments,sales-flows.e2e,implemented,
+sales/preview_order.php,sales,active-broken,Order preview,/sales-orders (review),GET /sales-orders/:id,sales-flows.e2e,implemented-changed,Legacy update path missing; fixed
+sales/pricing.php,sales,active,Price list management,— (web UI pending),"POST /price-lists, POST /price-lists/:id/items, GET /pricing/resolve",—,partial,API implemented (effective-dated lists + resolve + price authority); management page pending
+sales/printer_selection.php,sales,active,Printer selection,browser print dialog,—,—,implemented-changed,Web print via browser; ESC/POS adapters are Phase 6 hardware work
+sales/proforma_invoice_print.php,sales,active,Proforma A4 print,—,—,—,pending,GAP: quotation print layout pending (template gallery)
+sales/receipt-pos-bkup.php,sales,dead,Backup,—,—,—,dropped-dead,
+sales/receipt.php,sales,active,Receipt print (A4),/print/receipt/[id],GET /sales/invoices/:id/receipt,sales-flows.e2e,implemented,
+sales/receipt_modal.php,sales,active,Receipt modal,/print/receipt/[id],GET /sales/invoices/:id/receipt,sales-flows.e2e,implemented,
+sales/receipt_pos.php,sales,active,Receipt print (thermal),/print/receipt/[id],GET /sales/invoices/:id/receipt,sales-flows.e2e,implemented,
+sales/refund_sales_order.php,sales,active-broken,Refund sales order,"/returns, /returns/new","POST /returns (+ approval, credit notes, refunds, store credit, exchanges)",returns-flows,implemented-changed,"Legacy was destructive in-place amendment (broken vs own schema, hardcoded SO code); replaced by the full append-only returns engine — Phase 5"
+sales/sales_order_list.php,sales,active,Sales order list,/sales-orders,GET /sales-orders,sales-flows.e2e,implemented,
+sales/view_deposits.php,sales,dead,Dead deposits view,—,—,—,dropped-dead,See /deposits
+sales/view_invoices.php,sales,active,Invoice list,/sales,GET /sales/invoices,sales-flows.e2e,implemented,
+sales/view_items.php,sales,active,Item list,/catalog,GET /products,vertical-slice.e2e,implemented,
+sales/view_items_category.php,sales,active,Category list,/categories,GET /categories,vertical-slice.e2e,implemented,
+sales/view_items_main_category.php,sales,active,Main category list,/categories,GET /categories,vertical-slice.e2e,implemented,
+sales/view_payments.php,sales,active,Payments list,/payments,GET /payments,sales-flows.e2e,implemented,
+sales/view_receipts.php,sales,active,Receipts list,/payments + /print/receipt/[id],GET /payments,sales-flows.e2e,implemented,
+search_result.php,root,active,Global search,per-page search only,"GET /products?query, GET /customers (per-entity)",—,partial,GAP: no cross-entity global search; per-page filters exist
+sms_settings.php,root,active,SMS settings,—,—,—,pending,GAP: settings versioning exists but rejects credential-shaped keys by design; SMS send integration not implemented (demand unvalidated)
+suppliers_list.php,root,active,Root duplicate,—,—,—,duplicate,See purchases/suppliers_list.php
+system_settings.php,root,active,System settings,/admin/settings,GET/POST /reports/settings (versioned tenant settings),returns-flows (settings guard tests),implemented,Versioned effective-dated settings; credential-shaped keys rejected
+view_accounts_payable.php,root,active,Root duplicate,—,—,—,duplicate,See purchases/view_accounts_payable.php
+view_journals.php,root,active,Journals popup,/accounting/journals,GET /accounting/journals,accounting-statements,implemented,
