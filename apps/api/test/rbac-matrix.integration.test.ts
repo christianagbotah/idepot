@@ -110,6 +110,17 @@ const MATRIX: MatrixCase[] = [
   { role: 'manager', method: 'post', path: 'banking/accounts', body: {}, expect: 400 },
   { role: 'accountant', method: 'post', path: 'banking/accounts', body: {}, expect: 400 },
   { role: 'auditor', method: 'post', path: 'banking/accounts', body: {}, expect: 403 },
+  // users:manage (Phase 5 user/staff administration — owner/admin ONLY)
+  { role: 'owner', method: 'get', path: 'admin/users', expect: 200 },
+  { role: 'admin', method: 'get', path: 'admin/users', expect: 200 },
+  { role: 'manager', method: 'get', path: 'admin/users', expect: 403 },
+  { role: 'accountant', method: 'get', path: 'admin/users', expect: 403 },
+  { role: 'cashier', method: 'get', path: 'admin/users', expect: 403 },
+  { role: 'auditor', method: 'get', path: 'admin/users', expect: 403 },
+  { role: 'procurement', method: 'get', path: 'admin/users', expect: 403 },
+  { role: 'owner', method: 'post', path: 'admin/users', body: {}, expect: 400 },
+  { role: 'admin', method: 'post', path: 'admin/users', body: {}, expect: 400 },
+  { role: 'manager', method: 'post', path: 'admin/users', body: {}, expect: 403 },
 ];
 
 describe('RBAC authorization matrix', () => {

@@ -76,6 +76,8 @@ import { OperationalReportsService } from './reporting/operational-reports.servi
 import { KpiService } from './reporting/kpi.service.js';
 import { LoyaltyController } from './admin/loyalty.controller.js';
 import { AdminService } from './admin/admin.service.js';
+import { UsersAdminController } from './admin/users.controller.js';
+import { UsersService } from './admin/users.service.js';
 
 @Module({
   imports: [DbModule],
@@ -119,6 +121,7 @@ import { AdminService } from './admin/admin.service.js';
     ReturnsController,
     ReportsController,
     LoyaltyController,
+    UsersAdminController,
   ],
   providers: [
     AuthService,
@@ -180,6 +183,7 @@ import { AdminService } from './admin/admin.service.js';
     OperationalReportsService,
     KpiService,
     AdminService,
+    UsersService,
     // global guard chain: authentication -> authorization
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RbacGuard },

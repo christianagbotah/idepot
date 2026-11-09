@@ -2310,3 +2310,56 @@ export const EnrollLoyaltySchema = z.object({
   consentNote: z.string().min(3).max(500),
 });
 export type EnrollLoyalty = z.infer<typeof EnrollLoyaltySchema>;
+
+/* --------------------- user & profile administration (Phase 5 §16) -------- */
+
+/** Role catalog mirrored from @idepot/auth ROLES (contracts stays zod-only). */
+const USER_ROLE = z.enum(['owner', 'admin', 'manager', 'cashier', 'auditor', 'accountant', 'procurement']);
+
+export const CreateUserSchema = z.object({
+  email: z.string().email().max(200),
+  displayName: z.string().min(1).max(200),
+  password: z.string().min(8).max(200),
+  roles: z.array(USER_ROLE).min(1).max(7),
+});
+export type CreateUser = z.infer<typeof CreateUserSchema>;
+
+export const UpdateUserSchema = z
+  .object({
+    displayName: z.string().min(1).max(200).optional(),
+    roles: z.array(USER_ROLE).min(1).max(7).optional(),
+    status: z.enum(['active', 'disabled']).optional(),
+  })
+  .refine((o) => o.displayName !== undefined || o.roles !== undefined || o.status !== undefined, {
+    message: 'at least one of displayName, roles or status is required',
+  });
+export type UpdateUser = z.infer<typeof UpdateUserSchema>;
+
+export const ResetUserPasswordSchema = z.object({
+  password: z.string().min(8).max(200),
+});
+export type ResetUserPassword = z.infer<typeof ResetUserPasswordSchema>;
+
+export interface UserDto {
+  id: string;
+  email: string;
+  displayName: string;
+  roles: string[];
+  status: string;
+  createdAt: string;
+}
+
+export const ChangeOwnPasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1).max(200),
+    newPassword: z.string().min(8).max(200),
+  })
+  .refine((o) => o.newPassword !== o.currentPassword, {
+    message: 'the new password must differ from the current one',
+  });
+export type ChangeOwnPassword = z.infer<typeof ChangeOwnPasswordSchema>;
+
+export const UpdateOwnProfileSchema = z.object({
+  displayName: z.string().min(1).max(200),
+});
+export type UpdateOwnProfile = z.infer<typeof UpdateOwnProfileSchema>;

@@ -68,6 +68,7 @@ export const PERMISSIONS = [
   'kpi:manage',       // KPI snapshot rebuilds + target administration
   'settings:manage',  // tenant settings administration (versioned config)
   'loyalty:manage',   // optional loyalty foundation administration (inactive by default)
+  'users:manage',     // tenant user/staff administration: create, edit roles, disable (owner/admin only)
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];

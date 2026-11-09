@@ -72,6 +72,16 @@ const NAV: Array<{ group: string; links: NavLink[]; roles?: string[] }> = [
     ],
   },
   {
+    group: 'Administration · Users',
+    // nav visibility only — the server enforces users:manage (owner/admin)
+    roles: ['owner', 'admin'],
+    links: [{ href: '/admin/users', label: 'Users & Roles' }],
+  },
+  {
+    group: 'Account',
+    links: [{ href: '/profile', label: 'My Profile' }],
+  },
+  {
     group: 'Purchasing',
     // nav visibility only — the server enforces the real permissions
     roles: ['owner', 'admin', 'manager', 'accountant', 'procurement', 'auditor'],
