@@ -107,14 +107,14 @@ data). Tick ☐→☑ with a screenshot or export per scenario. RBAC columns:
 | 9.3 | RBAC matrix | Cashier tries approve-return, journal, settings | 403s with codes (automated: rbac-matrix) | C/M/A |
 | 9.4 | Cross-tenant isolation | Tenant A token hits tenant B data | Impossible (RLS fail-closed) (automated) | — |
 | 9.5 | User management | **PENDING** — see gap register | Blocker documented in issue #9 | Ad |
-| 9.6 | Own profile / password change | **PENDING** — see gap register | Blocker documented in issue #9 | all |
+| 9.6 | Own profile / password change | /profile: display name + password change | Change works with current password; reuse rejected; audited | all |
 
 ## 10. Exit criteria
 
 - [ ] All scenarios above ☑ or explicitly waived by the owner with reason.
 - [ ] Open gaps 1–8 (business-rule-parity.md §7) either fixed or scheduled
       with owner sign-off (tracked in issue #9).
-- [ ] Operational-report endpoint tests merged (gap 7) or waiver recorded.
+- [x] Operational-report endpoint tests merged (gap 7 RESOLVED 2026-11-09: reports-endpoints.integration.test.ts, 10 tests, 3 defects found+fixed).
 - [ ] No placeholder/`TODO` text in any delivered screen.
 - [ ] Staging smoke (issue #10) green: HTTPS login + one full
       POS→invoice→payment + GRN→AP→settle + return cycle on synthetic data.

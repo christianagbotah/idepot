@@ -47,7 +47,7 @@ export class OperationalReportsService {
   async dailySales(tenantId: string, q: ReportQuery): Promise<DailySalesRowDto[]> {
     return this.uow.run({ tenantId }, async (ctx) => {
       const rows = await ctx.query(
-        `SELECT i.business_date,
+        `SELECT to_char(i.business_date, 'YYYY-MM-DD') AS business_date,
                 COUNT(*)::int AS sales_count,
                 SUM(i.subtotal - i.order_discount - i.tax_inclusive_total)::text AS net_sales,
                 SUM(i.tax_total)::text AS tax_total,
@@ -64,7 +64,7 @@ export class OperationalReportsService {
       // returns/refunds count on THEIR OWN business dates (a later
       // refund never changes an earlier day's reported sales)
       const returnsRows = await ctx.query(
-        `SELECT cn.business_date,
+        `SELECT to_char(cn.business_date, 'YYYY-MM-DD') AS business_date,
                 SUM(cn.net_revenue_reversal)::text AS returns_revenue,
                 SUM(cn.cogs_reversal)::text AS returns_cogs,
                 SUM(cn.total)::text AS returns_total
@@ -74,7 +74,7 @@ export class OperationalReportsService {
         [ctx.tenantId, q.from, q.to],
       );
       const refundRows = await ctx.query(
-        `SELECT r.business_date, SUM(r.amount)::text AS refunds_total
+        `SELECT to_char(r.business_date, 'YYYY-MM-DD') AS business_date, SUM(r.amount)::text AS refunds_total
            FROM refund r
           WHERE r.tenant_id = $1 AND r.business_date BETWEEN $2 AND $3
             AND r.status IN ('posted','settled')
@@ -82,7 +82,7 @@ export class OperationalReportsService {
         [ctx.tenantId, q.from, q.to],
       );
       const tenderRows = await ctx.query(
-        `SELECT p.business_date,
+        `SELECT to_char(p.business_date, 'YYYY-MM-DD') AS business_date,
                 SUM(CASE WHEN pt.method != 'credit' THEN pt.amount ELSE 0 END)::text AS money_in
            FROM payment p JOIN payment_tender pt ON pt.payment_id = p.id
           WHERE p.tenant_id = $1 AND p.source = 'sale' AND p.business_date BETWEEN $2 AND $3
@@ -90,7 +90,7 @@ export class OperationalReportsService {
         [ctx.tenantId, q.from, q.to],
       );
       const arRows = await ctx.query(
-        `SELECT i.business_date,
+        `SELECT to_char(i.business_date, 'YYYY-MM-DD') AS business_date,
                 SUM(i.total
                     - COALESCE((SELECT SUM(x.amount) FROM payment_allocation x WHERE x.invoice_id = i.id), 0)
                     - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca WHERE ca.invoice_id = i.id), 0))::text AS ar_taken
@@ -130,7 +130,7 @@ export class OperationalReportsService {
           grossProfit: formatMoney(netRevenue - netCogs),
           cashSales: formatMoney(tenders.get(date) ?? 0n),
           creditSales: formatMoney(ar > 0n ? ar : 0n),
-          returnsTotal: money(ret.total),
+          returnsTotal: formatMoney(ret.total),
           refundsTotal: formatMoney(refunds.get(date) ?? 0n),
           netRevenue: formatMoney(netRevenue),
         };
@@ -322,6 +322,12 @@ export class OperationalReportsService {
                     WHEN sm.quantity_base > 0 THEN 'positive_adjustments'
                     ELSE 'negative_adjustments'
                   END AS bucket,
+                  -- stock_movement.quantity_base is SIGNED (issues/transfers-out
+                  -- are negative): outs render as POSITIVE magnitudes below.
+                  CASE WHEN sm.movement_type IN ('issue','transfer_out') OR
+                            (sm.movement_type NOT IN ('receipt','transfer_in','issue','transfer_out')
+                             AND sm.quantity_base < 0)
+                    THEN -sm.quantity_base ELSE sm.quantity_base END AS qty,
                   sm.quantity_base
              FROM stock_movement sm
             WHERE sm.tenant_id = $1
@@ -331,30 +337,22 @@ export class OperationalReportsService {
          )
          SELECT c.warehouse_id, c.product_id,
                 w.code AS warehouse_code, p.code AS product_code, p.name AS product_name,
-                COALESCE(SUM(CASE WHEN c.business_date < $3 THEN
-                  CASE c.bucket WHEN 'receipts' THEN c.quantity_base WHEN 'transfers_in' THEN c.quantity_base
-                    WHEN 'returns_restocked' THEN c.quantity_base WHEN 'positive_adjustments' THEN c.quantity_base
-                    WHEN 'sales_issues' THEN -c.quantity_base WHEN 'transfers_out' THEN -c.quantity_base
-                    ELSE -c.quantity_base END
-                ELSE 0 END), 0)::text AS opening,
-                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'receipts' THEN c.quantity_base ELSE 0 END), 0)::text AS receipts,
-                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'transfers_in' THEN c.quantity_base ELSE 0 END), 0)::text AS transfers_in,
-                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'returns_restocked' THEN c.quantity_base ELSE 0 END), 0)::text AS returns_restocked,
-                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'positive_adjustments' THEN c.quantity_base ELSE 0 END), 0)::text AS positive_adjustments,
-                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'sales_issues' THEN c.quantity_base ELSE 0 END), 0)::text AS sales_issues,
-                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'transfers_out' THEN c.quantity_base ELSE 0 END), 0)::text AS transfers_out,
-                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'negative_adjustments' THEN c.quantity_base ELSE 0 END), 0)::text AS negative_adjustments
+                -- opening = signed sum of ALL movements before the from date
+                -- (the ledger balance — no bucket sign gymnastics needed)
+                COALESCE(SUM(CASE WHEN c.business_date < $3 THEN c.quantity_base ELSE 0 END), 0)::text AS opening,
+                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'receipts' THEN c.qty ELSE 0 END), 0)::text AS receipts,
+                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'transfers_in' THEN c.qty ELSE 0 END), 0)::text AS transfers_in,
+                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'returns_restocked' THEN c.qty ELSE 0 END), 0)::text AS returns_restocked,
+                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'positive_adjustments' THEN c.qty ELSE 0 END), 0)::text AS positive_adjustments,
+                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'sales_issues' THEN c.qty ELSE 0 END), 0)::text AS sales_issues,
+                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'transfers_out' THEN c.qty ELSE 0 END), 0)::text AS transfers_out,
+                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'negative_adjustments' THEN c.qty ELSE 0 END), 0)::text AS negative_adjustments
            FROM classified c
            LEFT JOIN warehouse w ON w.id = c.warehouse_id
            LEFT JOIN product p ON p.id = c.product_id
           GROUP BY c.warehouse_id, c.product_id, w.code, p.code, p.name
-          HAVING SUM(CASE WHEN c.business_date >= $3 THEN c.quantity_base ELSE 0 END) <> 0
-             OR COALESCE(SUM(CASE WHEN c.business_date < $3 THEN
-                  CASE c.bucket WHEN 'receipts' THEN c.quantity_base WHEN 'transfers_in' THEN c.quantity_base
-                    WHEN 'returns_restocked' THEN c.quantity_base WHEN 'positive_adjustments' THEN c.quantity_base
-                    WHEN 'sales_issues' THEN -c.quantity_base WHEN 'transfers_out' THEN -c.quantity_base
-                    ELSE -c.quantity_base END
-                ELSE 0 END), 0) <> 0
+          HAVING COUNT(*) FILTER (WHERE c.business_date >= $3) > 0
+             OR COALESCE(SUM(CASE WHEN c.business_date < $3 THEN c.quantity_base ELSE 0 END), 0) <> 0
           ORDER BY p.code, w.code
           LIMIT $5`,
         [ctx.tenantId, q.warehouseId ?? null, q.from, q.productId ?? null, q.limit ?? 500],
@@ -506,20 +504,45 @@ export class OperationalReportsService {
 
   async returnsByReason(tenantId: string, q: ReportQuery): Promise<ReturnsReportRowDto[]> {
     return this.uow.run({ tenantId }, async (ctx) => {
+      // Refunds/store credits are pre-aggregated per reason in CTEs: the
+      // previous form referenced ungrouped rr.id columns from scalar
+      // subqueries in the SELECT list, which PostgreSQL rejects outright
+      // (HTTP 500 on any tenant with processed returns).
       const rows = await ctx.query(
-        `SELECT rr.code AS reason_code,
-                COUNT(DISTINCT ro.id)::int AS returns_count,
-                COALESCE(SUM((SELECT SUM(quantity_base) FROM return_order_line WHERE return_order_id = ro.id)), 0)::text AS quantity_returned,
-                COALESCE(SUM(ro.gross_credit), 0)::text AS gross_credit,
-                COALESCE((SELECT SUM(r.amount) FROM refund r WHERE r.return_order_id IN (SELECT id FROM return_order WHERE reason_id = rr.id)
-                    AND r.status IN ('posted','settled') AND r.business_date BETWEEN $2 AND $3), 0)::text AS refunded,
-                COALESCE((SELECT SUM(sc.amount) FROM store_credit sc WHERE sc.credit_note_id IN
-                    (SELECT credit_note_id FROM return_order WHERE reason_id = rr.id)), 0)::text AS store_credit_issued
-           FROM return_order ro
-           LEFT JOIN return_reason rr ON rr.id = ro.reason_id
-          WHERE ro.tenant_id = $1 AND ro.business_date BETWEEN $2 AND $3
-            AND ro.status IN ('processed','completed')
-          GROUP BY rr.code ORDER BY gross_credit DESC`,
+        `WITH ro_agg AS (
+           SELECT ro.reason_id,
+                  COUNT(*)::int AS returns_count,
+                  COALESCE(SUM((SELECT SUM(quantity_base) FROM return_order_line WHERE return_order_id = ro.id)), 0)::text AS quantity_returned,
+                  COALESCE(SUM(ro.gross_credit), 0)::text AS gross_credit
+             FROM return_order ro
+            WHERE ro.tenant_id = $1 AND ro.business_date BETWEEN $2 AND $3
+              AND ro.status IN ('processed','completed')
+            GROUP BY ro.reason_id
+         ),
+         refund_agg AS (
+           SELECT ro.reason_id, COALESCE(SUM(r.amount), 0)::text AS refunded
+             FROM refund r JOIN return_order ro ON ro.id = r.return_order_id
+            WHERE r.tenant_id = $1 AND r.status IN ('posted','settled')
+              AND r.business_date BETWEEN $2 AND $3
+            GROUP BY ro.reason_id
+         ),
+         sc_agg AS (
+           SELECT ro.reason_id, COALESCE(SUM(sc.amount), 0)::text AS store_credit_issued
+             FROM store_credit sc JOIN return_order ro ON ro.credit_note_id = sc.credit_note_id
+            WHERE sc.tenant_id = $1
+            GROUP BY ro.reason_id
+         )
+         SELECT rr.code AS reason_code,
+                a.returns_count,
+                a.quantity_returned,
+                a.gross_credit,
+                COALESCE(f.refunded, '0') AS refunded,
+                COALESCE(s.store_credit_issued, '0') AS store_credit_issued
+           FROM ro_agg a
+           LEFT JOIN refund_agg f ON f.reason_id = a.reason_id
+           LEFT JOIN sc_agg s ON s.reason_id = a.reason_id
+           LEFT JOIN return_reason rr ON rr.id = a.reason_id
+          ORDER BY a.gross_credit DESC`,
         [ctx.tenantId, q.from, q.to],
       );
       return rows.rows.map((r: Record<string, unknown>) => ({
@@ -616,25 +639,25 @@ export class OperationalReportsService {
       }
       const rows = await ctx.query(
         `SELECT business_date, document_type, document_code, description, debit, credit FROM (
-           SELECT i.business_date, 'invoice' AS document_type, i.code AS document_code,
+           SELECT to_char(i.business_date, 'YYYY-MM-DD') AS business_date, 'invoice' AS document_type, i.code AS document_code,
                   COALESCE(c.code, 'walk-in') || ' sale' AS description,
                   i.total::text AS debit, '0' AS credit
              FROM invoice i LEFT JOIN customer c ON c.id = i.customer_id
             WHERE i.customer_id = $1 AND i.status = 'posted' AND i.business_date <= $2
            UNION ALL
-           SELECT p.business_date, 'payment', p.code, 'payment received', '0', pa.amount::text
+           SELECT to_char(p.business_date, 'YYYY-MM-DD'), 'payment', p.code, 'payment received', '0', pa.amount::text
              FROM payment_allocation pa JOIN payment p ON p.id = pa.payment_id
             WHERE pa.invoice_id IN (SELECT id FROM invoice WHERE customer_id = $1) AND p.business_date <= $2
            UNION ALL
-           SELECT ca.created_at::date, 'credit_application', d.code, 'deposit credit applied', '0', ca.amount::text
+           SELECT to_char(ca.created_at::date, 'YYYY-MM-DD'), 'credit_application', d.code, 'deposit credit applied', '0', ca.amount::text
              FROM credit_application ca JOIN customer_deposit d ON d.id = ca.deposit_id
             WHERE ca.invoice_id IN (SELECT id FROM invoice WHERE customer_id = $1) AND ca.created_at::date <= $2
            UNION ALL
-           SELECT cn.business_date, 'credit_note', cn.code, 'return credit note', '0', cn.ar_amount::text
+           SELECT to_char(cn.business_date, 'YYYY-MM-DD'), 'credit_note', cn.code, 'return credit note', '0', cn.ar_amount::text
              FROM credit_note cn
             WHERE cn.customer_id = $1 AND cn.business_date <= $2
            UNION ALL
-           SELECT scr.business_date, 'store_credit_redemption', sc.code, 'store credit redeemed', '0', scr.amount::text
+           SELECT to_char(scr.business_date, 'YYYY-MM-DD'), 'store_credit_redemption', sc.code, 'store credit redeemed', '0', scr.amount::text
              FROM store_credit_redemption scr JOIN store_credit sc ON sc.id = scr.store_credit_id
             WHERE sc.customer_id = $1 AND scr.business_date <= $2
           ) ledger

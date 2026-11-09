@@ -81,12 +81,16 @@ verdicts).
 Functional gaps verified against the current code on 2026-11-09 — each maps
 to matrix rows with `pending`/`partial`:
 
-1. **User/staff management** (`admin_list.php`, `modal_admin_add/edit.php`):
-   no user-management controller or web page exists (only `/auth/login`,
-   `/auth/refresh`, `/auth/devices`, `/auth/me`). RBAC catalog and matrix
-   tests exist; CRUD does not.
-2. **Own-profile management** (`manage_profile.php`): `/auth/me` is read-only;
-   no password-change endpoint or page.
+1. ~~**User/staff management** (`admin_list.php`, `modal_admin_add/edit.php`)~~
+   **RESOLVED 2026-11-09 (Phase 5 branch):** `users:manage` permission
+   (owner/admin only), `GET/POST /admin/users`, `PATCH /admin/users/:id`,
+   `POST /admin/users/:id/reset-password` + `/admin/users` page; Argon2id;
+   audited before/after role evidence; self-lockout + last-active-admin
+   guards; 15-test integration suite + RBAC-matrix rows for all 7 roles.
+2. ~~**Own-profile management** (`manage_profile.php`)~~
+   **RESOLVED 2026-11-09 (Phase 5 branch):** `/profile` page with
+   `POST /auth/profile` (display name) and `POST /auth/change-password`
+   (current password required, reuse rejected, audited).
 3. **Global search** (`search_result.php`): per-page search only; no
    cross-entity search endpoint.
 4. **SMS settings/integration** (`sms_settings.php`): settings versioning
@@ -98,13 +102,19 @@ to matrix rows with `pending`/`partial`:
 6. **Price-list management web UI** (`pricing.php` family): price-lists API
    (create/close/resolve, effective-dated) implemented; management page
    pending.
-7. **Operational reports integration tests**: all 12 report endpoints
-   (`daily-sales`, `daily-stock`, `backlog`, `item-margin`, `tender-totals`,
-   `returns-by-reason`, `shift-variance`, `stock-valuation`,
-   `customer-statement`, `ar-aging`, `ap-aging`, `sales-by-*`) are
-   implemented and web-visible but have **zero direct API test coverage**
-   (verified by search on 2026-11-09). Financial statements are tested
-   (accounting-statements, financial-corrections).
+7. ~~**Operational reports integration tests**~~
+   **RESOLVED 2026-11-09 (Phase 5 branch):** the new 10-test
+   `reports-endpoints.integration.test.ts` covers every operational report
+   endpoint with exact money/quantity assertions — and the first direct
+   coverage immediately exposed and fixed THREE real defects:
+   `daily-sales` emitted JS-Date garbage as `businessDate` ("Mon Nov 09" —
+   wrong ISO contract, colliding across years) and returned `returnsTotal`
+   scaled ×10⁴; `daily-stock` double-negated SIGNED outflow quantities
+   (salesIssues showed −4 and the derived closing was wrong whenever sales
+   existed); `returns-by-reason` 500'd on ANY tenant with processed returns
+   (PostgreSQL: subquery uses ungrouped column "rr.id" from outer query).
+   Financial statements remain covered by accounting-statements /
+   financial-corrections.
 8. **Legacy landing dashboard** (`dashboard.php`): login lands on `/catalog`;
    KPI dashboard at `/kpi` covers analytics. A legacy-style home screen does
    not exist (intentional change — confirm with owner in UAT).

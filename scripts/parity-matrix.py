@@ -303,9 +303,9 @@ for f, cap in [("add_order_row.php", "AJAX order-row adder"),
         "Legacy client-side row math (R14 duplication) replaced by server-authoritative line.net (half-even, once)")
 add("root_placeholder", "skip", "skip", "", "", "", "", "")  # removed below
 del R["root_placeholder"]
-add("admin_list.php", "active", "pending", "— (user management UI pending)",
-    "— (no user-management controller yet)", "rbac-matrix (permission model only)",
-    "User/staff management list", "GAP: user CRUD + role assignment API and page not yet implemented; RBAC catalog exists and is matrix-tested")
+add("admin_list.php", "active", "implemented", "/admin/users",
+    "GET/POST /admin/users, PATCH /admin/users/:id, POST /admin/users/:id/reset-password", "users-admin + rbac-matrix",
+    "User/staff management list", "users:manage (owner/admin only); Argon2id; audited before/after role evidence; self-lockout + last-active-admin guards")
 add("attendance_list.php", "active", "implemented-changed", "/shifts",
     "GET /shifts, POST /shifts/:id/close, review-variance", "sales-flows.e2e",
     "Staff attendance", "Clock in/out → cashier shifts with derived expected cash + supervisor variance review")
@@ -320,11 +320,15 @@ add("dashboard.php", "active", "implemented-changed", "/kpi (KPI dashboard); log
     "GET /reports/kpi/*", "—", "Home dashboard",
     "Legacy dashboard aggregates → KPI dashboard (13 metrics, snapshots, targets); no legacy-style landing page — register in UAT")
 add("enter_payable.php", "active", "duplicate", "—", "—", "—", "Root duplicate of purchases/enter_payable", "See purchases/enter_payable.php row")
-add("manage_profile.php", "active", "pending", "— (profile page pending)",
-    "GET /auth/me (read-only)", "—", "Own profile management",
-    "GAP: password change + profile edit not implemented (auth/me is read-only)")
-add("modal_admin_add.php", "active", "pending", "— (pending)", "—", "—", "Add user modal", "GAP: see admin_list.php")
-add("modal_admin_edit.php", "active", "pending", "— (pending)", "—", "—", "Edit user modal", "GAP: see admin_list.php")
+add("manage_profile.php", "active", "implemented", "/profile",
+    "POST /auth/profile, POST /auth/change-password", "users-admin",
+    "Own profile management", "Display name + password change (current password required, reuse rejected); audited")
+add("modal_admin_add.php", "active", "implemented", "/admin/users (Add user form)",
+    "POST /admin/users", "users-admin", "Add user modal",
+    "Inline create form replaces the modal; owner role is bootstrap-only and cannot be granted")
+add("modal_admin_edit.php", "active", "implemented", "/admin/users (Edit form)",
+    "PATCH /admin/users/:id", "users-admin", "Edit user modal",
+    "Inline edit form replaces the modal; roles/status/display name with audit evidence")
 add("modal_forgot_to_clockout.php", "dead", "dropped-dead", "—", "—", "—", "Posts to dead endpoint", "")
 add("modal_goodbye.php", "active", "implemented-changed", "auth flows (login page)",
     "POST /auth/login, /auth/refresh", "rbac-matrix", "Logout/goodbye modal", "Token pair + device registry")
