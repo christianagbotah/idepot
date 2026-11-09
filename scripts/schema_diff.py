@@ -28,6 +28,11 @@ def norm_type(base, args):
         return base
     if base in ("varchar", "char", "varbinary"):
         return f"{base}({args.split(',')[0].strip()})" if args else base
+    # Precision/scale and enumerated members affect migration correctness.
+    # Ignoring these could falsely report zero drift for DECIMAL(15,2)
+    # vs DECIMAL(15,4), or a changed status enum.
+    if base in ("decimal", "numeric", "enum", "set", "bit"):
+        return f"{base}({args})" if args else base
     return base
 
 
@@ -67,6 +72,36 @@ def parse_cols(body):
     return cols
 
 
+def parse_index_lines(block, *, alter):
+    """Capture full named index definitions, including composite columns,
+    prefix lengths, spaces in quoted names and UNIQUE vs ordinary indexes."""
+    indexes = {}
+    for line in block.splitlines():
+        line = line.strip().rstrip(",;")
+        prefix = "ADD " if alter else ""
+        match = re.match(rf"^{prefix}(UNIQUE )?KEY `([^`]+)`\s*\(", line)
+        if not match:
+            continue
+        start = match.end() - 1
+        depth = 0
+        end = None
+        for j in range(start, len(line)):
+            if line[j] == "(":
+                depth += 1
+            elif line[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    end = j
+                    break
+        if end is None:
+            raise ValueError(f"Unbalanced index clause: {line}")
+        indexes[match.group(2)] = {
+            "unique": bool(match.group(1)),
+            "columns": re.sub(r"\s+", "", line[start + 1 : end].replace("`", "")),
+        }
+    return indexes
+
+
 def parse_sql(path):
     text = path.read_text()
     tables = {}
@@ -76,16 +111,14 @@ def parse_sql(path):
         # inline keys (old schema style)
         for km in re.finditer(r"^\s*PRIMARY KEY \(([^)]+)\)", body, re.M):
             t["pk"] = tuple(c.strip("` ") for c in km.group(1).split(","))
-        for km in re.finditer(r"^\s*(?:UNIQUE )?KEY `(\w+)` \(([^)]+)\)", body, re.M):
-            t["indexes"][km.group(1)] = km.group(2).replace("`", "").replace(" ", "")
+        t["indexes"].update(parse_index_lines(body, alter=False))
         tables[name] = t
     for m in ALTER_RE.finditer(text):
         name, block = m.group(1), m.group(2)
         t = tables.setdefault(name, {"columns": {}, "pk": None, "indexes": {}, "auto_inc_col": None})
         for pm in re.finditer(r"ADD PRIMARY KEY \(([^)]+)\)", block):
             t["pk"] = tuple(c.strip("` ") for c in pm.group(1).split(","))
-        for pm in re.finditer(r"ADD (?:UNIQUE )?KEY `(\w+)` \(([^)]+)\)", block):
-            t["indexes"][pm.group(1)] = pm.group(2).replace("`", "").replace(" ", "")
+        t["indexes"].update(parse_index_lines(block, alter=True))
         for pm in re.finditer(r"MODIFY `(\w+)` .*AUTO_INCREMENT", block):
             t["auto_inc_col"] = pm.group(1)
     # inline AUTO_INCREMENT in old-style CREATE (col rest contains AUTO_INCREMENT)
@@ -131,10 +164,12 @@ def main():
                            for k in sorted(set(o["indexes"]) & set(n["indexes"]))
                            if o["indexes"][k] != n["indexes"][k]}
         pk_changed = (o["pk"] != n["pk"]) and (o["pk"] is not None or n["pk"] is not None)
+        auto_inc_changed = o["auto_inc_col"] != n["auto_inc_col"]
         tdrift = {"columns_added": added, "columns_removed": removed,
                   "columns_changed": changed, "indexes_added": idx_added,
                   "indexes_removed": idx_removed, "indexes_def_changed": idx_def_changed,
-                  "pk_changed": {"old": list(o["pk"] or ()), "new": list(n["pk"] or ())} if pk_changed else None}
+                  "pk_changed": {"old": list(o["pk"] or ()), "new": list(n["pk"] or ())} if pk_changed else None,
+                  "auto_increment_changed": {"old": o["auto_inc_col"], "new": n["auto_inc_col"]} if auto_inc_changed else None}
         drift["tables"][tname] = tdrift
         n_col_changes += len(added) + len(removed) + len(changed)
         n_idx_changes += len(idx_added) + len(idx_removed) + len(idx_def_changed)
@@ -145,7 +180,8 @@ def main():
     print(f"only in new: {only_new}")
     ident = [t for t, d in drift['tables'].items()
              if not (d['columns_added'] or d['columns_removed'] or d['columns_changed']
-                     or d['indexes_added'] or d['indexes_removed'] or d['indexes_def_changed'] or d['pk_changed'])]
+                     or d['indexes_added'] or d['indexes_removed'] or d['indexes_def_changed'] or d['pk_changed']
+                     or d['auto_increment_changed'])]
     print(f"structurally identical tables (cols+idx): {len(ident)}/{len(common)}")
     print(f"total column drift events: {n_col_changes}; index drift events: {n_idx_changes}")
     print("\n-- tables WITH drift --")
@@ -165,6 +201,8 @@ def main():
             bits.append(f"~idx {json.dumps(d['indexes_def_changed'])}")
         if d["pk_changed"]:
             bits.append(f"pk {d['pk_changed']}")
+        if d["auto_increment_changed"]:
+            bits.append(f"auto_increment {d['auto_increment_changed']}")
         if bits:
             print(f"  {t}: " + "; ".join(bits))
 
