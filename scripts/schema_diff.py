@@ -10,10 +10,10 @@ import re
 import sys
 from pathlib import Path
 
-REPO = Path("/home/z/my-project/idepot")
+REPO = Path(__file__).resolve().parents[1]
 NEW_SQL = REPO / "legacy/intake/2026-11-06/depot_schema_only_sanitized.sql"
 OLD_SQL = REPO / "legacy/schema/legacy_mysql_schema.sql"
-OUT = Path("/home/z/my-project/scripts/schema_drift.json")
+OUT = REPO / "docs/migration/schema_drift.json"
 
 CREATE_RE = re.compile(r"CREATE TABLE `(\w+)` \((.*?)\)\s*ENGINE", re.S)
 ALTER_RE = re.compile(r"ALTER TABLE `(\w+)`\s*\n((?:\s+(?:ADD|MODIFY)[^\n]*\n)+)", re.S)
