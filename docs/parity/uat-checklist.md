@@ -16,7 +16,7 @@ data). Tick ☐→☑ with a screenshot or export per scenario. RBAC columns:
 | # | Scenario (legacy origin) | Steps | Pass evidence | Role |
 |---|---|---|---|---|
 | 1.1 | Login (`login.php`) | Log in with wrong password → clear error; correct login → app shell | Screenshot both | all |
-| 1.2 | Navigation (`*-nav.php`) | Every primary menu route opens without console errors: /catalog /customers /suppliers /units /categories /warehouses /inventory/* /pos /sales /sales-orders /payments /deposits /shifts /returns/* /purchasing/* /ap /banking/* /accounting/* /reports /kpi /admin/* | Route list with ✓ | Ad |
+| 1.2 | Navigation (`*-nav.php`) | Every primary menu route opens without console errors: /catalog /customers /suppliers /units /categories /warehouses /inventory/* /pos /sales /sales-orders /payments /deposits /shifts /returns/* /purchasing/* /ap /banking/* /accounting/* /reports /kpi /admin/* /profile | Route list with ✓ | Ad |
 | 1.3 | Logout (`modal_logout.php`) | Logout → login page; back button does not re-enter | Screenshot | C |
 | 1.4 | Landing (`dashboard.php`) | Confirm the intentional change: login lands on /catalog; KPI dashboard at /kpi | Owner sign-off on the change | Ad |
 
