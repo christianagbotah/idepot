@@ -61,6 +61,11 @@ export async function transformPhase5Returns(
   ];
   const deadReturnsTablesFound: string[] = [];
   let deadReturnsRows = 0;
+  // per-table counts: legacyStoreCreditsFound must report ONLY the rows
+  // in store_credits (review fix) — a poisoned dump with rows in
+  // sales_returns and zero store credits must NOT leak the sales_returns
+  // count into the store-credit figure
+  const deadReturnsRowsByTable = new Map<string, number>();
   for (const table of deadTables) {
     const exists = await pg.query<{ n: string }>(
       `SELECT COUNT(*)::text AS n FROM information_schema.tables
@@ -73,6 +78,7 @@ export async function transformPhase5Returns(
         `SELECT COUNT(*)::text AS n FROM legacy_raw."${table}"`,
       );
       deadReturnsRows += Number(rows.rows[0]!.n);
+      deadReturnsRowsByTable.set(table, Number(rows.rows[0]!.n));
       if (Number(rows.rows[0]!.n) > 0) {
         // unexpected: the DDL was dead — any rows are suspect evidence,
         // quarantined for manual review, NEVER imported as returns
@@ -178,7 +184,7 @@ export async function transformPhase5Returns(
       ambiguityRecords,
       returnsSynthesized: 0,
       creditBalancesVerified,
-      legacyStoreCreditsFound: deadReturnsTablesFound.includes('store_credits') ? deadReturnsRows : 0,
+      legacyStoreCreditsFound: deadReturnsRowsByTable.get('store_credits') ?? 0,
     },
     records,
   };

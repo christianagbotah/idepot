@@ -79,7 +79,8 @@ export class ReconciliationService {
 
   /** AR: open receivables (posted invoice totals − allocations received by
    *  the as-of date − credit applications posted by the as-of date −
-   *  REVERSAL cancellations effective by the as-of date) vs the normalized
+   *  credit-note AR credits posted by the as-of date − REVERSAL
+   *  cancellations effective by the as-of date) vs the normalized
    *  accounts_receivable control balance.
    *
    *  Reversal-aware and as-of correct (review round 3, blocker 2): the
@@ -89,7 +90,13 @@ export class ReconciliationService {
    *  the invoice's outstanding exposure (total − what had settled by the
    *  reversal date) — exactly what the reversal journal removed from the
    *  AR control. No fake payment rows are inserted; original invoice,
-   *  allocation, credit and reversal evidence all stay in place. */
+   *  allocation, credit and reversal evidence all stay in place.
+   *
+   *  Phase 5 (independent review 5834590343): a processed credit note
+   *  credits accounts_receivable by its ar_amount on its own business
+   *  date (the AR-first settlement decomposition) — the subledger now
+   *  subtracts those credits, dated the same way, so the check keeps
+   *  reconciling for tenants that use the returns module. */
   private async arControlCheck(ctx: UowContext, asOf: string): Promise<ReconciliationCheckDto> {
     const ar = await this.controlBalance(ctx, 'accounts_receivable', asOf);
     const sub = await ctx.query<{ total: string }>(
@@ -100,6 +107,9 @@ export class ReconciliationService {
              WHERE pa.invoice_id = i.id AND p.business_date <= $2::date), 0)
          - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca
              WHERE ca.invoice_id = i.id AND ca.created_at::date <= $2::date), 0)
+         - COALESCE((SELECT SUM(cn.ar_amount) FROM credit_note cn
+             WHERE cn.tenant_id = i.tenant_id AND cn.invoice_id = i.id
+               AND cn.business_date <= $2::date), 0)
          - CASE WHEN rev.effective_date IS NOT NULL AND rev.effective_date <= $2::date
              -- the reversal cancels the OUTSTANDING exposure as of its
              -- effective date — the exact amount its journal removed

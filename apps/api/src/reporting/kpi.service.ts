@@ -151,7 +151,13 @@ export class KpiService {
     };
   }
 
-  /** Compute every catalog metric for a period from canonical evidence. */
+  /** Compute every catalog metric for a period from canonical evidence.
+   *  History-stability rules match the operational reports (independent
+   *  review 5834590343): posted AND reversed invoices count on their own
+   *  dates with the reversal inverse netted on the reversal's effective
+   *  date; receivables settle strictly as of `to` (dated payments,
+   *  deposit applications, store-credit redemptions, credit-note AR
+   *  credits, reversal cancellations). */
   private async computeAll(ctx: UowContext, from: string, to: string): Promise<Record<string, string>> {
     const out: Record<string, string> = {};
     const sales = await ctx.query(
@@ -160,14 +166,32 @@ export class KpiService {
               COALESCE(SUM(i.subtotal - i.order_discount - i.tax_inclusive_total), 0)::text AS net_sales,
               COALESCE(SUM(i.cost_total), 0)::text AS cogs
          FROM invoice i
-        WHERE i.tenant_id = $1 AND i.status = 'posted' AND i.business_date BETWEEN $2 AND $3`,
+        WHERE i.tenant_id = $1 AND i.status IN ('posted','reversed') AND i.business_date BETWEEN $2 AND $3`,
       [ctx.tenantId, from, to],
     );
     const s = sales.rows[0]!;
-    const gross = parseMoney(String(s.gross));
-    const netSales0 = parseMoney(String(s.net_sales));
-    const cogs0 = parseMoney(String(s.cogs));
-    const count = Number(s.n);
+    let gross = parseMoney(String(s.gross));
+    let netSales0 = parseMoney(String(s.net_sales));
+    let cogs0 = parseMoney(String(s.cogs));
+    let count = Number(s.n);
+
+    // reversals effective INSIDE the window net the period (append-only:
+    // a window covering the sale but not the later reversal keeps it)
+    const reversalAdj = await ctx.query(
+      `SELECT COUNT(*)::int AS n,
+              COALESCE(SUM(i.total), 0)::text AS gross,
+              COALESCE(SUM(i.subtotal - i.order_discount - i.tax_inclusive_total), 0)::text AS net_sales,
+              COALESCE(SUM(i.cost_total), 0)::text AS cogs
+         FROM invoice_reversal ir
+         JOIN invoice i ON i.id = ir.invoice_id
+        WHERE ir.tenant_id = $1 AND (ir.created_at AT TIME ZONE 'UTC')::date BETWEEN $2 AND $3`,
+      [ctx.tenantId, from, to],
+    );
+    const rv0 = reversalAdj.rows[0]!;
+    gross -= parseMoney(String(rv0.gross));
+    netSales0 -= parseMoney(String(rv0.net_sales));
+    cogs0 -= parseMoney(String(rv0.cogs));
+    count -= Number(rv0.n);
 
     const returns = await ctx.query(
       `SELECT COALESCE(SUM(cn.total), 0)::text AS total,
@@ -197,16 +221,41 @@ export class KpiService {
       `SELECT COALESCE(SUM(total_value), 0)::text AS value FROM stock_cost_state WHERE tenant_id = $1`,
       [ctx.tenantId],
     );
+    // open receivables AS OF `to` — the canonical reversal-aware, dated
+    // formula shared with the AR aging and the accounting control check
+    const openAr = `GREATEST(i.total
+              - COALESCE((SELECT SUM(x.amount) FROM payment_allocation x
+                           JOIN payment p ON p.id = x.payment_id AND p.business_date <= $2::date
+                          WHERE x.invoice_id = i.id), 0)
+              - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca
+                          WHERE ca.invoice_id = i.id
+                            AND (ca.created_at AT TIME ZONE 'UTC')::date <= $2::date), 0)
+              - COALESCE((SELECT SUM(scr.amount) FROM store_credit_redemption scr
+                          WHERE scr.invoice_id = i.id AND scr.business_date <= $2::date), 0)
+              - COALESCE((SELECT SUM(cn.ar_amount) FROM credit_note cn
+                          WHERE cn.tenant_id = i.tenant_id AND cn.invoice_id = i.id
+                            AND cn.business_date <= $2::date), 0)
+              - CASE WHEN rev.effective_date IS NOT NULL AND rev.effective_date <= $2::date
+                  THEN GREATEST(
+                    i.total
+                    - COALESCE((SELECT SUM(pa.amount) FROM payment_allocation pa
+                                 JOIN payment p ON p.id = pa.payment_id
+                                WHERE pa.invoice_id = i.id AND p.business_date <= rev.effective_date), 0)
+                    - COALESCE((SELECT SUM(ca2.amount) FROM credit_application ca2
+                                WHERE ca2.invoice_id = i.id AND (ca2.created_at AT TIME ZONE 'UTC')::date <= rev.effective_date), 0),
+                    0)
+                  ELSE 0 END, 0)`;
     const ar = await ctx.query(
-      `SELECT COALESCE(SUM(GREATEST(i.total
-              - COALESCE((SELECT SUM(x.amount) FROM payment_allocation x WHERE x.invoice_id = i.id), 0)
-              - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca WHERE ca.invoice_id = i.id), 0)
-              - COALESCE((SELECT SUM(scr.amount) FROM store_credit_redemption scr WHERE scr.invoice_id = i.id), 0), 0)), 0)::text AS outstanding,
-            COALESCE(SUM(CASE WHEN $2::date - i.business_date > 30 THEN GREATEST(i.total
-              - COALESCE((SELECT SUM(x.amount) FROM payment_allocation x WHERE x.invoice_id = i.id), 0)
-              - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca WHERE ca.invoice_id = i.id), 0)
-              - COALESCE((SELECT SUM(scr.amount) FROM store_credit_redemption scr WHERE scr.invoice_id = i.id), 0), 0) ELSE 0 END), 0)::text AS overdue
-         FROM invoice i WHERE i.tenant_id = $1 AND i.status = 'posted' AND i.business_date <= $2`,
+      `SELECT COALESCE(SUM(${openAr}), 0)::text AS outstanding,
+              COALESCE(SUM(CASE WHEN $2::date - i.business_date > 30 THEN ${openAr} ELSE 0 END), 0)::text AS overdue
+         FROM invoice i
+         LEFT JOIN LATERAL (
+           SELECT COALESCE(re.business_date, (r.created_at AT TIME ZONE 'UTC')::date) AS effective_date
+             FROM invoice_reversal r
+             LEFT JOIN journal_entry re ON re.id = r.journal_entry_id
+            WHERE r.tenant_id = i.tenant_id AND r.invoice_id = i.id
+         ) rev ON true
+        WHERE i.tenant_id = $1 AND i.status IN ('posted','reversed') AND i.business_date <= $2`,
       [ctx.tenantId, to],
     );
 

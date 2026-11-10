@@ -15,6 +15,21 @@
  * All quantities are BASE units from the append-only stock_movement
  * ledger; historic closings are LEDGER-DERIVED, never today's
  * stock_balance projection.
+ *
+ * History-stability rules (independent review 5834590343):
+ *  - daily-sales emits a row for EVERY date with in-window activity —
+ *    including dates carrying only returns/refunds, with no invoices;
+ *  - a date's credit-sales figure is POINT-IN-TIME: only value received
+ *    on or before that date settles it (later payments, deposit
+ *    applications and store-credit redemptions never rewrite it);
+ *  - invoice reversals are append-only corrections: the sale stays on
+ *    its own date, the inverse lands on the reversal's effective date
+ *    (daily-sales, sales-by-dimension and item-margin all follow this);
+ *  - daily-stock honours the FULL [from, to] range (previously only the
+ *    from date was aggregated);
+ *  - customer-statement and AR/AP aging settle balances strictly as of
+ *    the requested date;
+ *  - returns-by-reason filters store-credit issuance by business date.
  */
 import { Injectable } from '@nestjs/common';
 import type {
@@ -46,6 +61,11 @@ export class OperationalReportsService {
 
   async dailySales(tenantId: string, q: ReportQuery): Promise<DailySalesRowDto[]> {
     return this.uow.run({ tenantId }, async (ctx) => {
+      // ---- 1. sales side: posted AND reversed invoices dated in the window.
+      // A reversal is an append-only correction document: the sale STAYS in
+      // the day it happened; the inverse lands on the reversal's own date
+      // (aggregation 2 below). History is never rewritten (review fix:
+      // reversing an invoice must not erase it from its original day).
       const rows = await ctx.query(
         `SELECT to_char(i.business_date, 'YYYY-MM-DD') AS business_date,
                 COUNT(*)::int AS sales_count,
@@ -54,11 +74,31 @@ export class OperationalReportsService {
                 SUM(i.cost_total)::text AS cogs_total,
                 SUM(i.total)::text AS gross_sales
            FROM invoice i
-          WHERE i.tenant_id = $1 AND i.status = 'posted'
+          WHERE i.tenant_id = $1 AND i.status IN ('posted','reversed')
             AND i.business_date BETWEEN $2 AND $3
             AND ($4::uuid IS NULL OR i.warehouse_id = $4)
           GROUP BY i.business_date
           ORDER BY i.business_date`,
+        [ctx.tenantId, q.from, q.to, q.warehouseId ?? null],
+      );
+      // ---- 2. reversal side: the inverse of the reversed invoice, on the
+      // reversal's OWN effective date (created_at — the same date the GL
+      // reversal journal carries). Netted into that day's row so a window
+      // covering both dates sums to the truth, while the original day's
+      // row stays frozen.
+      const reversalRows = await ctx.query(
+        `SELECT to_char((ir.created_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS business_date,
+                COUNT(*)::int AS sales_count,
+                SUM(i.subtotal - i.order_discount - i.tax_inclusive_total)::text AS net_sales,
+                SUM(i.tax_total)::text AS tax_total,
+                SUM(i.cost_total)::text AS cogs_total,
+                SUM(i.total)::text AS gross_sales
+           FROM invoice_reversal ir
+           JOIN invoice i ON i.id = ir.invoice_id
+          WHERE ir.tenant_id = $1
+            AND (ir.created_at AT TIME ZONE 'UTC')::date BETWEEN $2 AND $3
+            AND ($4::uuid IS NULL OR i.warehouse_id = $4)
+          GROUP BY 1`,
         [ctx.tenantId, q.from, q.to, q.warehouseId ?? null],
       );
       // returns/refunds count on THEIR OWN business dates (a later
@@ -89,20 +129,49 @@ export class OperationalReportsService {
           GROUP BY p.business_date`,
         [ctx.tenantId, q.from, q.to],
       );
-      const arRows = await ctx.query(
+      // ---- 3. credit sales, POINT-IN-TIME (review fix): the receivable
+      // CREATED on each business date. Only value received ON OR BEFORE
+      // that date (payment business_date, deposit-application date,
+      // store-credit redemption date) counts as settled-at-invoicing —
+      // a payment, deposit application or redemption recorded LATER must
+      // never rewrite the historical credit-sales figure.
+      const creditRows = await ctx.query(
         `SELECT to_char(i.business_date, 'YYYY-MM-DD') AS business_date,
                 SUM(i.total
-                    - COALESCE((SELECT SUM(x.amount) FROM payment_allocation x WHERE x.invoice_id = i.id), 0)
-                    - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca WHERE ca.invoice_id = i.id), 0))::text AS ar_taken
+                    - COALESCE((SELECT SUM(x.amount) FROM payment_allocation x
+                                 JOIN payment p ON p.id = x.payment_id
+                                  AND p.business_date <= i.business_date
+                                 WHERE x.invoice_id = i.id), 0)
+                    - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca
+                                 WHERE ca.invoice_id = i.id
+                                   AND (ca.created_at AT TIME ZONE 'UTC')::date <= i.business_date), 0)
+                    - COALESCE((SELECT SUM(scr.amount) FROM store_credit_redemption scr
+                                 WHERE scr.invoice_id = i.id
+                                   AND scr.business_date <= i.business_date), 0))::text AS credit_taken
            FROM invoice i
-          WHERE i.tenant_id = $1 AND i.status = 'posted'
+          WHERE i.tenant_id = $1 AND i.status IN ('posted','reversed')
             AND i.business_date BETWEEN $2 AND $3
+            AND ($4::uuid IS NULL OR i.warehouse_id = $4)
           GROUP BY i.business_date`,
-        [ctx.tenantId, q.from, q.to],
+        [ctx.tenantId, q.from, q.to, q.warehouseId ?? null],
       );
       const byDate = <T>(rows: Array<Record<string, unknown>>, fn: (r: Record<string, unknown>) => T) =>
         new Map<string, T>(rows.map((r) => [String(r.business_date).slice(0, 10), fn(r)]));
 
+      const sales = byDate(rows.rows as Array<Record<string, unknown>>, (r) => ({
+        count: Number(r.sales_count),
+        net: parseMoney(money(r.net_sales)),
+        tax: parseMoney(money(r.tax_total)),
+        cogs: parseMoney(money(r.cogs_total)),
+        gross: parseMoney(money(r.gross_sales)),
+      }));
+      const reversals = byDate(reversalRows.rows as Array<Record<string, unknown>>, (r) => ({
+        count: Number(r.sales_count),
+        net: parseMoney(money(r.net_sales)),
+        tax: parseMoney(money(r.tax_total)),
+        cogs: parseMoney(money(r.cogs_total)),
+        gross: parseMoney(money(r.gross_sales)),
+      }));
       const returns = byDate(returnsRows.rows as Array<Record<string, unknown>>, (r) => ({
         rev: parseMoney(money(r.returns_revenue)),
         cogs: parseMoney(money(r.returns_cogs)),
@@ -110,26 +179,41 @@ export class OperationalReportsService {
       }));
       const refunds = byDate(refundRows.rows as Array<Record<string, unknown>>, (r) => parseMoney(money(r.refunds_total)));
       const tenders = byDate(tenderRows.rows as Array<Record<string, unknown>>, (r) => parseMoney(money(r.money_in)));
-      const arTaken = byDate(arRows.rows as Array<Record<string, unknown>>, (r) => parseMoney(money(r.ar_taken)));
+      const credits = byDate(creditRows.rows as Array<Record<string, unknown>>, (r) => parseMoney(money(r.credit_taken)));
 
-      return (rows.rows as Array<Record<string, unknown>>).map((r) => {
-        const date = String(r.business_date).slice(0, 10);
-        const netSales = parseMoney(money(r.net_sales));
-        const cogs = parseMoney(money(r.cogs_total));
+      // ---- 4. one row for EVERY date with activity (review fix: a date
+      // carrying returns/refunds — or only a reversal or sale-day cash —
+      // but no new invoices must still appear, with zero sales figures).
+      const zero = { count: 0, net: 0n, tax: 0n, cogs: 0n, gross: 0n };
+      const dates = new Set<string>([
+        ...sales.keys(),
+        ...reversals.keys(),
+        ...returns.keys(),
+        ...refunds.keys(),
+        ...tenders.keys(),
+      ]);
+      return [...dates].sort().map((date) => {
+        const s = sales.get(date) ?? zero;
+        const rv = reversals.get(date) ?? zero;
+        const salesCount = s.count - rv.count;
+        const netSales = s.net - rv.net;
+        const taxTotal = s.tax - rv.tax;
+        const cogs = s.cogs - rv.cogs;
+        const grossSales = s.gross - rv.gross;
         const ret = returns.get(date) ?? { rev: 0n, cogs: 0n, total: 0n };
         const netRevenue = netSales - ret.rev;
         const netCogs = cogs - ret.cogs;
-        const ar = arTaken.get(date) ?? 0n;
+        const credit = credits.get(date) ?? 0n;
         return {
           businessDate: date,
-          salesCount: Number(r.sales_count),
-          grossSales: money(r.gross_sales),
-          netSales: money(r.net_sales),
-          taxTotal: money(r.tax_total),
-          cogsTotal: money(r.cogs_total),
+          salesCount,
+          grossSales: formatMoney(grossSales),
+          netSales: formatMoney(netSales),
+          taxTotal: formatMoney(taxTotal),
+          cogsTotal: formatMoney(cogs),
           grossProfit: formatMoney(netRevenue - netCogs),
           cashSales: formatMoney(tenders.get(date) ?? 0n),
-          creditSales: formatMoney(ar > 0n ? ar : 0n),
+          creditSales: formatMoney(credit > 0n ? credit : 0n),
           returnsTotal: formatMoney(ret.total),
           refundsTotal: formatMoney(refunds.get(date) ?? 0n),
           netRevenue: formatMoney(netRevenue),
@@ -196,15 +280,23 @@ export class OperationalReportsService {
                       COALESCE(SUM(i.cost_total), 0)::text AS cogs
                  FROM invoice i
                  LEFT JOIN ${dimension === 'customer' ? 'customer c ON c.id = i.customer_id' : dimension === 'user' ? 'app_user u ON u.id = i.created_by' : 'warehouse w ON w.id = i.warehouse_id'}
-                WHERE i.tenant_id = $1 AND i.status = 'posted'
+                WHERE i.tenant_id = $1 AND i.status IN ('posted','reversed')
                   AND i.business_date BETWEEN $2 AND $3
                   AND ($4::uuid IS NULL OR i.warehouse_id = $4)
                   AND ($5::uuid IS NULL OR i.${dimension === 'customer' ? 'customer_id' : dimension === 'user' ? 'created_by' : 'warehouse_id'} = $5)
                 GROUP BY 1, 2
                 ORDER BY net_sales DESC LIMIT $6 OFFSET $7`,
-              [ctx.tenantId, q.from, q.to, q.warehouseId ?? null, q.customerId ?? null, q.limit ?? 100, q.offset ?? 0],
+              // review fix: the $5 dimension filter is bound to the ID that
+              // MATCHES the dimension (previously customerId was applied to
+              // the user and warehouse dimensions, matching nothing)
+              [
+                ctx.tenantId, q.from, q.to, q.warehouseId ?? null,
+                dimension === 'customer' ? (q.customerId ?? null) : dimension === 'user' ? (q.userId ?? null) : null,
+                q.limit ?? 100, q.offset ?? 0,
+              ],
             );
-      // 2. returns side (credit notes dated in the window, keyed by dimension)
+      // 2. returns side (credit notes dated in the window, keyed by
+      //    dimension; warehouse-scoped to match the sales side — review fix)
       const returnRows =
         dimension === 'product'
           ? await ctx.query(
@@ -214,10 +306,12 @@ export class OperationalReportsService {
                  FROM return_order_line rl
                  JOIN return_order ro ON ro.id = rl.return_order_id
                  JOIN credit_note cn ON cn.return_order_id = ro.id
+                 JOIN invoice i ON i.id = ro.invoice_id
                 WHERE ro.tenant_id = $1 AND cn.business_date BETWEEN $2 AND $3
                   AND ro.status IN ('processed','completed')
+                  AND ($4::uuid IS NULL OR i.warehouse_id = $4)
                 GROUP BY rl.product_id`,
-              [ctx.tenantId, q.from, q.to],
+              [ctx.tenantId, q.from, q.to, q.warehouseId ?? null],
             )
           : await ctx.query(
               `SELECT ro.${dimension === 'customer' ? 'customer_id' : dimension === 'user' ? 'created_by' : 'warehouse_id'}::text AS dimension_id,
@@ -228,8 +322,9 @@ export class OperationalReportsService {
                  JOIN invoice i ON i.id = ro.invoice_id
                 WHERE cn.tenant_id = $1 AND cn.business_date BETWEEN $2 AND $3
                   AND ro.status IN ('processed','completed')
+                  AND ($4::uuid IS NULL OR i.warehouse_id = $4)
                 GROUP BY 1`,
-              [ctx.tenantId, q.from, q.to],
+              [ctx.tenantId, q.from, q.to, q.warehouseId ?? null],
             );
       const returnsByDim = new Map<string, { ret: bigint; cogsRev: bigint }>(
         (returnRows.rows as Array<Record<string, unknown>>).map((r) => [
@@ -238,26 +333,119 @@ export class OperationalReportsService {
         ]),
       );
 
-      return (salesRows.rows as Array<Record<string, unknown>>).map((r) => {
-        const dimId = r.dimension_id == null ? null : String(r.dimension_id);
-        const rv = dimId == null ? undefined : returnsByDim.get(dimId);
-        const netSales = parseMoney(money(r.net_sales));
-        const cogs = parseMoney(money(r.cogs));
-        const returnsTotal = rv?.ret ?? 0n;
-        const netRevenue = netSales - returnsTotal;
-        const netCogs = cogs - (rv?.cogsRev ?? 0n);
-        return {
-          dimensionId: dimId,
-          dimensionLabel: String(r.dimension_label),
-          salesCount: Number(r.sales_count),
-          netSales: money(r.net_sales),
-          returns: formatMoney(returnsTotal),
-          netRevenue: formatMoney(netRevenue),
-          cogs: money(r.cogs),
-          grossProfit: formatMoney(netRevenue - netCogs),
-          grossMarginPct: netRevenue > 0n ? formatPct(netRevenue - netCogs, netRevenue) : '0.00',
-        };
-      });
+      // 3. reversal side (review fix, same append-only rule as daily-sales):
+      //    a reversal EFFECTIVE inside the window nets the dimension by the
+      //    reversed invoice's own figures — a window covering the sale but
+      //    not the (later) reversal keeps the sale; a window covering both
+      //    nets to zero; a window covering only the reversal carries the
+      //    negative correction, exactly like the GL does.
+      const reversalRows =
+        dimension === 'product'
+          ? await ctx.query(
+              `SELECT il.product_id::text AS dimension_id,
+                      COUNT(*)::int AS reversals,
+                      SUM(il.line_net)::text AS net_reversed,
+                      COALESCE(SUM(il.cogs), 0)::text AS cogs_reversed
+                 FROM invoice_reversal ir
+                 JOIN invoice i ON i.id = ir.invoice_id
+                 JOIN invoice_line il ON il.invoice_id = i.id
+                WHERE ir.tenant_id = $1
+                  AND (ir.created_at AT TIME ZONE 'UTC')::date BETWEEN $2 AND $3
+                  AND ($4::uuid IS NULL OR i.warehouse_id = $4)
+                GROUP BY il.product_id`,
+              [ctx.tenantId, q.from, q.to, q.warehouseId ?? null],
+            )
+          : await ctx.query(
+              `SELECT i.${dimension === 'customer' ? 'customer_id' : dimension === 'user' ? 'created_by' : 'warehouse_id'}::text AS dimension_id,
+                      COUNT(*)::int AS reversals,
+                      SUM(i.subtotal - i.order_discount - i.tax_inclusive_total)::text AS net_reversed,
+                      COALESCE(SUM(i.cost_total), 0)::text AS cogs_reversed
+                 FROM invoice_reversal ir
+                 JOIN invoice i ON i.id = ir.invoice_id
+                WHERE ir.tenant_id = $1
+                  AND (ir.created_at AT TIME ZONE 'UTC')::date BETWEEN $2 AND $3
+                  AND ($4::uuid IS NULL OR i.warehouse_id = $4)
+                GROUP BY 1`,
+              [ctx.tenantId, q.from, q.to, q.warehouseId ?? null],
+            );
+      const reversalsByDim = new Map<string, { count: number; net: bigint; cogs: bigint }>(
+        (reversalRows.rows as Array<Record<string, unknown>>).map((r) => [
+          String(r.dimension_id),
+          {
+            count: Number(r.reversals),
+            net: parseMoney(money(r.net_reversed)),
+            cogs: parseMoney(money(r.cogs_reversed)),
+          },
+        ]),
+      );
+
+      // dimension keys that carry ANY in-window activity (a dimension with
+      // only returns/reversals and no sales must still appear — same rule
+      // as the daily-sales date union)
+      const dimIds = new Set<string>([
+        ...(salesRows.rows as Array<Record<string, unknown>>).map((r) => String(r.dimension_id ?? '')),
+        ...returnsByDim.keys(),
+        ...reversalsByDim.keys(),
+      ]);
+      const labelOf = new Map<string, string>(
+        (salesRows.rows as Array<Record<string, unknown>>).map((r) => [String(r.dimension_id ?? ''), String(r.dimension_label)]),
+      );
+      const countOf = new Map<string, number>(
+        (salesRows.rows as Array<Record<string, unknown>>).map((r) => [String(r.dimension_id ?? ''), Number(r.sales_count)]),
+      );
+      const salesNetOf = new Map<string, bigint>(
+        (salesRows.rows as Array<Record<string, unknown>>).map((r) => [String(r.dimension_id ?? ''), parseMoney(money(r.net_sales))]),
+      );
+      const salesCogsOf = new Map<string, bigint>(
+        (salesRows.rows as Array<Record<string, unknown>>).map((r) => [String(r.dimension_id ?? ''), parseMoney(money(r.cogs))]),
+      );
+      // labels for dimensions that appear ONLY on the correction side
+      const unlabeled = [...dimIds].filter((id) => id !== '' && !labelOf.has(id));
+      if (unlabeled.length > 0) {
+        const labelRows = await ctx.query(
+          dimension === 'product'
+            ? `SELECT id::text AS dimension_id, COALESCE(code || ' · ' || name, 'unknown') AS label
+                 FROM product WHERE id = ANY($1::uuid[])`
+            : dimension === 'customer'
+              ? `SELECT id::text AS dimension_id, COALESCE(code || ' · ' || name, 'walk-in') AS label
+                   FROM customer WHERE id = ANY($1::uuid[])`
+              : dimension === 'user'
+                ? `SELECT id::text AS dimension_id, COALESCE(display_name, email, 'unknown') AS label
+                     FROM app_user WHERE id = ANY($1::uuid[])`
+                : `SELECT id::text AS dimension_id, COALESCE(code || ' · ' || name, 'unknown') AS label
+                     FROM warehouse WHERE id = ANY($1::uuid[])`,
+          [unlabeled],
+        );
+        for (const r of labelRows.rows as Array<Record<string, unknown>>) {
+          labelOf.set(String(r.dimension_id), String(r.label));
+        }
+      }
+
+      return [...dimIds]
+        .map((dimId) => {
+          const rev = reversalsByDim.get(dimId);
+          const netSales = (salesNetOf.get(dimId) ?? 0n) - (rev?.net ?? 0n);
+          const cogs = (salesCogsOf.get(dimId) ?? 0n) - (rev?.cogs ?? 0n);
+          const salesCount = (countOf.get(dimId) ?? 0) - (rev?.count ?? 0);
+          const rv = returnsByDim.get(dimId);
+          const returnsTotal = rv?.ret ?? 0n;
+          const netRevenue = netSales - returnsTotal;
+          const netCogs = cogs - (rv?.cogsRev ?? 0n);
+          return {
+            dimensionId: dimId === '' ? null : dimId,
+            dimensionLabel: labelOf.get(dimId) ?? (dimId === '' ? 'walk-in' : 'unknown'),
+            salesCount,
+            netSales: formatMoney(netSales),
+            returns: formatMoney(returnsTotal),
+            netRevenue: formatMoney(netRevenue),
+            cogs: formatMoney(cogs),
+            grossProfit: formatMoney(netRevenue - netCogs),
+            grossMarginPct: netRevenue > 0n ? formatPct(netRevenue - netCogs, netRevenue) : '0.00',
+          };
+        })
+        .filter((row) => row.dimensionId != null || row.salesCount !== 0 || row.netSales !== '0.0000' || row.returns !== '0.0000')
+        // preserve the previous ordering contract: net sales, descending
+        .sort((a, b) => Number(parseMoney(b.netSales) - parseMoney(a.netSales)));
     });
   }
 
@@ -306,6 +494,12 @@ export class OperationalReportsService {
 
   async dailyStock(tenantId: string, q: ReportQuery): Promise<DailyStockRowDto[]> {
     return this.uow.run({ tenantId }, async (ctx) => {
+      // The report covers the CLOSED range [q.from, q.to] (review fix: the
+      // window used to stop at q.from and ignore q.to entirely). Opening =
+      // ledger balance before q.from; every bucket counts only movements
+      // dated within [q.from, q.to]; closing = opening + ins − outs over
+      // that window — the ledger balance AS OF END of q.to, never today's
+      // projection.
       const rows = await ctx.query(
         `WITH classified AS (
            SELECT sm.warehouse_id, sm.product_id,
@@ -332,30 +526,30 @@ export class OperationalReportsService {
              FROM stock_movement sm
             WHERE sm.tenant_id = $1
               AND sm.warehouse_id = COALESCE($2::uuid, sm.warehouse_id)
-              AND sm.occurred_at < ($3::date + INTERVAL '1 day')
-              AND ($4::uuid IS NULL OR sm.product_id = $4)
+              AND sm.occurred_at < ($4::date + INTERVAL '1 day')
+              AND ($5::uuid IS NULL OR sm.product_id = $5)
          )
          SELECT c.warehouse_id, c.product_id,
                 w.code AS warehouse_code, p.code AS product_code, p.name AS product_name,
                 -- opening = signed sum of ALL movements before the from date
                 -- (the ledger balance — no bucket sign gymnastics needed)
                 COALESCE(SUM(CASE WHEN c.business_date < $3 THEN c.quantity_base ELSE 0 END), 0)::text AS opening,
-                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'receipts' THEN c.qty ELSE 0 END), 0)::text AS receipts,
-                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'transfers_in' THEN c.qty ELSE 0 END), 0)::text AS transfers_in,
-                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'returns_restocked' THEN c.qty ELSE 0 END), 0)::text AS returns_restocked,
-                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'positive_adjustments' THEN c.qty ELSE 0 END), 0)::text AS positive_adjustments,
-                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'sales_issues' THEN c.qty ELSE 0 END), 0)::text AS sales_issues,
-                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'transfers_out' THEN c.qty ELSE 0 END), 0)::text AS transfers_out,
-                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.bucket = 'negative_adjustments' THEN c.qty ELSE 0 END), 0)::text AS negative_adjustments
+                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.business_date <= $4 AND c.bucket = 'receipts' THEN c.qty ELSE 0 END), 0)::text AS receipts,
+                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.business_date <= $4 AND c.bucket = 'transfers_in' THEN c.qty ELSE 0 END), 0)::text AS transfers_in,
+                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.business_date <= $4 AND c.bucket = 'returns_restocked' THEN c.qty ELSE 0 END), 0)::text AS returns_restocked,
+                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.business_date <= $4 AND c.bucket = 'positive_adjustments' THEN c.qty ELSE 0 END), 0)::text AS positive_adjustments,
+                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.business_date <= $4 AND c.bucket = 'sales_issues' THEN c.qty ELSE 0 END), 0)::text AS sales_issues,
+                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.business_date <= $4 AND c.bucket = 'transfers_out' THEN c.qty ELSE 0 END), 0)::text AS transfers_out,
+                COALESCE(SUM(CASE WHEN c.business_date >= $3 AND c.business_date <= $4 AND c.bucket = 'negative_adjustments' THEN c.qty ELSE 0 END), 0)::text AS negative_adjustments
            FROM classified c
            LEFT JOIN warehouse w ON w.id = c.warehouse_id
            LEFT JOIN product p ON p.id = c.product_id
           GROUP BY c.warehouse_id, c.product_id, w.code, p.code, p.name
-          HAVING COUNT(*) FILTER (WHERE c.business_date >= $3) > 0
+          HAVING COUNT(*) FILTER (WHERE c.business_date >= $3 AND c.business_date <= $4) > 0
              OR COALESCE(SUM(CASE WHEN c.business_date < $3 THEN c.quantity_base ELSE 0 END), 0) <> 0
           ORDER BY p.code, w.code
-          LIMIT $5`,
-        [ctx.tenantId, q.warehouseId ?? null, q.from, q.productId ?? null, q.limit ?? 500],
+          LIMIT $6`,
+        [ctx.tenantId, q.warehouseId ?? null, q.from, q.to, q.productId ?? null, q.limit ?? 500],
       );
       return rows.rows.map((r: Record<string, unknown>) => {
         const opening = parseQty(String(r.opening ?? '0'));
@@ -366,6 +560,9 @@ export class OperationalReportsService {
           parseQty(String(r[k] ?? '0')),
         );
         const closing = opening + ins.reduce((a, b) => a + b, 0n) - outs.reduce((a, b) => a + b, 0n);
+        // every quantity renders at the canonical 6dp scale — a COALESCE
+        // fallback zero must not print as '0' next to '100.000000'
+        const qty = (k: string) => formatQty6(parseQty(String(r[k] ?? '0')));
         return {
           businessDate: q.from,
           productId: String(r.product_id),
@@ -373,16 +570,16 @@ export class OperationalReportsService {
           productName: r.product_name == null ? null : String(r.product_name),
           warehouseId: String(r.warehouse_id),
           warehouseCode: r.warehouse_code == null ? null : String(r.warehouse_code),
-          opening: String(r.opening ?? '0'),
-          receipts: String(r.receipts ?? '0'),
-          transfersIn: String(r.transfers_in ?? '0'),
-          returnsRestocked: String(r.returns_restocked ?? '0'),
-          positiveAdjustments: String(r.positive_adjustments ?? '0'),
-          salesIssues: String(r.sales_issues ?? '0'),
-          transfersOut: String(r.transfers_out ?? '0'),
-          writeOffs: '0',
-          negativeAdjustments: String(r.negative_adjustments ?? '0'),
-          closing: closing.toString(),
+          opening: qty('opening'),
+          receipts: qty('receipts'),
+          transfersIn: qty('transfers_in'),
+          returnsRestocked: qty('returns_restocked'),
+          positiveAdjustments: qty('positive_adjustments'),
+          salesIssues: qty('sales_issues'),
+          transfersOut: qty('transfers_out'),
+          writeOffs: '0.000000',
+          negativeAdjustments: qty('negative_adjustments'),
+          closing: formatQty6(closing),
         };
       });
     });
@@ -443,6 +640,14 @@ export class OperationalReportsService {
 
   async itemMargin(tenantId: string, q: ReportQuery): Promise<ItemMarginRowDto[]> {
     return this.uow.run({ tenantId }, async (ctx) => {
+      // CONVENTION (documented for reconciliation): the margin view
+      // attributes returns to the SALE period — returns counted here are
+      // returns against invoices DATED in the window, whenever they were
+      // processed (the product-performance question). The daily-sales and
+      // dimension reports instead count returns on the credit note's OWN
+      // date (the money-view question). Reversals follow the same
+      // append-only rule as everywhere else: the sale stays in its period,
+      // the inverse nets the period the reversal took effect in.
       const rows = await ctx.query(
         `SELECT il.product_id, COALESCE(p.code, '?') AS product_code, COALESCE(p.name, '?') AS product_name,
                 SUM(il.quantity_base)::text AS quantity_sold,
@@ -451,31 +656,57 @@ export class OperationalReportsService {
                 COALESCE((SELECT SUM(rl.quantity_base) FROM return_order_line rl
                    JOIN return_order ro ON ro.id = rl.return_order_id
                   WHERE rl.invoice_line_id IN (SELECT id FROM invoice_line WHERE product_id = il.product_id
-                      AND invoice_id IN (SELECT id FROM invoice WHERE business_date BETWEEN $2 AND $3 AND status = 'posted'))
+                      AND invoice_id IN (SELECT id FROM invoice WHERE business_date BETWEEN $2 AND $3 AND status IN ('posted','reversed')))
                     AND ro.status IN ('processed','completed')), 0)::text AS quantity_returned,
                 COALESCE((SELECT SUM(rl.credit_net_slice) FROM return_order_line rl
                    JOIN return_order ro ON ro.id = rl.return_order_id
                   WHERE rl.invoice_line_id IN (SELECT id FROM invoice_line WHERE product_id = il.product_id
-                      AND invoice_id IN (SELECT id FROM invoice WHERE business_date BETWEEN $2 AND $3 AND status = 'posted'))
+                      AND invoice_id IN (SELECT id FROM invoice WHERE business_date BETWEEN $2 AND $3 AND status IN ('posted','reversed')))
                     AND ro.status IN ('processed','completed')), 0)::text AS returns_value,
                 COALESCE((SELECT SUM(rl.cogs_reversal) FROM return_order_line rl
                    JOIN return_order ro ON ro.id = rl.return_order_id
                   WHERE rl.invoice_line_id IN (SELECT id FROM invoice_line WHERE product_id = il.product_id
-                      AND invoice_id IN (SELECT id FROM invoice WHERE business_date BETWEEN $2 AND $3 AND status = 'posted'))
+                      AND invoice_id IN (SELECT id FROM invoice WHERE business_date BETWEEN $2 AND $3 AND status IN ('posted','reversed')))
                     AND ro.status IN ('processed','completed')), 0)::text AS cogs_reversal
            FROM invoice_line il
            LEFT JOIN product p ON p.id = il.product_id
           WHERE il.tenant_id = $1
-            AND il.invoice_id IN (SELECT id FROM invoice WHERE tenant_id = $1 AND business_date BETWEEN $2 AND $3 AND status = 'posted')
+            AND il.invoice_id IN (SELECT id FROM invoice WHERE tenant_id = $1 AND business_date BETWEEN $2 AND $3 AND status IN ('posted','reversed'))
           GROUP BY il.product_id, p.code, p.name
           ORDER BY gross_revenue DESC
           LIMIT $4 OFFSET $5`,
         [ctx.tenantId, q.from, q.to, q.limit ?? 100, q.offset ?? 0],
       );
+      // reversal side: the inverse of invoices reversed EFFECTIVE in the
+      // window, per product (append-only — see the convention note above)
+      const reversalRows = await ctx.query(
+        `SELECT il.product_id,
+                SUM(il.quantity_base)::text AS quantity_reversed,
+                SUM(il.line_net)::text AS revenue_reversed,
+                COALESCE(SUM(il.cogs), 0)::text AS cogs_reversed
+           FROM invoice_reversal ir
+           JOIN invoice i ON i.id = ir.invoice_id
+           JOIN invoice_line il ON il.invoice_id = i.id
+          WHERE ir.tenant_id = $1
+            AND (ir.created_at AT TIME ZONE 'UTC')::date BETWEEN $2 AND $3
+          GROUP BY il.product_id`,
+        [ctx.tenantId, q.from, q.to],
+      );
+      const reversedByProduct = new Map<string, { qty: bigint; rev: bigint; cogs: bigint }>(
+        (reversalRows.rows as Array<Record<string, unknown>>).map((r) => [
+          String(r.product_id),
+          {
+            qty: parseQty(String(r.quantity_reversed ?? '0')),
+            rev: parseMoney(String(r.revenue_reversed ?? '0')),
+            cogs: parseMoney(String(r.cogs_reversed ?? '0')),
+          },
+        ]),
+      );
       return rows.rows.map((r: Record<string, unknown>) => {
-        const grossRevenue = parseMoney(String(r.gross_revenue ?? '0'));
+        const rev = reversedByProduct.get(String(r.product_id));
+        const grossRevenue = parseMoney(String(r.gross_revenue ?? '0')) - (rev?.rev ?? 0n);
         const returnsValue = parseMoney(String(r.returns_value ?? '0'));
-        const cogs = parseMoney(String(r.cogs ?? '0'));
+        const cogs = parseMoney(String(r.cogs ?? '0')) - (rev?.cogs ?? 0n);
         const cogsRev = parseMoney(String(r.cogs_reversal ?? '0'));
         const netRevenue = grossRevenue - returnsValue;
         const netCogs = cogs - cogsRev;
@@ -483,12 +714,12 @@ export class OperationalReportsService {
           productId: String(r.product_id),
           productCode: String(r.product_code),
           productName: String(r.product_name),
-          quantitySold: String(r.quantity_sold ?? '0'),
+          quantitySold: formatQty6(parseQty(String(r.quantity_sold ?? '0')) - (rev?.qty ?? 0n)),
           quantityReturned: String(r.quantity_returned ?? '0'),
-          grossRevenue: String(r.gross_revenue ?? '0'),
+          grossRevenue: formatMoney(grossRevenue),
           returns: String(r.returns_value ?? '0'),
           netRevenue: formatMoney(netRevenue),
-          cogs: String(r.cogs ?? '0'),
+          cogs: formatMoney(cogs),
           cogsReversal: String(r.cogs_reversal ?? '0'),
           netCogs: formatMoney(netCogs),
           grossProfit: formatMoney(netRevenue - netCogs),
@@ -529,7 +760,7 @@ export class OperationalReportsService {
          sc_agg AS (
            SELECT ro.reason_id, COALESCE(SUM(sc.amount), 0)::text AS store_credit_issued
              FROM store_credit sc JOIN return_order ro ON ro.credit_note_id = sc.credit_note_id
-            WHERE sc.tenant_id = $1
+            WHERE sc.tenant_id = $1 AND sc.business_date BETWEEN $2 AND $3
             GROUP BY ro.reason_id
          )
          SELECT rr.code AS reason_code,
@@ -643,7 +874,15 @@ export class OperationalReportsService {
                   COALESCE(c.code, 'walk-in') || ' sale' AS description,
                   i.total::text AS debit, '0' AS credit
              FROM invoice i LEFT JOIN customer c ON c.id = i.customer_id
-            WHERE i.customer_id = $1 AND i.status = 'posted' AND i.business_date <= $2
+            WHERE i.customer_id = $1 AND i.status IN ('posted','reversed') AND i.business_date <= $2
+           UNION ALL
+           -- append-only reversal arm (review fix): the reversed sale STAYS
+           -- on its own date; the inverse lands on the reversal's effective
+           -- date — a later reversal never erases the historical statement
+           SELECT to_char((ir.created_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD'), 'invoice_reversal', ir.code,
+                  'invoice reversed (' || i.code || ')', '0', i.total::text
+             FROM invoice_reversal ir JOIN invoice i ON i.id = ir.invoice_id
+            WHERE i.customer_id = $1 AND (ir.created_at AT TIME ZONE 'UTC')::date <= $2
            UNION ALL
            SELECT to_char(p.business_date, 'YYYY-MM-DD'), 'payment', p.code, 'payment received', '0', pa.amount::text
              FROM payment_allocation pa JOIN payment p ON p.id = pa.payment_id
@@ -678,13 +917,47 @@ export class OperationalReportsService {
           balance: formatMoney(balance),
         };
       });
+      // receivable AS OF the statement date — the same canonical
+      // reversal-aware formula as the AR aging and the accounting AR
+      // control check (review fix): only value received ON OR BEFORE asOf
+      // settles the balance (payments, deposit applications, store-credit
+      // redemptions, credit-note AR credits), and a reversal cancels the
+      // outstanding exposure from its own effective date. The ledger lines
+      // above are date-clamped the same way, so closingBalance and
+      // receivable reconcile.
       const arRow = await ctx.query(
-        `SELECT COALESCE(SUM(i.total
-              - COALESCE((SELECT SUM(x.amount) FROM payment_allocation x WHERE x.invoice_id = i.id), 0)
-              - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca WHERE ca.invoice_id = i.id), 0)
-              - COALESCE((SELECT SUM(scr.amount) FROM store_credit_redemption scr WHERE scr.invoice_id = i.id), 0)), 0)::text AS receivable
-           FROM invoice i WHERE i.customer_id = $1 AND i.status = 'posted'`,
-        [customerId],
+        `SELECT COALESCE(SUM(
+              i.total
+              - COALESCE((SELECT SUM(x.amount) FROM payment_allocation x
+                           JOIN payment p ON p.id = x.payment_id AND p.business_date <= $2::date
+                          WHERE x.invoice_id = i.id), 0)
+              - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca
+                          WHERE ca.invoice_id = i.id
+                            AND (ca.created_at AT TIME ZONE 'UTC')::date <= $2::date), 0)
+              - COALESCE((SELECT SUM(scr.amount) FROM store_credit_redemption scr
+                          WHERE scr.invoice_id = i.id AND scr.business_date <= $2::date), 0)
+              - COALESCE((SELECT SUM(cn.ar_amount) FROM credit_note cn
+                          WHERE cn.tenant_id = i.tenant_id AND cn.invoice_id = i.id
+                            AND cn.business_date <= $2::date), 0)
+              - CASE WHEN rev.effective_date IS NOT NULL AND rev.effective_date <= $2::date
+                  THEN GREATEST(
+                    i.total
+                    - COALESCE((SELECT SUM(pa.amount) FROM payment_allocation pa
+                                 JOIN payment p ON p.id = pa.payment_id
+                                WHERE pa.invoice_id = i.id AND p.business_date <= rev.effective_date), 0)
+                    - COALESCE((SELECT SUM(ca2.amount) FROM credit_application ca2
+                                WHERE ca2.invoice_id = i.id AND (ca2.created_at AT TIME ZONE 'UTC')::date <= rev.effective_date), 0),
+                    0)
+                  ELSE 0 END), 0)::text AS receivable
+           FROM invoice i
+           LEFT JOIN LATERAL (
+             SELECT COALESCE(re.business_date, (r.created_at AT TIME ZONE 'UTC')::date) AS effective_date
+               FROM invoice_reversal r
+               LEFT JOIN journal_entry re ON re.id = r.journal_entry_id
+              WHERE r.tenant_id = i.tenant_id AND r.invoice_id = i.id
+           ) rev ON true
+          WHERE i.customer_id = $1 AND i.status IN ('posted','reversed') AND i.business_date <= $2`,
+        [customerId, asOf],
       );
       const scRow = await ctx.query(
         `SELECT COALESCE(SUM(sc.amount - COALESCE((SELECT SUM(r.amount) FROM store_credit_redemption r WHERE r.store_credit_id = sc.id), 0)), 0)::text AS credit
@@ -719,43 +992,74 @@ export class OperationalReportsService {
   private async aging(tenantId: string, asOf: string, side: 'ar' | 'ap'): Promise<AgingRowDto[]> {
     return this.uow.run({ tenantId }, async (ctx) => {
       if (side === 'ar') {
+        // open balance AS OF the aging date, reversal-aware (the same
+        // canonical formula the accounting AR control check uses, review
+        // round 3 blocker 2 + Phase 5 credit notes): only value received
+        // ON OR BEFORE asOf settles an invoice (payments, deposit
+        // applications, store-credit redemptions, credit-note AR credits),
+        // and a reversal cancels the OUTSTANDING exposure from its own
+        // effective date — historical agings dated before the reversal
+        // still show the original exposure.
+        const open = `i.total
+              - COALESCE((SELECT SUM(x.amount) FROM payment_allocation x
+                           JOIN payment p ON p.id = x.payment_id AND p.business_date <= $2::date
+                          WHERE x.invoice_id = i.id), 0)
+              - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca
+                          WHERE ca.invoice_id = i.id
+                            AND (ca.created_at AT TIME ZONE 'UTC')::date <= $2::date), 0)
+              - COALESCE((SELECT SUM(scr.amount) FROM store_credit_redemption scr
+                          WHERE scr.invoice_id = i.id AND scr.business_date <= $2::date), 0)
+              - COALESCE((SELECT SUM(cn.ar_amount) FROM credit_note cn
+                          WHERE cn.tenant_id = i.tenant_id AND cn.invoice_id = i.id
+                            AND cn.business_date <= $2::date), 0)
+              - CASE WHEN rev.effective_date IS NOT NULL AND rev.effective_date <= $2::date
+                  THEN GREATEST(
+                    i.total
+                    - COALESCE((SELECT SUM(pa.amount) FROM payment_allocation pa
+                                 JOIN payment p ON p.id = pa.payment_id
+                                WHERE pa.invoice_id = i.id AND p.business_date <= rev.effective_date), 0)
+                    - COALESCE((SELECT SUM(ca2.amount) FROM credit_application ca2
+                                WHERE ca2.invoice_id = i.id AND (ca2.created_at AT TIME ZONE 'UTC')::date <= rev.effective_date), 0),
+                    0)
+                  ELSE 0 END`;
         const rows = await ctx.query(
           `SELECT c.id AS party_id, c.code AS party_code, c.name AS party_name,
-                  SUM(CASE WHEN $2::date - i.business_date <= 30 THEN i.total
-                        - COALESCE((SELECT SUM(x.amount) FROM payment_allocation x WHERE x.invoice_id = i.id), 0)
-                        - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca WHERE ca.invoice_id = i.id), 0)
-                        - COALESCE((SELECT SUM(scr.amount) FROM store_credit_redemption scr WHERE scr.invoice_id = i.id), 0) ELSE 0 END)::text AS current,
-                  SUM(CASE WHEN $2::date - i.business_date BETWEEN 31 AND 60 THEN i.total
-                        - COALESCE((SELECT SUM(x.amount) FROM payment_allocation x WHERE x.invoice_id = i.id), 0)
-                        - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca WHERE ca.invoice_id = i.id), 0)
-                        - COALESCE((SELECT SUM(scr.amount) FROM store_credit_redemption scr WHERE scr.invoice_id = i.id), 0) ELSE 0 END)::text AS d31_60,
-                  SUM(CASE WHEN $2::date - i.business_date BETWEEN 61 AND 90 THEN i.total
-                        - COALESCE((SELECT SUM(x.amount) FROM payment_allocation x WHERE x.invoice_id = i.id), 0)
-                        - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca WHERE ca.invoice_id = i.id), 0)
-                        - COALESCE((SELECT SUM(scr.amount) FROM store_credit_redemption scr WHERE scr.invoice_id = i.id), 0) ELSE 0 END)::text AS d61_90,
-                  SUM(CASE WHEN $2::date - i.business_date BETWEEN 91 AND 120 THEN i.total
-                        - COALESCE((SELECT SUM(x.amount) FROM payment_allocation x WHERE x.invoice_id = i.id), 0)
-                        - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca WHERE ca.invoice_id = i.id), 0)
-                        - COALESCE((SELECT SUM(scr.amount) FROM store_credit_redemption scr WHERE scr.invoice_id = i.id), 0) ELSE 0 END)::text AS d91_120,
-                  SUM(CASE WHEN $2::date - i.business_date > 120 THEN i.total
-                        - COALESCE((SELECT SUM(x.amount) FROM payment_allocation x WHERE x.invoice_id = i.id), 0)
-                        - COALESCE((SELECT SUM(ca.amount) FROM credit_application ca WHERE ca.invoice_id = i.id), 0)
-                        - COALESCE((SELECT SUM(scr.amount) FROM store_credit_redemption scr WHERE scr.invoice_id = i.id), 0) ELSE 0 END)::text AS over120
-             FROM invoice i JOIN customer c ON c.id = i.customer_id
-            WHERE i.tenant_id = $1 AND i.status = 'posted' AND i.business_date <= $2
+                  SUM(CASE WHEN $2::date - i.business_date <= 30 THEN ${open} ELSE 0 END)::text AS current,
+                  SUM(CASE WHEN $2::date - i.business_date BETWEEN 31 AND 60 THEN ${open} ELSE 0 END)::text AS d31_60,
+                  SUM(CASE WHEN $2::date - i.business_date BETWEEN 61 AND 90 THEN ${open} ELSE 0 END)::text AS d61_90,
+                  SUM(CASE WHEN $2::date - i.business_date BETWEEN 91 AND 120 THEN ${open} ELSE 0 END)::text AS d91_120,
+                  SUM(CASE WHEN $2::date - i.business_date > 120 THEN ${open} ELSE 0 END)::text AS over120
+             FROM invoice i
+             JOIN customer c ON c.id = i.customer_id
+             LEFT JOIN LATERAL (
+               SELECT COALESCE(re.business_date, (r.created_at AT TIME ZONE 'UTC')::date) AS effective_date
+                 FROM invoice_reversal r
+                 LEFT JOIN journal_entry re ON re.id = r.journal_entry_id
+                WHERE r.tenant_id = i.tenant_id AND r.invoice_id = i.id
+             ) rev ON true
+            WHERE i.tenant_id = $1 AND i.status IN ('posted','reversed') AND i.business_date <= $2
             GROUP BY c.id, c.code, c.name`,
           [ctx.tenantId, asOf],
         );
         return rows.rows.map((r) => this.mapAging(r));
       }
-      // AP: open = total + debit notes − credit notes − payment allocations − advance applications
+      // AP: open = total + debit notes − credit notes − payment allocations −
+      // advance applications, every leg dated ON OR BEFORE asOf (same
+      // point-in-time rule as the AR side — later settlements never
+      // rewrite the historical aging)
       const open = `si.total
-        + COALESCE((SELECT SUM(sa.amount) FROM supplier_adjustment sa WHERE sa.supplier_invoice_id = si.id AND sa.kind = 'debit_note'), 0)
-        - COALESCE((SELECT SUM(sa.amount) FROM supplier_adjustment sa WHERE sa.supplier_invoice_id = si.id AND sa.kind = 'credit_note'), 0)
-        - COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa WHERE spa.supplier_invoice_id = si.id), 0)
+        + COALESCE((SELECT SUM(sa.amount) FROM supplier_adjustment sa
+                     WHERE sa.supplier_invoice_id = si.id AND sa.kind = 'debit_note'
+                       AND sa.business_date <= $2::date), 0)
+        - COALESCE((SELECT SUM(sa.amount) FROM supplier_adjustment sa
+                     WHERE sa.supplier_invoice_id = si.id AND sa.kind = 'credit_note'
+                       AND sa.business_date <= $2::date), 0)
+        - COALESCE((SELECT SUM(spa.amount) FROM supplier_payment_allocation spa
+                     JOIN supplier_payment sp ON sp.id = spa.payment_id
+                    WHERE spa.supplier_invoice_id = si.id AND sp.business_date <= $2::date), 0)
         - COALESCE((SELECT SUM(saal.amount) FROM supplier_advance_application_line saal
              JOIN supplier_advance_application saa ON saa.id = saal.application_id
-            WHERE saal.supplier_invoice_id = si.id), 0)`;
+            WHERE saal.supplier_invoice_id = si.id AND saa.business_date <= $2::date), 0)`;
       const rows = await ctx.query(
         `SELECT s.id AS party_id, s.code AS party_code, s.name AS party_name,
                 SUM(CASE WHEN $2::date - si.business_date <= 30 THEN ${open} ELSE 0 END)::text AS current,
@@ -799,6 +1103,14 @@ function parseQty(v: string): bigint {
   const [intPart, fracPart = ''] = v.split('.');
   const digits = (intPart || '0') + fracPart.padEnd(6, '0');
   return BigInt(digits.replace(/[^\d-]/g, '') || '0');
+}
+
+/** inverse of parseQty: scaled-6 BigInt → decimal string at 6 dp. */
+function formatQty6(scaled: bigint): string {
+  const negative = scaled < 0n;
+  const abs = negative ? -scaled : scaled;
+  const digits = abs.toString().padStart(7, '0');
+  return `${negative ? '-' : ''}${digits.slice(0, digits.length - 6)}.${digits.slice(digits.length - 6)}`;
 }
 
 function formatMoney4(qtyScaled6TimesMoneyScaled4: bigint): string {

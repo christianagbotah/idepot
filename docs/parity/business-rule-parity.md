@@ -78,7 +78,8 @@ verdicts).
 
 ## 7. Verified open gaps (register in issue #9)
 
-Functional gaps verified against the current code on 2026-11-09 — each maps
+Functional gaps verified against the current code on 2026-11-09 (updated
+2026-11-10 after independent review 5834590343) — each maps
 to matrix rows with `pending`/`partial`:
 
 1. ~~**User/staff management** (`admin_list.php`, `modal_admin_add/edit.php`)~~
@@ -115,9 +116,39 @@ to matrix rows with `pending`/`partial`:
    (PostgreSQL: subquery uses ungrouped column "rr.id" from outer query).
    Financial statements remain covered by accounting-statements /
    financial-corrections.
+   **HARDENED 2026-11-10 (review 5834590343):** +19 integration tests — the
+   6-test returns tax matrix (full/partial/cumulative × exclusive/inclusive/
+   mixed, exact entitlement/journal/cap assertions) and the 13-test
+   historical-reports suite (six-date daily-sales history stability,
+   point-in-time credit sales, append-only invoice reversals, as-of
+   statement/aging/AR-control reconciliation, four daily-stock [from,to]
+   range windows asserting the returned `row.closing`).
 8. **Legacy landing dashboard** (`dashboard.php`): login lands on `/catalog`;
    KPI dashboard at `/kpi` covers analytics. A legacy-style home screen does
    not exist (intentional change — confirm with owner in UAT).
+
+### Report-financial parity rules locked by review 5834590343 (2026-11-10)
+
+Beyond view-level parity, the operational reports now carry DOCUMENTED
+financial-parity rules that the legacy PHP reports never guaranteed (each is
+regression-tested on real PostgreSQL):
+
+- **R-P1 tax treatments:** return entitlement adds ONLY exclusive tax;
+  contra-revenue strips ONLY inclusive tax (the legacy `sales_order_refund`
+  had no tax handling at all — it was broken against its own schema).
+- **R-P2 history stability:** daily sales emit a row for EVERY active date;
+  credit-sales figures are point-in-time; reversals are append-only (sale on
+  its date, inverse on the reversal date); `daily-stock` honours the full
+  [from, to] window with the returned closing asserted directly.
+- **R-P3 as-of settlement:** customer statements, AR aging, KPI receivables
+  and the accounting AR control settle strictly as of the report date using
+  ONE canonical reversal-aware formula (dated payments, deposit
+  applications, store-credit redemptions, credit-note AR credits, reversal
+  cancellations) — the legacy statements mixed current settlement state into
+  historical periods.
+- **R-P4 migration reconciliation:** `legacyStoreCreditsFound` counts only
+  `store_credits` rows (poisoned-dump proof: sales_returns rows never leak
+  into the store-credit figure).
 
 Deliberate exclusions (documented, not gaps): dead/duplicate/broken PHP
 screens (43 rows), the school-era calendar remnant (1 row), root duplicates

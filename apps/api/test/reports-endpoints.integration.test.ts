@@ -173,11 +173,12 @@ describe('operational report endpoints (Phase 5 §10-12)', () => {
     expect(row!.receipts).toBe('100.000000'); // opening count dated today
     expect(row!.salesIssues).toBe('4.000000'); // magnitude — issues are SIGNED negative in the ledger
     expect(row!.returnsRestocked).toBe('1.000000');
-    expect(Number(row!.transfersIn)).toBe(0);
-    expect(Number(row!.transfersOut)).toBe(0);;
-    // closing = 0 + 100 + 1 − 4 = 97 — derived, not stored
-    const closing = Number(row!.receipts) + Number(row!.returnsRestocked) - Number(row!.salesIssues);
-    expect(closing).toBe(97);
+    expect(row!.transfersIn).toBe('0.000000');
+    expect(row!.transfersOut).toBe('0.000000');
+    // THE RETURNED closing, asserted directly (review 5834590343: never
+    // re-derive it from the row's own components): 0 + 100 + 1 − 4 = 97
+    expect(row!.opening).toBe('0.000000');
+    expect(row!.closing).toBe('97.000000');
   });
 
   // -------------------------------------------------------------- item-margin

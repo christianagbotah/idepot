@@ -513,6 +513,8 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
     expect(first.artifact.phase5!.deadReturnsTablesFound).toEqual([...deadTables]);
     expect(first.artifact.phase5!.deadReturnsRows).toBe(0);
     expect(first.artifact.phase5!.returnsSynthesized).toBe(0);
+    // clean fixture: zero rows in store_credits → zero legacy store credits
+    expect(first.artifact.phase5!.legacyStoreCreditsFound).toBe(0);
 
     // A dump that surprises us with rows in a dead table must surface a
     // manual-approval reconciliation record — and must NEVER import them.
@@ -521,7 +523,8 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
     writeFileSync(
       poisonedPath,
       readFileSync(FIXTURE, 'utf8') +
-        "\nINSERT INTO sales_returns (return_id, return_code, original_so_code, customer_id) VALUES (1,'RTN-X1','SO-3001',1);\n",
+        "\nINSERT INTO sales_returns (return_id, return_code, original_so_code, customer_id) VALUES (1,'RTN-X1','SO-3001',1);\n" +
+        "\nINSERT INTO sales_returns (return_id, return_code, original_so_code, customer_id) VALUES (2,'RTN-X2','SO-3002',1);\n",
     );
     const poisoned = await runMigration({
       pgAdminUrl: adminUrl,
@@ -535,7 +538,11 @@ describe('migration smoke pipeline (fixture dump → staging → legacy_raw → 
     expect(surprise, 'dead-table row must produce a reconciliation record').toBeDefined();
     expect(surprise!.requires_manual_approval).toBe(true);
     expect(surprise!.new_system_value).toEqual({ imported: 0 });
-    expect(poisoned.artifact.phase5!.deadReturnsRows).toBe(1);
+    expect(poisoned.artifact.phase5!.deadReturnsRows).toBe(2);
+    // review 5834590343: legacyStoreCreditsFound reports ONLY the rows in
+    // store_credits — a poisoned dump with two sales_returns and ZERO
+    // store credits must report 0, never the sales_returns count
+    expect(poisoned.artifact.phase5!.legacyStoreCreditsFound).toBe(0);
 
     // nothing was ever synthesized into the Phase 5 targets for this tenant
     const c = new Client({ connectionString: adminUrl });

@@ -751,12 +751,31 @@ export class ReturnsService {
     }
     const taxReversalTotal = taxSlices.reduce((s, t) => s + t.amount, 0n);
 
-    // gross customer entitlement = credited net + reversible tax
-    // (exclusive: net + tax; inclusive: tax lives INSIDE the net —
-    //  netRevenueReversal = creditedNet − inclusiveTax keeps the
-    //  identity total = net_revenue_reversal + tax_reversal_total true)
-    const total = creditedNetSlice + taxReversalTotal;
-    const netRevenueReversal = creditedNetSlice - taxReversalTotal;
+    // ---- 2a. INCLUSIVE vs EXCLUSIVE treatment (review correction) -----
+    // The credited-net axis is the GROSS charged-price axis (Σ effective
+    // line nets = subtotal − order discount): when the invoice carried
+    // INCLUSIVE tax, that axis ALREADY CONTAINS the embedded tax, and the
+    // exclusive components (if any) were computed on the net INSIDE it.
+    // Therefore:
+    //  - the CUSTOMER ENTITLEMENT adds only the EXCLUSIVE tax share —
+    //    inclusive tax is already inside the credited net, and adding it
+    //    again would refund the same money twice;
+    //  - the CONTRA-REVENUE figure strips only the INCLUSIVE tax share —
+    //    the tax inside the credited net is not revenue;
+    //  - the identity  total = netRevenueReversal + taxReversalTotal  and
+    //    the journal balance  Dr(netRevenueReversal + taxReversalTotal) ==
+    //    Cr(total)  hold for exclusive-only, inclusive-only AND mixed
+    //    profiles alike (the JournalBuilder enforces the latter anyway).
+    const inclusiveTaxReversal = taxSlices.reduce((s, t) => (t.inclusive ? s + t.amount : s), 0n);
+    const exclusiveTaxReversal = taxReversalTotal - inclusiveTaxReversal;
+    for (const t of taxSlices) {
+      // evidence basis mirrors the original invoice component: inclusive
+      // components were taxed on the GROSS basis, exclusive ones on the
+      // net-of-inclusive-tax basis
+      t.basis = formatMoney(t.inclusive ? creditedNetSlice : creditedNetSlice - inclusiveTaxReversal);
+    }
+    const total = creditedNetSlice + exclusiveTaxReversal;
+    const netRevenueReversal = creditedNetSlice - inclusiveTaxReversal;
 
     // ---- 3. settlement decomposition (AR first, then residual) -------
     const settlement = await loadInvoiceSettlement(ctx, row.invoice_id);
