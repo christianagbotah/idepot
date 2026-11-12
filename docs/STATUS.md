@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Current phase** | Phase 5 — returns, reporting, loyalty & administration (+ migration: returns evidence) — implemented on this branch, financial-correctness round complete (independent review 5834590343); awaiting final independent review before merge. Do NOT merge or begin Phase 6 yet |
+| **Current phase** | Phase 5 development merged into protected `main` on 2026-11-12 (`776d2ebffd7e3ec8ec982a26c51439ca5a0a6dd2`). Next: isolated staging/UAT gate #10; Phase 6 desktop/mobile/hardware branch planned via `docs/PHASE6_ZAI_HANDOFF.md`. No client cutover sign-off. |
 | **Previous phases** | Phase 0 — forensic audit & architecture ✅ (merged); Phase 1 — monorepo foundation + migration engineering foundation ✅ (merged); Phase 2 — master data & inventory ✅ (merged); Phase 3 — sales & POS ✅ (hardened); Phase 4 — purchasing & accounting ✅ (hardened) |
-| **Branch** | `phase-5/returns-reporting-admin` (from main) |
-| **Repo state** | Phase 5 returns/credit-notes/refunds/store-credit/exchanges, operational + financial reporting, KPI, administration, loyalty foundation (flagged off), migration returns-evidence workstream. All four review corrections of 5834590343 implemented and regression-tested (146 unit + 381 integration). Production readiness and real-client migration are NOT claimed — schema-only fixtures only |
+| **Branch** | `main` (Phase 5 integrated); Phase 6 work must open a separate branch `phase-6/desktop-mobile-hardware` |
+| **Repo state** | Phase 5 returns/credit-notes/refunds/store-credit/exchanges, operational + financial reporting, KPI, administration, loyalty foundation (flagged off), migration returns-evidence workstream. Independent reviews 5834590343 and 5852472160 addressed in merged source and regression-tested (last pre-merge CI: 146 unit + 397 integration). Production readiness and real-client migration are NOT claimed — schema-only fixtures only |
 
 ## Completed capabilities (Phases 0–2 — merged to main, preserved unchanged)
 
@@ -427,7 +427,9 @@ totals — never "the endpoint responded"):
 - Bank statement import is CSV with a documented header; OFX/MT940 parsers
   arrive with the Phase 6/7 integrations.
 
-## Next actions (Phase 5 — Returns, reporting, loyalty & administration)
+## Previous Phase 5 action board (historical; now integrated to main)
+
+**As of 2026-11-12:** Phase 5 PR #8 has merged. The below section records implementation history, not current release gates. **Next active steps are in [`docs/PHASE6_ZAI_HANDOFF.md`](PHASE6_ZAI_HANDOFF.md), staging [#10](https://github.com/christianagbotah/idepot/issues/10), and client migration [#9](https://github.com/christianagbotah/idepot/issues/9).**
 
 Per docs/ROADMAP.md Phase 5: return orders/credit notes/store credits/
 refunds with approvals + audit; the operational + financial report suite;
@@ -438,7 +440,7 @@ reporting parity checks.
 ---
 
 
-## Completed capabilities (Phase 5 — this branch, in progress)
+## Completed capabilities (Phase 5 — merged into main; synthetic-fixture tests)
 
 **Returns, credit notes, refunds, store credit, exchanges (Priority A — DONE):**
 - `return_reason` policy configuration (approval/refund/replacement/store-credit/restock permissions, inspection + evidence requirements, refund deadlines) — migration 0017.
