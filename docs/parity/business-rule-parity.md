@@ -150,6 +150,41 @@ regression-tested on real PostgreSQL):
   `store_credits` rows (poisoned-dump proof: sales_returns rows never leak
   into the store-credit figure).
 
+### Cross-module accounting parity rules locked by review 5852472160 (2026-11-12)
+
+- **R-P5 AR control completeness:** the accounting AR control check
+  subtracts the SAME dated evidence the aging/statement/KPI formula does —
+  payments, deposit applications, credit-note AR credits AND store-credit
+  redemptions (each from its own business date, tenant/id protected). The
+  reversal-cancellation branch mirrors what the reversal journal actually
+  removes (the inverted sale journal plus its payments/credit-applications
+  clearing pair), so subledger ↔ GL stays an exact mirror for every
+  settlement mix.
+- **R-P6 canonical product revenue:** every product-dimension and
+  item-margin figure is CANONICAL net revenue — per line
+  `line_net × (subtotal − order_discount − tax_inclusive_total) / subtotal`,
+  the exact identity that sums per invoice to the invoice-level figure used
+  by daily-sales and the GL. Returns subtract each return line's share of
+  the credit note's DATED `net_revenue_reversal` (axis slice × reversal
+  factor), never the pre-tax-strip `credit_net_slice`. Product sales follow
+  the append-only reversal rule (`status IN ('posted','reversed')`,
+  reversal effective on its own date), and a reversal-only window emits a
+  product row to net into.
+- **R-P7 warehouse-scoped correction legs:** daily-sales joins every
+  correction/collection leg (credit notes, refunds, POS tenders) to its
+  SOURCE invoice's origin warehouse — tenders distribute across warehouses
+  pro-rata by allocation share (shares sum to exactly 1 per payment, so
+  unfiltered totals are unchanged) — and the per-warehouse rows sum exactly
+  to the unfiltered rows.
+- **R-P8 point-in-time store credit:** the customer statement's
+  store-credit column is AS OF the statement date — dated redemptions,
+  expiry evidence from `sc.expiry_date` (the date the breakage journal
+  carries) and void evidence from the void journal's business date; all
+  statuses count toward GROSS issued (`storeCreditIssued`) while only the
+  usable remainder shows in `storeCredit` — an expired credit is never
+  redeemable money and a redeemed/void credit never vanishes from the
+  issued history.
+
 Deliberate exclusions (documented, not gaps): dead/duplicate/broken PHP
 screens (43 rows), the school-era calendar remnant (1 row), root duplicates
 (4 rows), `pos-old/` backups, ESC/POS hardware adapters and offline quota

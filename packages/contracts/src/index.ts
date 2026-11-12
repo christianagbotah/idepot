@@ -2110,6 +2110,11 @@ export interface ItemMarginRowDto {
   netCogs: string;
   grossProfit: string;
   grossMarginPct: string;
+  /** Constant label: returns here are attributed to the SALE period
+   *  (invoice-dated cohort, any processing date) — a product-performance
+   *  view that intentionally does NOT sum to the accounting-period P&L
+   *  (review 5852472160 P0-B labeling requirement). */
+  returnsAttribution: 'sale-period-cohort';
 }
 
 export interface ReturnsReportRowDto {
@@ -2156,7 +2161,14 @@ export interface CustomerStatementDto {
   openingBalance: string;
   closingBalance: string;
   receivable: string;
+  /** Usable store-credit balance AS OF the statement date: dated
+   *  redemptions, and expiry/void evidence dated on or before asOf
+   *  remove the unredeemed remainder (review 5852472160 P1-D). */
   storeCredit: string;
+  /** GROSS store credit issued on or before asOf (all statuses) —
+   *  distinguishes value the customer received from value still usable
+   *  (review 5852472160 P1-D). */
+  storeCreditIssued: string;
   lines: CustomerStatementLineDto[];
 }
 

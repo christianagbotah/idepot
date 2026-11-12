@@ -96,7 +96,19 @@ export class ReconciliationService {
    *  credits accounts_receivable by its ar_amount on its own business
    *  date (the AR-first settlement decomposition) — the subledger now
    *  subtracts those credits, dated the same way, so the check keeps
-   *  reconciling for tenants that use the returns module. */
+   *  reconciling for tenants that use the returns module.
+   *
+   *  Phase 5 (independent review 5852472160, P0-A): a store-credit
+   *  REDEMPTION posts Dr store_credit_liability / Cr accounts_receivable
+   *  on the redemption's own business_date — the GL AR control drops by
+   *  that amount that day, so the subledger must subtract the same dated
+   *  leg (tenant/id/date protected). Without it, a ₵100 invoice settled
+   *  by ₵30 of store credit shows GL AR ₵70 and aged AR ₵70 but a
+   *  subledger of ₵100 — the check fails by exactly the redeemed value.
+   *  The reversal-cancellation branch stays keyed to what the reversal
+   *  journal ACTUALLY removes (the inverted sale journal plus the
+   *  payments/credit-applications clearing pair), so the mirror stays
+   *  exact for every settlement mix the GL can contain. */
   private async arControlCheck(ctx: UowContext, asOf: string): Promise<ReconciliationCheckDto> {
     const ar = await this.controlBalance(ctx, 'accounts_receivable', asOf);
     const sub = await ctx.query<{ total: string }>(
@@ -110,6 +122,9 @@ export class ReconciliationService {
          - COALESCE((SELECT SUM(cn.ar_amount) FROM credit_note cn
              WHERE cn.tenant_id = i.tenant_id AND cn.invoice_id = i.id
                AND cn.business_date <= $2::date), 0)
+         - COALESCE((SELECT SUM(scr.amount) FROM store_credit_redemption scr
+             WHERE scr.tenant_id = i.tenant_id AND scr.invoice_id = i.id
+               AND scr.business_date <= $2::date), 0)
          - CASE WHEN rev.effective_date IS NOT NULL AND rev.effective_date <= $2::date
              -- the reversal cancels the OUTSTANDING exposure as of its
              -- effective date — the exact amount its journal removed
@@ -137,10 +152,10 @@ export class ReconciliationService {
     const subledger = parseMoney(sub.rows[0]!.total);
     return this.check(
       'accounts_receivable',
-      'AR subledger (open invoices − allocations − credit applications − reversal cancellations, as-of dated)',
+      'AR subledger (open invoices − allocations − credit applications − credit-note AR credits − store-credit redemptions − reversal cancellations, as-of dated)',
       ar,
       subledger,
-      'reversed invoices leave the subledger only from the reversal journal\u2019s effective date — historical reports dated before the reversal still show the original exposure; credit applications count from their own posting date, never the deposit\u2019s',
+      'reversed invoices leave the subledger only from the reversal journal\u2019s effective date — historical reports dated before the reversal still show the original exposure; credit applications count from their own posting date, never the deposit\u2019s; store-credit redemptions settle AR from their own business date (P0-A, review 5852472160)',
     );
   }
 
