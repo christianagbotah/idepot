@@ -30,7 +30,13 @@ export type SequenceDocType =
   | 'SUPPLIER_PAYMENT'
   | 'SUPPLIER_ADVANCE_APPLICATION'
   | 'SUPPLIER_ADJUSTMENT'
-  | 'BANK_TRANSFER';
+  | 'BANK_TRANSFER'
+  // Phase 5 — returns, credit notes, refunds, store credit, exchanges
+  | 'RETURN_ORDER'
+  | 'CREDIT_NOTE'
+  | 'REFUND'
+  | 'STORE_CREDIT'
+  | 'EXCHANGE';
 
 const DEFAULT_PREFIX: Record<SequenceDocType, string> = {
   QUOTATION: 'QT',
@@ -47,6 +53,11 @@ const DEFAULT_PREFIX: Record<SequenceDocType, string> = {
   SUPPLIER_ADVANCE_APPLICATION: 'SAA',
   SUPPLIER_ADJUSTMENT: 'ADJ',
   BANK_TRANSFER: 'TRF',
+  RETURN_ORDER: 'RTN',
+  CREDIT_NOTE: 'CRN',
+  REFUND: 'RFD',
+  STORE_CREDIT: 'SCR',
+  EXCHANGE: 'EXC',
 };
 
 const DEFAULT_PADDING: Record<SequenceDocType, number> = {
@@ -64,6 +75,11 @@ const DEFAULT_PADDING: Record<SequenceDocType, number> = {
   SUPPLIER_ADVANCE_APPLICATION: 5,
   SUPPLIER_ADJUSTMENT: 5,
   BANK_TRANSFER: 5,
+  RETURN_ORDER: 5,
+  CREDIT_NOTE: 5,
+  REFUND: 5,
+  STORE_CREDIT: 5,
+  EXCHANGE: 5,
 };
 
 export interface SequencePrincipal {

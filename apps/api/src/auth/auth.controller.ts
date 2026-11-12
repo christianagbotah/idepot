@@ -5,6 +5,8 @@ import {
   LoginRequestSchema,
   RefreshRequestSchema,
   DeviceRegisterRequestSchema,
+  ChangeOwnPasswordSchema,
+  UpdateOwnProfileSchema,
 } from '@idepot/contracts';
 import { parseBody } from '../parse-body.js';
 import { Public } from './public.decorator.js';
@@ -14,10 +16,15 @@ import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { RequirePermissions } from '../rbac/permissions.decorator.js';
 import { RbacGuard } from '../rbac/rbac.guard.js';
 import type { Principal } from './jwt-auth.guard.js';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class
+import { UsersService } from '../admin/users.service.js';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly users: UsersService,
+  ) {}
 
   @Public()
   @Post('login')
@@ -42,5 +49,20 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   me(@Req() req: Request): Principal {
     return req.principal!;
+  }
+
+  /** Own-profile self-service (legacy manage_profile.php): display name. */
+  @Post('profile')
+  @UseGuards(JwtAuthGuard)
+  updateProfile(@Req() req: Request, @Body() body: unknown) {
+    return this.users.updateOwnProfile(req.principal!, parseBody(UpdateOwnProfileSchema, body).displayName);
+  }
+
+  /** Own-profile self-service: password change (requires the current one). */
+  @Post('change-password')
+  @UseGuards(JwtAuthGuard)
+  changePassword(@Req() req: Request, @Body() body: unknown) {
+    const dto = parseBody(ChangeOwnPasswordSchema, body);
+    return this.users.changeOwnPassword(req.principal!, dto.currentPassword, dto.newPassword);
   }
 }

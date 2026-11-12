@@ -1704,3 +1704,676 @@ export interface BankReconciliationDto {
   status: string;
   finalizedAt: string | null;
 }
+
+/* ======================================================================
+ * Phase 5 — Returns, credit notes, refunds, store credit, exchanges,
+ * reporting, KPI, administration, audit search, optional loyalty.
+ * ==================================================================== */
+
+/* ----------------- return reasons (configurable policy) ------------------ */
+
+export interface ReturnReasonDto {
+  id: string; code: string; name: string;
+  requiresApproval: boolean;
+  refundPermitted: boolean;
+  replacementPermitted: boolean;
+  storeCreditPermitted: boolean;
+  restockPermitted: boolean;
+  inspectionRequired: boolean;
+  evidenceRequired: boolean;
+  refundDeadlineDays: number | null;
+  isActive: boolean;
+  sortOrder: number;
+}
+
+export const CreateReturnReasonSchema = z.object({
+  code: z.string().min(2).max(40).regex(/^[A-Z0-9_]+$/, 'UPPER_SNAKE code'),
+  name: z.string().min(3).max(120),
+  requiresApproval: z.boolean().default(true),
+  refundPermitted: z.boolean().default(true),
+  replacementPermitted: z.boolean().default(true),
+  storeCreditPermitted: z.boolean().default(true),
+  restockPermitted: z.boolean().default(true),
+  inspectionRequired: z.boolean().default(false),
+  evidenceRequired: z.boolean().default(false),
+  refundDeadlineDays: z.number().int().positive().max(3650).nullish(),
+  sortOrder: z.number().int().min(0).max(9999).default(0),
+});
+export type CreateReturnReason = z.infer<typeof CreateReturnReasonSchema>;
+
+export const UpdateReturnReasonSchema = CreateReturnReasonSchema.partial().extend({
+  isActive: z.boolean().optional(),
+});
+export type UpdateReturnReason = z.infer<typeof UpdateReturnReasonSchema>;
+
+/* ----------------- return orders ------------------ */
+
+export const ReturnLineSchema = z.object({
+  invoiceLineId: uuid(),
+  quantity: qty(),
+  condition: z.enum(['new_unopened','like_new','good','fair','damaged','defective','unsellable','quarantine_pending']),
+  disposition: z.enum(['restock_sellable','restock_damaged','quarantine','scrap','reject','no_restock']),
+  /** per-line reason override (defaults to the header reason) */
+  reasonCode: z.string().min(2).max(40).nullish(),
+  /** where the goods land — defaults to the header warehouse */
+  restockWarehouseId: uuid().nullish(),
+  note: z.string().max(300).nullish(),
+});
+export type ReturnLineInput = z.infer<typeof ReturnLineSchema>;
+
+export const CreateReturnSchema = z.object({
+  invoiceId: uuid(),
+  reasonCode: z.string().min(2).max(40),
+  /** receiving/inspection warehouse (defaults to the invoice's) */
+  warehouseId: uuid().nullish(),
+  creditDisposition: z.enum(['refund','store_credit']).default('refund'),
+  lines: z.array(ReturnLineSchema).max(500).default([]),
+  /** no-stock price credit (authorized adjustment returns): must be 0
+   *  when lines exist */
+  adjustmentAmount: money().default('0'),
+  customerNote: z.string().max(1000).nullish(),
+  internalNote: z.string().max(1000).nullish(),
+  businessDate: isoDate().optional(),
+  /** idempotent retry identity */
+  clientDocId: z.string().min(6).max(100).nullish(),
+  /** create AND submit in one command (POS fast path) */
+  submit: z.boolean().default(false),
+  /** TEST ONLY: deterministic failure after the deepest writes */
+  simulateFailure: z.literal('after_writes').optional(),
+})
+.refine((d) => d.lines.length > 0 || Number(d.adjustmentAmount) > 0, {
+  message: 'a return needs physical lines and/or a positive adjustment amount',
+});
+export type CreateReturn = z.infer<typeof CreateReturnSchema>;
+
+export const SubmitReturnSchema = z.object({
+  clientDocId: z.string().min(6).max(100).nullish(),
+});
+export const ApproveReturnSchema = z.object({});
+export const RejectReturnSchema = z.object({
+  reason: z.string().min(10).max(500),
+});
+export const ReceiveReturnSchema = z.object({
+  inspectionNote: z.string().max(1000).nullish(),
+});
+export const CancelReturnSchema = z.object({
+  reason: z.string().min(10).max(500),
+});
+
+export interface ReturnLineDto {
+  id: string;
+  invoiceLineId: string; productId: string; productCode: string | null; productName: string | null;
+  unitId: string | null;
+  quantity: string; quantityBase: string;
+  originalQuantityBase: string;
+  condition: string; disposition: string;
+  restockWarehouseId: string | null;
+  reasonCode: string | null;
+  unitPrice: string; lineNet: string;
+  orderDiscountShare: string; effectiveNet: string;
+  costAtSale: string | null; cogsAtSale: string | null;
+  note: string | null;
+}
+
+export interface ReturnOrderDto {
+  id: string; code: string;
+  invoiceId: string; invoiceCode: string | null;
+  customerId: string; customerName: string | null;
+  warehouseId: string;
+  status: 'draft' | 'submitted' | 'approved' | 'received' | 'processed' | 'completed' | 'rejected' | 'cancelled';
+  reasonCode: string | null;
+  creditDisposition: 'refund' | 'store_credit';
+  adjustmentAmount: string;
+  grossCredit: string | null;
+  arAmount: string | null;
+  refundAmount: string | null;
+  storeCreditAmount: string | null;
+  cogsReversal: string | null;
+  creditNoteId: string | null; creditNoteCode: string | null;
+  approvedBy: string | null; approvedAt: string | null; autoApproved: boolean | null;
+  rejectedBy: string | null; rejectedAt: string | null; rejectionReason: string | null;
+  receivedBy: string | null; receivedAt: string | null; inspectionNote: string | null;
+  processedBy: string | null; processedAt: string | null;
+  completedAt: string | null;
+  customerNote: string | null; internalNote: string | null;
+  businessDate: string; createdAt: string;
+  lines: ReturnLineDto[];
+}
+
+/** Per-invoice-line returnable-quantity evidence for the returns UI. */
+export interface ReturnableInvoiceLineDto {
+  invoiceLineId: string;
+  productId: string; productCode: string | null; productName: string | null;
+  unitId: string | null;
+  quantityBase: string;
+  returnedQuantityBase: string;
+  returnableQuantityBase: string;
+  unitPrice: string; lineNet: string; effectiveNet: string;
+  costAtSale: string | null;
+}
+export interface ReturnableInvoiceDto {
+  invoiceId: string; code: string;
+  customerId: string | null; customerName: string | null;
+  businessDate: string; total: string;
+  paymentStatus: string; amountPaid: string; amountDue: string;
+  taxInclusive: boolean;
+  orderDiscount: string; subtotal: string;
+  lines: ReturnableInvoiceLineDto[];
+}
+
+/* ----------------- credit notes ------------------ */
+
+export interface CreditNoteTaxComponentDto {
+  id: string; componentName: string; rate: string; inclusive: boolean;
+  taxableBasis: string; taxAmount: string;
+}
+export interface CreditNoteDto {
+  id: string; code: string;
+  returnOrderId: string; returnOrderCode: string | null;
+  invoiceId: string; invoiceCode: string | null;
+  customerId: string; customerName: string | null;
+  businessDate: string;
+  total: string;
+  netRevenueReversal: string;
+  taxReversalTotal: string;
+  arAmount: string; refundAmount: string; storeCreditAmount: string;
+  cogsReversal: string;
+  journalEntryId: string | null;
+  refundedAmount: string;
+  outstandingRefundAmount: string;
+  note: string | null;
+  createdAt: string;
+  taxComponents: CreditNoteTaxComponentDto[];
+}
+
+/* ----------------- refunds ------------------ */
+
+export const CreateRefundSchema = z.object({
+  creditNoteId: uuid(),
+  amount: money(),
+  method: z.enum(['cash', 'momo', 'cheque', 'bank_transfer']),
+  bankAccountId: uuid().nullish(),
+  momoProvider: z.enum(['MTN', 'Vodafone', 'AirtelTigo']).nullish(),
+  momoPhone: z.string().max(25).nullish(),
+  reference: z.string().max(120).nullish(),
+  note: z.string().max(500).nullish(),
+  businessDate: isoDate().optional(),
+  clientDocId: z.string().min(6).max(100).nullish(),
+  /** request AND approve AND post in one command (small-refund fast
+   *  path — the principal still needs returns:refund) */
+  approveAndPost: z.boolean().default(false),
+  simulateFailure: z.literal('after_writes').optional(),
+});
+export type CreateRefund = z.infer<typeof CreateRefundSchema>;
+
+export const ApproveRefundSchema = z.object({ id: uuid() });
+export const PostRefundSchema = z.object({ id: uuid() });
+export const SettleRefundSchema = z.object({
+  id: uuid(),
+  settlementReference: z.string().min(2).max(120),
+});
+export const CancelRefundSchema = z.object({
+  id: uuid(),
+  reason: z.string().min(10).max(500),
+});
+export const FailRefundSchema = z.object({
+  id: uuid(),
+  reason: z.string().min(4).max(500),
+});
+
+export interface RefundDto {
+  id: string; code: string;
+  creditNoteId: string; creditNoteCode: string | null;
+  returnOrderId: string; returnOrderCode: string | null;
+  customerId: string; customerName: string | null;
+  amount: string;
+  method: string;
+  bankAccountId: string | null; bankAccountCode: string | null;
+  momoProvider: string | null; momoPhone: string | null;
+  reference: string | null; note: string | null;
+  status: 'requested' | 'approved' | 'posted' | 'settled' | 'cancelled' | 'failed';
+  approvedBy: string | null; approvedAt: string | null;
+  postedBy: string | null; postedAt: string | null;
+  journalEntryId: string | null;
+  settledAt: string | null; settledBy: string | null; settlementReference: string | null;
+  businessDate: string; createdAt: string;
+}
+
+/* ----------------- store credit ------------------ */
+
+export const RedeemStoreCreditSchema = z.object({
+  storeCreditId: uuid(),
+  invoiceId: uuid(),
+  amount: money(),
+  businessDate: isoDate().optional(),
+  clientDocId: z.string().min(6).max(100).nullish(),
+});
+export type RedeemStoreCredit = z.infer<typeof RedeemStoreCreditSchema>;
+
+export interface StoreCreditDto {
+  id: string; code: string;
+  creditNoteId: string; creditNoteCode: string | null;
+  customerId: string; customerName: string | null;
+  amount: string;
+  redeemedAmount: string;
+  remainingAmount: string;
+  businessDate: string; expiryDate: string | null;
+  status: 'active' | 'redeemed' | 'expired' | 'void';
+  note: string | null;
+  createdAt: string;
+}
+export interface StoreCreditRedemptionDto {
+  id: string;
+  storeCreditId: string; storeCreditCode: string | null;
+  invoiceId: string; invoiceCode: string | null;
+  amount: string;
+  journalEntryId: string | null;
+  businessDate: string; createdAt: string;
+}
+
+/* ----------------- exchanges ------------------ */
+
+export const ExchangeReplacementLineSchema = z.object({
+  productId: uuid(),
+  quantity: qty(),
+  unitId: uuid().nullish(),
+  quantityTransacted: qty().nullish(),
+  conversionFactor: qty().nullish(),
+  unitPrice: money(),
+  note: z.string().max(300).nullish(),
+});
+export type ExchangeReplacementLineInput = z.infer<typeof ExchangeReplacementLineSchema>;
+
+export const CreateExchangeSchema = z.object({
+  invoiceId: uuid(),
+  reasonCode: z.string().min(2).max(40),
+  returnLines: z.array(ReturnLineSchema).min(1).max(500),
+  replacement: z.object({
+    warehouseId: uuid(),
+    lines: z.array(ExchangeReplacementLineSchema).min(1).max(500).refine(
+      (lines) => new Set(lines.map((l) => l.productId)).size === lines.length,
+      { message: 'duplicate productId in replacement lines' },
+    ),
+  }),
+  /** additional-payment tenders (required when the replacement is more
+   *  expensive than the return credit) */
+  tenders: z.array(TenderSchema).max(10).default([]),
+  businessDate: isoDate().optional(),
+  clientDocId: z.string().min(6).max(100).nullish(),
+  simulateFailure: z.literal('after_writes').optional(),
+});
+export type CreateExchange = z.infer<typeof CreateExchangeSchema>;
+
+export interface ExchangeDto {
+  id: string; code: string;
+  returnOrderId: string; returnOrderCode: string | null;
+  replacementInvoiceId: string; replacementInvoiceCode: string | null;
+  customerId: string; customerName: string | null;
+  returnCredit: string;
+  replacementTotal: string;
+  priceDifference: string;
+  settlement: 'additional_payment' | 'residual_credit' | 'even';
+  consumedRefundAmount: string;
+  journalEntryId: string | null;
+  businessDate: string; createdAt: string;
+}
+
+/* ----------------- operational reports (Phase 5 §10) ------------------ */
+
+export const ReportQuerySchema = z.object({
+  from: isoDate(),
+  to: isoDate(),
+  branchId: uuid().nullish(),
+  warehouseId: uuid().nullish(),
+  customerId: uuid().nullish(),
+  supplierId: uuid().nullish(),
+  productId: uuid().nullish(),
+  userId: uuid().nullish(),
+  limit: z.coerce.number().int().min(1).max(1000).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+}).refine((q) => q.from <= q.to, {
+  message: 'report range is inverted: "from" must be <= "to" (ISO dates compare lexicographically)',
+});
+export type ReportQuery = z.infer<typeof ReportQuerySchema>;
+
+export interface DailySalesRowDto {
+  businessDate: string;
+  salesCount: number;
+  grossSales: string;
+  netSales: string;
+  taxTotal: string;
+  cogsTotal: string;
+  grossProfit: string;
+  cashSales: string;
+  creditSales: string;
+  returnsTotal: string;
+  refundsTotal: string;
+  netRevenue: string;
+}
+
+export interface DimensionSalesRowDto {
+  dimensionId: string | null;
+  dimensionLabel: string;
+  salesCount: number;
+  netSales: string;
+  returns: string;
+  netRevenue: string;
+  cogs: string;
+  grossProfit: string;
+  grossMarginPct: string;
+}
+
+export interface TenderTotalsRowDto {
+  method: string;
+  received: string;
+  refunded: string;
+  net: string;
+}
+
+export interface DailyStockRowDto {
+  businessDate: string;
+  productId: string; productCode: string | null; productName: string | null;
+  warehouseId: string; warehouseCode: string | null;
+  opening: string;
+  receipts: string;
+  transfersIn: string;
+  returnsRestocked: string;
+  positiveAdjustments: string;
+  salesIssues: string;
+  transfersOut: string;
+  writeOffs: string;
+  negativeAdjustments: string;
+  closing: string;
+}
+
+export interface BacklogRowDto {
+  salesOrderId: string; orderCode: string | null;
+  orderDate: string;
+  productId: string; productCode: string | null; productName: string | null;
+  orderedQty: string;
+  deliveredQty: string;
+  cancelledQty: string;
+  backlogQty: string;
+  unitPrice: string;
+  backlogValue: string;
+}
+
+export interface ItemMarginRowDto {
+  productId: string; productCode: string | null; productName: string | null;
+  quantitySold: string;
+  quantityReturned: string;
+  grossRevenue: string;
+  returns: string;
+  netRevenue: string;
+  cogs: string;
+  cogsReversal: string;
+  netCogs: string;
+  grossProfit: string;
+  grossMarginPct: string;
+  /** Constant label: returns here are attributed to the SALE period
+   *  (invoice-dated cohort, any processing date) — a product-performance
+   *  view that intentionally does NOT sum to the accounting-period P&L
+   *  (review 5852472160 P0-B labeling requirement). */
+  returnsAttribution: 'sale-period-cohort';
+}
+
+export interface ReturnsReportRowDto {
+  reasonCode: string;
+  returnsCount: number;
+  quantityReturned: string;
+  grossCredit: string;
+  refunded: string;
+  storeCreditIssued: string;
+}
+
+export interface ShiftVarianceRowDto {
+  shiftId: string; shiftCode: string | null;
+  userName: string | null;
+  openedAt: string | null; closedAt: string | null;
+  expectedCash: string;
+  countedCash: string | null;
+  variance: string | null;
+  status: string;
+}
+
+export interface StockValuationRowDto {
+  warehouseId: string; warehouseCode: string | null;
+  productId: string; productCode: string | null; productName: string | null;
+  quantityBase: string;
+  totalValue: string;
+}
+
+/* ----------------- customer statement & aging (Phase 5 §11) ------------------ */
+
+export interface CustomerStatementLineDto {
+  businessDate: string;
+  documentType: string;
+  documentCode: string;
+  description: string;
+  debit: string;
+  credit: string;
+  balance: string;
+}
+
+export interface CustomerStatementDto {
+  customerId: string; customerName: string | null;
+  asOf: string;
+  openingBalance: string;
+  closingBalance: string;
+  receivable: string;
+  /** Usable store-credit balance AS OF the statement date: dated
+   *  redemptions, and expiry/void evidence dated on or before asOf
+   *  remove the unredeemed remainder (review 5852472160 P1-D). */
+  storeCredit: string;
+  /** GROSS store credit issued on or before asOf (all statuses) —
+   *  distinguishes value the customer received from value still usable
+   *  (review 5852472160 P1-D). */
+  storeCreditIssued: string;
+  lines: CustomerStatementLineDto[];
+}
+
+export interface AgingRowDto {
+  partyId: string; partyCode: string | null; partyName: string | null;
+  current: string;
+  days31to60: string;
+  days61to90: string;
+  days91to120: string;
+  over120: string;
+  total: string;
+}
+
+/* ----------------- KPI (Phase 5 §13) ------------------ */
+
+export interface KpiDefinitionDto {
+  metric: string;
+  unit: 'money' | 'count' | 'ratio' | 'days';
+  definition: string;
+}
+
+export interface KpiSnapshotDto {
+  metric: string;
+  scopeType: string;
+  periodStart: string;
+  periodEnd: string;
+  value: string;
+  unit: string;
+  sourceWatermark: string;
+  calculatedAt: string;
+  refreshStatus: string;
+  previousValue: string | null;
+  changePct: string | null;
+}
+
+export const CreateKpiTargetSchema = z.object({
+  metric: z.string().min(2).max(80),
+  scopeType: z.enum(['tenant', 'branch']).default('tenant'),
+  scopeId: uuid().nullish(),
+  periodStart: isoDate(),
+  periodEnd: isoDate(),
+  targetValue: money(),
+  note: z.string().max(500).nullish(),
+});
+export type CreateKpiTarget = z.infer<typeof CreateKpiTargetSchema>;
+
+export interface KpiTargetDto {
+  id: string;
+  metric: string;
+  scopeType: string; scopeId: string | null;
+  periodStart: string; periodEnd: string;
+  targetValue: string;
+  note: string | null;
+  createdAt: string;
+}
+
+export interface KpiAchievementDto {
+  metric: string;
+  periodStart: string; periodEnd: string;
+  target: string;
+  actual: string | null;
+  achievementPct: string | null;
+  gap: string | null;
+  zeroTarget: boolean;
+}
+
+/* ----------------- administration & settings (Phase 5 §15) ------------------ */
+
+export const UpsertTenantSettingSchema = z.object({
+  key: z.string().min(2).max(80).regex(/^[a-z0-9_.]+$/, 'lower.snake_case key'),
+  value: z.unknown(),
+  effectiveFrom: isoDate().optional(),
+  effectiveTo: isoDate().nullish(),
+  note: z.string().max(500).nullish(),
+});
+export type UpsertTenantSetting = z.infer<typeof UpsertTenantSettingSchema>;
+
+export interface TenantSettingDto {
+  id: string;
+  key: string;
+  value: unknown;
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  note: string | null;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+/* ----------------- audit search & export (Phase 5 §16) ------------------ */
+
+export const AuditSearchQuerySchema = z.object({
+  q: z.string().max(120).nullish(),
+  userId: uuid().nullish(),
+  entityType: z.string().max(60).nullish(),
+  entityId: z.string().max(80).nullish(),
+  action: z.string().max(80).nullish(),
+  from: isoDate().nullish(),
+  to: isoDate().nullish(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+});
+export type AuditSearchQuery = z.infer<typeof AuditSearchQuerySchema>;
+
+export interface AuditEventDto {
+  id: string;
+  occurredAt: string;
+  actorUserId: string | null;
+  actorDisplay: string;
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  details: Record<string, unknown>;
+}
+
+/** Linked document timeline (invoice → return → credit note → refund /
+ *  store credit — Phase 5 §16). */
+export interface AuditTimelineEntryDto {
+  documentType: string;
+  documentId: string;
+  code: string | null;
+  businessDate: string | null;
+  description: string;
+  amount: string | null;
+}
+
+/* ----------------- loyalty foundation (optional, OFF by default) ------------------ */
+
+export const CreateLoyaltyProgramSchema = z.object({
+  code: z.string().min(2).max(40).regex(/^[A-Z0-9_]+$/),
+  name: z.string().min(3).max(120),
+  pointsPerCurrency: z.string().regex(/^\d{1,3}(\.\d{1,6})?$/),
+  redemptionRate: money(),
+  minRedeemPoints: z.number().int().positive().max(1_000_000).nullish(),
+  pointsExpiryDays: z.number().int().positive().max(3650).nullish(),
+  note: z.string().max(500).nullish(),
+});
+export type CreateLoyaltyProgram = z.infer<typeof CreateLoyaltyProgramSchema>;
+
+export interface LoyaltyProgramDto {
+  id: string; code: string; name: string;
+  isActive: boolean;
+  pointsPerCurrency: string;
+  redemptionRate: string;
+  minRedeemPoints: number | null;
+  pointsExpiryDays: number | null;
+  note: string | null;
+  createdAt: string;
+}
+
+export const EnrollLoyaltySchema = z.object({
+  programId: uuid(),
+  customerId: uuid(),
+  consentNote: z.string().min(3).max(500),
+});
+export type EnrollLoyalty = z.infer<typeof EnrollLoyaltySchema>;
+
+/* --------------------- user & profile administration (Phase 5 §16) -------- */
+
+/** Role catalog mirrored from @idepot/auth ROLES (contracts stays zod-only). */
+const USER_ROLE = z.enum(['owner', 'admin', 'manager', 'cashier', 'auditor', 'accountant', 'procurement']);
+
+export const CreateUserSchema = z.object({
+  email: z.string().email().max(200),
+  displayName: z.string().min(1).max(200),
+  password: z.string().min(8).max(200),
+  roles: z.array(USER_ROLE).min(1).max(7),
+});
+export type CreateUser = z.infer<typeof CreateUserSchema>;
+
+export const UpdateUserSchema = z
+  .object({
+    displayName: z.string().min(1).max(200).optional(),
+    roles: z.array(USER_ROLE).min(1).max(7).optional(),
+    status: z.enum(['active', 'disabled']).optional(),
+  })
+  .refine((o) => o.displayName !== undefined || o.roles !== undefined || o.status !== undefined, {
+    message: 'at least one of displayName, roles or status is required',
+  });
+export type UpdateUser = z.infer<typeof UpdateUserSchema>;
+
+export const ResetUserPasswordSchema = z.object({
+  password: z.string().min(8).max(200),
+});
+export type ResetUserPassword = z.infer<typeof ResetUserPasswordSchema>;
+
+export interface UserDto {
+  id: string;
+  email: string;
+  displayName: string;
+  roles: string[];
+  status: string;
+  createdAt: string;
+}
+
+export const ChangeOwnPasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1).max(200),
+    newPassword: z.string().min(8).max(200),
+  })
+  .refine((o) => o.newPassword !== o.currentPassword, {
+    message: 'the new password must differ from the current one',
+  });
+export type ChangeOwnPassword = z.infer<typeof ChangeOwnPasswordSchema>;
+
+export const UpdateOwnProfileSchema = z.object({
+  displayName: z.string().min(1).max(200),
+});
+export type UpdateOwnProfile = z.infer<typeof UpdateOwnProfileSchema>;

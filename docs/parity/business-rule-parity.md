@@ -78,15 +78,20 @@ verdicts).
 
 ## 7. Verified open gaps (register in issue #9)
 
-Functional gaps verified against the current code on 2026-11-09 — each maps
+Functional gaps verified against the current code on 2026-11-09 (updated
+2026-11-10 after independent review 5834590343) — each maps
 to matrix rows with `pending`/`partial`:
 
-1. **User/staff management** (`admin_list.php`, `modal_admin_add/edit.php`):
-   no user-management controller or web page exists (only `/auth/login`,
-   `/auth/refresh`, `/auth/devices`, `/auth/me`). RBAC catalog and matrix
-   tests exist; CRUD does not.
-2. **Own-profile management** (`manage_profile.php`): `/auth/me` is read-only;
-   no password-change endpoint or page.
+1. ~~**User/staff management** (`admin_list.php`, `modal_admin_add/edit.php`)~~
+   **RESOLVED 2026-11-09 (Phase 5 branch):** `users:manage` permission
+   (owner/admin only), `GET/POST /admin/users`, `PATCH /admin/users/:id`,
+   `POST /admin/users/:id/reset-password` + `/admin/users` page; Argon2id;
+   audited before/after role evidence; self-lockout + last-active-admin
+   guards; 15-test integration suite + RBAC-matrix rows for all 7 roles.
+2. ~~**Own-profile management** (`manage_profile.php`)~~
+   **RESOLVED 2026-11-09 (Phase 5 branch):** `/profile` page with
+   `POST /auth/profile` (display name) and `POST /auth/change-password`
+   (current password required, reuse rejected, audited).
 3. **Global search** (`search_result.php`): per-page search only; no
    cross-entity search endpoint.
 4. **SMS settings/integration** (`sms_settings.php`): settings versioning
@@ -98,16 +103,87 @@ to matrix rows with `pending`/`partial`:
 6. **Price-list management web UI** (`pricing.php` family): price-lists API
    (create/close/resolve, effective-dated) implemented; management page
    pending.
-7. **Operational reports integration tests**: all 12 report endpoints
-   (`daily-sales`, `daily-stock`, `backlog`, `item-margin`, `tender-totals`,
-   `returns-by-reason`, `shift-variance`, `stock-valuation`,
-   `customer-statement`, `ar-aging`, `ap-aging`, `sales-by-*`) are
-   implemented and web-visible but have **zero direct API test coverage**
-   (verified by search on 2026-11-09). Financial statements are tested
-   (accounting-statements, financial-corrections).
+7. ~~**Operational reports integration tests**~~
+   **RESOLVED 2026-11-09 (Phase 5 branch):** the new 10-test
+   `reports-endpoints.integration.test.ts` covers every operational report
+   endpoint with exact money/quantity assertions — and the first direct
+   coverage immediately exposed and fixed THREE real defects:
+   `daily-sales` emitted JS-Date garbage as `businessDate` ("Mon Nov 09" —
+   wrong ISO contract, colliding across years) and returned `returnsTotal`
+   scaled ×10⁴; `daily-stock` double-negated SIGNED outflow quantities
+   (salesIssues showed −4 and the derived closing was wrong whenever sales
+   existed); `returns-by-reason` 500'd on ANY tenant with processed returns
+   (PostgreSQL: subquery uses ungrouped column "rr.id" from outer query).
+   Financial statements remain covered by accounting-statements /
+   financial-corrections.
+   **HARDENED 2026-11-10 (review 5834590343):** +19 integration tests — the
+   6-test returns tax matrix (full/partial/cumulative × exclusive/inclusive/
+   mixed, exact entitlement/journal/cap assertions) and the 13-test
+   historical-reports suite (six-date daily-sales history stability,
+   point-in-time credit sales, append-only invoice reversals, as-of
+   statement/aging/AR-control reconciliation, four daily-stock [from,to]
+   range windows asserting the returned `row.closing`).
 8. **Legacy landing dashboard** (`dashboard.php`): login lands on `/catalog`;
    KPI dashboard at `/kpi` covers analytics. A legacy-style home screen does
    not exist (intentional change — confirm with owner in UAT).
+
+### Report-financial parity rules locked by review 5834590343 (2026-11-10)
+
+Beyond view-level parity, the operational reports now carry DOCUMENTED
+financial-parity rules that the legacy PHP reports never guaranteed (each is
+regression-tested on real PostgreSQL):
+
+- **R-P1 tax treatments:** return entitlement adds ONLY exclusive tax;
+  contra-revenue strips ONLY inclusive tax (the legacy `sales_order_refund`
+  had no tax handling at all — it was broken against its own schema).
+- **R-P2 history stability:** daily sales emit a row for EVERY active date;
+  credit-sales figures are point-in-time; reversals are append-only (sale on
+  its date, inverse on the reversal date); `daily-stock` honours the full
+  [from, to] window with the returned closing asserted directly.
+- **R-P3 as-of settlement:** customer statements, AR aging, KPI receivables
+  and the accounting AR control settle strictly as of the report date using
+  ONE canonical reversal-aware formula (dated payments, deposit
+  applications, store-credit redemptions, credit-note AR credits, reversal
+  cancellations) — the legacy statements mixed current settlement state into
+  historical periods.
+- **R-P4 migration reconciliation:** `legacyStoreCreditsFound` counts only
+  `store_credits` rows (poisoned-dump proof: sales_returns rows never leak
+  into the store-credit figure).
+
+### Cross-module accounting parity rules locked by review 5852472160 (2026-11-12)
+
+- **R-P5 AR control completeness:** the accounting AR control check
+  subtracts the SAME dated evidence the aging/statement/KPI formula does —
+  payments, deposit applications, credit-note AR credits AND store-credit
+  redemptions (each from its own business date, tenant/id protected). The
+  reversal-cancellation branch mirrors what the reversal journal actually
+  removes (the inverted sale journal plus its payments/credit-applications
+  clearing pair), so subledger ↔ GL stays an exact mirror for every
+  settlement mix.
+- **R-P6 canonical product revenue:** every product-dimension and
+  item-margin figure is CANONICAL net revenue — per line
+  `line_net × (subtotal − order_discount − tax_inclusive_total) / subtotal`,
+  the exact identity that sums per invoice to the invoice-level figure used
+  by daily-sales and the GL. Returns subtract each return line's share of
+  the credit note's DATED `net_revenue_reversal` (axis slice × reversal
+  factor), never the pre-tax-strip `credit_net_slice`. Product sales follow
+  the append-only reversal rule (`status IN ('posted','reversed')`,
+  reversal effective on its own date), and a reversal-only window emits a
+  product row to net into.
+- **R-P7 warehouse-scoped correction legs:** daily-sales joins every
+  correction/collection leg (credit notes, refunds, POS tenders) to its
+  SOURCE invoice's origin warehouse — tenders distribute across warehouses
+  pro-rata by allocation share (shares sum to exactly 1 per payment, so
+  unfiltered totals are unchanged) — and the per-warehouse rows sum exactly
+  to the unfiltered rows.
+- **R-P8 point-in-time store credit:** the customer statement's
+  store-credit column is AS OF the statement date — dated redemptions,
+  expiry evidence from `sc.expiry_date` (the date the breakage journal
+  carries) and void evidence from the void journal's business date; all
+  statuses count toward GROSS issued (`storeCreditIssued`) while only the
+  usable remainder shows in `storeCredit` — an expired credit is never
+  redeemable money and a redeemed/void credit never vanishes from the
+  issued history.
 
 Deliberate exclusions (documented, not gaps): dead/duplicate/broken PHP
 screens (43 rows), the school-era calendar remnant (1 row), root duplicates

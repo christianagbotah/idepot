@@ -59,6 +59,16 @@ export const PERMISSIONS = [
   'banking:write',    // create bank accounts, transfers, import statements
   'banking:reconcile', // match/unmatch statement lines, finalize reconciliations
   'financial-report:read', // trial balance, P&L, balance sheet, cash flow
+  // Phase 5 — returns, reporting, KPI, administration, loyalty
+  'returns:read',     // view return orders, credit notes, refunds, store credits
+  'returns:write',    // create/submit return orders (cashier core action)
+  'returns:approve',  // approve returns + rejection/cancellation authority
+  'returns:refund',   // request/approve/post refunds (money OUT — high risk)
+  'reports:read',     // operational reports (sales, stock, backlog, margins)
+  'kpi:manage',       // KPI snapshot rebuilds + target administration
+  'settings:manage',  // tenant settings administration (versioned config)
+  'loyalty:manage',   // optional loyalty foundation administration (inactive by default)
+  'users:manage',     // tenant user/staff administration: create, edit roles, disable (owner/admin only)
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -114,6 +124,14 @@ const MANAGER_PERMISSIONS: readonly Permission[] = [
   'banking:write',
   'banking:reconcile',
   'financial-report:read',
+  // Phase 5 — full returns/refunds authority + reporting/KPI/settings
+  'returns:read',
+  'returns:write',
+  'returns:approve',
+  'returns:refund',
+  'reports:read',
+  'kpi:manage',
+  'settings:manage',
 ];
 
 const CASHIER_PERMISSIONS: readonly Permission[] = [
@@ -137,6 +155,11 @@ const CASHIER_PERMISSIONS: readonly Permission[] = [
   'shift:read',
   'shift:write',
   'sync:device',
+  // Phase 5 — a cashier may CAPTURE a return for the customer, but
+  // never approve one, never post a refund (money out) — those need a
+  // manager/accountant with returns:approve / returns:refund.
+  'returns:read',
+  'returns:write',
 ];
 
 const AUDITOR_PERMISSIONS: readonly Permission[] = [
@@ -159,6 +182,9 @@ const AUDITOR_PERMISSIONS: readonly Permission[] = [
   'accounting:read',
   'banking:read',
   'financial-report:read',
+  // Phase 5 — read-only returns evidence + operational reports
+  'returns:read',
+  'reports:read',
 ];
 
 /** Accountant (Phase 4): books, journals, banking, close — not POS. */
@@ -188,6 +214,13 @@ const ACCOUNTANT_PERMISSIONS: readonly Permission[] = [
   'banking:write',
   'banking:reconcile',
   'financial-report:read',
+  // Phase 5 — refunds are money-out accounting; accountants may approve
+  // and post them, run reports and KPI administration
+  'returns:read',
+  'returns:approve',
+  'returns:refund',
+  'reports:read',
+  'kpi:manage',
 ];
 
 /** Procurement officer (Phase 4): POs, receipts, supplier records view. */

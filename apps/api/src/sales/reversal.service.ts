@@ -127,6 +127,23 @@ export class ReversalService {
       }
       throw new ConflictError(`invoice ${String(invoice.code)} is ${String(invoice.status)} — only a posted invoice can be reversed`);
     }
+    // Phase 5 returns integration: a FULL reversal and PARTIAL returns are
+    // incompatible correction paths against the same invoice — reversing an
+    // invoice that already returned goods would double-restore stock and
+    // double-credit the customer (returns-refund-credit.md §4). The
+    // return-side mirror check lives in ReturnsService.loadInvoiceEvidence.
+    const returnRes = await ctx.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n
+         FROM return_order ro
+        WHERE ro.invoice_id = $1
+          AND ro.status IN ('submitted','approved','received','processed','completed')`,
+      [invoiceId],
+    );
+    if (Number(returnRes.rows[0]!.n) > 0) {
+      throw new ConflictError(
+        `invoice ${String(invoice.code)} already has return orders against it — reverse the returns through the returns module (credit notes), not a full invoice reversal`,
+      );
+    }
     const customerId = invoice.customer_id ? String(invoice.customer_id) : null;
     const invoiceCode = String(invoice.code);
 
