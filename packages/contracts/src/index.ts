@@ -253,6 +253,15 @@ export interface PriceListItemDto {
 export const ClosePriceListItemSchema = z.object({ effectiveTo: isoDate() });
 export type ClosePriceListItem = z.infer<typeof ClosePriceListItemSchema>;
 
+/** Phase 6 price-list management UX: an item row enriched with the catalog
+ *  labels the web table displays (product/unit denormalized for the view —
+ *  the authoritative rows remain product/unit references). */
+export interface PriceListItemViewDto extends PriceListItemDto {
+  productCode: string | null;
+  productName: string | null;
+  unitCode: string | null;
+}
+
 export const ResolvePriceQuerySchema = z.object({
   productId: uuid(),
   unitId: uuid(),
@@ -2377,3 +2386,61 @@ export const UpdateOwnProfileSchema = z.object({
   displayName: z.string().min(1).max(200),
 });
 export type UpdateOwnProfile = z.infer<typeof UpdateOwnProfileSchema>;
+
+/* ------------------------- Phase 6 parity: global search ------------------------ */
+
+export const SearchQuerySchema = z.object({
+  q: z
+    .string()
+    .trim()
+    .min(2, 'search term must be at least 2 characters')
+    .max(100, 'search term must be at most 100 characters'),
+});
+export type SearchQuery = z.infer<typeof SearchQuerySchema>;
+
+/** One cross-entity hit. `href` is the WEB route that opens the entity so the
+ *  client never re-derives navigation rules; `status`/`when` are display
+ *  evidence straight from the database row (never recomputed). */
+export interface SearchResultDto {
+  entity:
+    | 'product'
+    | 'customer'
+    | 'supplier'
+    | 'invoice'
+    | 'quotation'
+    | 'sales_order'
+    | 'waybill'
+    | 'credit_note'
+    | 'purchase_order'
+    | 'goods_receipt'
+    | 'price_list';
+  id: string;
+  code: string | null;
+  title: string;
+  subtitle: string | null;
+  href: string;
+  status: string | null;
+  when: string | null;
+}
+
+export interface SearchResultsDto {
+  q: string;
+  total: number;
+  groups: Array<{ entity: SearchResultDto['entity']; items: SearchResultDto[] }>;
+}
+
+/** Permission each search entity requires — shared by the API service (query
+ *  filtering) and any client that needs to predict visibility. */
+export const SEARCH_ENTITY_PERMISSIONS: Record<SearchResultDto['entity'], string> = {
+  product: 'catalog:read',
+  customer: 'party:read',
+  supplier: 'party:read',
+  invoice: 'sales:read',
+  quotation: 'sales:read',
+  sales_order: 'sales:read',
+  waybill: 'sales:read',
+  credit_note: 'returns:read',
+  purchase_order: 'purchasing:read',
+  goods_receipt: 'receiving:read',
+  price_list: 'pricing:read',
+};

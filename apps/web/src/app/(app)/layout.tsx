@@ -16,6 +16,7 @@ const NAV: Array<{ group: string; links: NavLink[]; roles?: string[] }> = [
       { href: '/catalog', label: 'Products' },
       { href: '/categories', label: 'Categories' },
       { href: '/units', label: 'Units' },
+      { href: '/price-lists', label: 'Price Lists' },
     ],
   },
   {
@@ -41,6 +42,7 @@ const NAV: Array<{ group: string; links: NavLink[]; roles?: string[] }> = [
     links: [
       { href: '/pos', label: 'POS' },
       { href: '/sales', label: 'Invoices' },
+      { href: '/quotations', label: 'Quotations' },
       { href: '/sales-orders', label: 'Orders' },
       { href: '/payments', label: 'Payments' },
       { href: '/deposits', label: 'Deposits' },
@@ -146,6 +148,20 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="app-shell">
       <header className="app-topbar">
         <div className="app-brand">iDepot</div>
+        {/* Global search (Phase 6 parity): plain GET form → /search; the API
+            filters results by the signed-in user's permissions. */}
+        <form className="toolbar" action="/search" method="get" role="search" style={{ flex: 1, maxWidth: 420, margin: '0 16px' }}>
+          <input
+            className="input"
+            type="search"
+            name="q"
+            placeholder="Search products, customers, document codes…"
+            aria-label="Global search"
+            minLength={2}
+            style={{ flex: 1 }}
+          />
+          <button className="btn" type="submit">Search</button>
+        </form>
         <div className="toolbar">
           <div className="app-user">
             <div style={{ fontWeight: 600 }}>{u.displayName}</div>

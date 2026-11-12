@@ -79,6 +79,9 @@ import { AdminService } from './admin/admin.service.js';
 import { UsersAdminController } from './admin/users.controller.js';
 import { DevicesAdminController } from './admin/devices.controller.js';
 import { UsersService } from './admin/users.service.js';
+// Phase 6 parity — cross-entity global search
+import { SearchController } from './search/search.controller.js';
+import { SearchService } from './search/search.service.js';
 
 @Module({
   imports: [DbModule],
@@ -124,6 +127,7 @@ import { UsersService } from './admin/users.service.js';
     LoyaltyController,
     UsersAdminController,
     DevicesAdminController,
+    SearchController,
   ],
   providers: [
     AuthService,
@@ -186,6 +190,8 @@ import { UsersService } from './admin/users.service.js';
     KpiService,
     AdminService,
     UsersService,
+    // Phase 6 parity — cross-entity global search
+    SearchService,
     // global guard chain: authentication -> authorization
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RbacGuard },
