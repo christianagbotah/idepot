@@ -92,17 +92,28 @@ to matrix rows with `pending`/`partial`:
    **RESOLVED 2026-11-09 (Phase 5 branch):** `/profile` page with
    `POST /auth/profile` (display name) and `POST /auth/change-password`
    (current password required, reuse rejected, audited).
-3. **Global search** (`search_result.php`): per-page search only; no
-   cross-entity search endpoint.
+3. ~~**Global search** (`search_result.php`)~~
+   **RESOLVED 2026-11-13 (Phase 6 branch):** `GET /api/search?q=` cross-entity
+   search (products/customers/suppliers/price lists by code+name+phone;
+   invoice/quotation/sales-order/waybill/credit-note/PO/GRN codes) with
+   permission-filtered groups, RLS tenant isolation, LIKE-wildcard escaping
+   and deep-link evidence; topbar box → `/search` results page. 15-test
+   integration suite (`search-pricing-parity.integration.test.ts`).
 4. **SMS settings/integration** (`sms_settings.php`): settings versioning
    exists but intentionally rejects credential-shaped keys; no send
    integration (demand unvalidated — loyalty-style flag-off default).
-5. **Quotation web UI + A4 print** (`create_proforma_invoice.php`,
-   `proforma_invoice_print.php`): API + lifecycle + tests complete; web page
-   and print layout pending.
-6. **Price-list management web UI** (`pricing.php` family): price-lists API
-   (create/close/resolve, effective-dated) implemented; management page
-   pending.
+5. ~~**Quotation web UI + A4 print** (`create_proforma_invoice.php`,
+   `proforma_invoice_print.php`)~~
+   **RESOLVED 2026-11-12/13 (Phase 6 branch):** `/print/quotation/[id]` A4
+   proforma layout from API evidence (commit `313ba07`) + `/quotations`
+   management page with creation, status/reason list, lifecycle actions
+   mirroring the domain state machine and the print deep link
+   (commit `751f58f`).
+6. ~~**Price-list management web UI** (`pricing.php` family)~~
+   **RESOLVED 2026-11-13 (Phase 6 branch):** `/price-lists` page +
+   `GET /api/price-lists/:id/items` (catalog labels, newest window first);
+   close-row immutability workflow, overlap 409 surfaced, resolve-precedence
+   preview card (commit `751f58f`).
 7. ~~**Operational reports integration tests**~~
    **RESOLVED 2026-11-09 (Phase 5 branch):** the new 10-test
    `reports-endpoints.integration.test.ts` covers every operational report
