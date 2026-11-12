@@ -675,7 +675,7 @@ describe('review 5852472160 — P1-D: point-in-time store credit on the customer
         creditDisposition: 'store_credit',
         businessDate: D1,
         clientDocId: `sc-return-${i}-${Date.now()}`,
-        lines: [{ invoiceLineId: cashSales[i]!.invoice.lines[0].id, quantity: '1', condition: 'good', disposition: 'restock_sellable' }],
+        lines: [{ invoiceLineId: cashSales[i]!.invoice.lines[0]!.id, quantity: '1', condition: 'good', disposition: 'restock_sellable' }],
         submit: true,
       });
       expect(ret.status, JSON.stringify(ret.body)).toBe(201);
@@ -690,7 +690,10 @@ describe('review 5852472160 — P1-D: point-in-time store credit on the customer
     expect(scList.status).toBe(200);
     const byRemaining = (scList.body as Array<{ id: string; remainingAmount: string }>).slice().sort((a, b) => a.id.localeCompare(b.id));
     expect(byRemaining.length).toBe(3);
-    [sc1, sc2, sc3] = byRemaining.map((c) => c.id);
+    const scIds = byRemaining.map((c) => c.id);
+    sc1 = scIds[0]!;
+    sc2 = scIds[1]!;
+    sc3 = scIds[2]!;
     void issued;
 
     // ---- D2: SC1 fully redeemed against the credit sale Y
