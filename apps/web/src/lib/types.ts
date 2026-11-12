@@ -276,3 +276,18 @@ export interface ReceiptPayloadDto {
   balanceOwedThisInvoice: string;
   note: string | null;
 }
+
+export interface QuotationLineDto {
+  id: string; productId: string; unitId: string | null;
+  quantity: string; quantityBase: string; unitPrice: string; lineNet: string;
+}
+
+export interface QuotationDto {
+  id: string; code: string; warehouseId: string; customerId: string | null;
+  customerName: string | null;
+  status: 'draft' | 'issued' | 'accepted' | 'rejected' | 'expired' | 'converted' | 'cancelled';
+  subtotal: string; total: string; validUntil: string | null;
+  convertedOrderId: string | null; note: string | null;
+  issuedAt: string | null; acceptedAt: string | null; statusReason: string | null;
+  lines: QuotationLineDto[]; createdBy: string | null; createdAt: string;
+}

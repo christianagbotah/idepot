@@ -11,7 +11,7 @@
  * source-ready, not shipped.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Button, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Button, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { OfflineEngine, type SyncStatus } from '@idepot/offline';
 import { ExpoSqliteStorage } from './src/offline/expo-sqlite-storage';
 

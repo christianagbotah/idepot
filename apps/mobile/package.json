@@ -2,13 +2,10 @@
   "name": "@idepot/mobile",
   "version": "0.1.0",
   "private": true,
-  "description": "iDepot mobile app (Android/iOS) — React Native field terminal: lookup, stocktaking, salesrep flows with offline SQLite capture and idempotent sync",
+  "description": "iDepot mobile app (Android/iOS) \u2014 React Native field terminal: lookup, stocktaking, salesrep flows with offline SQLite capture and idempotent sync",
   "main": "index.js",
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "android": "react-native run-android",
-    "ios": "react-native run-ios",
-    "start": "react-native start"
+    "note": "typecheck/build run inside the platform-gated CI job (deps installed there) \u2014 see README"
   },
   "dependencies": {
     "@idepot/contracts": "*",
