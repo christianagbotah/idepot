@@ -1,0 +1,23 @@
+{
+  "name": "@idepot/offline",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Offline-first engine core: durable local replica + transactional outbox + idempotent push/resumable pull against POST /api/sync/push and GET /api/sync/pull — storage-agnostic (SQLite on device, in-memory in tests); the server stays authoritative on all money/stock/tax",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "test": "echo 'tested at root via vitest'"
+  },
+  "dependencies": {
+    "@idepot/contracts": "*"
+  }
+}

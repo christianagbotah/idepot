@@ -1,0 +1,33 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../..",
+    "paths": {
+      "@idepot/auth": [
+        "../auth/src/index.ts"
+      ],
+      "@idepot/contracts": [
+        "../contracts/src/index.ts"
+      ],
+      "@idepot/domain": [
+        "../domain/src/index.ts"
+      ],
+      "@idepot/migration": [
+        "../migration/src/index.ts"
+      ],
+      "@idepot/testing": [
+        "../testing/src/index.ts"
+      ],
+      "@idepot/testing/assertions": [
+        "../testing/src/assertions.ts"
+      ],
+      "@idepot/hardware": [
+        "../hardware/src/index.ts"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*.ts"
+  ]
+}
