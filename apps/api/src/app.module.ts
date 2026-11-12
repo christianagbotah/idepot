@@ -77,6 +77,7 @@ import { KpiService } from './reporting/kpi.service.js';
 import { LoyaltyController } from './admin/loyalty.controller.js';
 import { AdminService } from './admin/admin.service.js';
 import { UsersAdminController } from './admin/users.controller.js';
+import { DevicesAdminController } from './admin/devices.controller.js';
 import { UsersService } from './admin/users.service.js';
 
 @Module({
@@ -122,6 +123,7 @@ import { UsersService } from './admin/users.service.js';
     ReportsController,
     LoyaltyController,
     UsersAdminController,
+    DevicesAdminController,
   ],
   providers: [
     AuthService,

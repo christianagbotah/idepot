@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import type {
   CreateDeposit,
   ReceivePayment,
@@ -104,6 +104,19 @@ export class SyncService {
   ) {}
 
   async push(principal: SalePrincipal, dto: SyncPush): Promise<{ outcomes: SyncEventOutcome[]; serverTime: string }> {
+    // Phase 6 device administration guard: a REVOKED device must never sync,
+    // even with an otherwise-valid user token (credential rotation safety).
+    await this.uow.run({ tenantId: principal.tenantId }, async (ctx) => {
+      const device = await ctx.query<{ status: string }>(
+        `SELECT status FROM device WHERE id = $1 AND tenant_id = $2`,
+        [dto.deviceId, principal.tenantId],
+      );
+      if (device.rows.length === 0 || device.rows[0]!.status !== 'active') {
+        throw new ForbiddenException(
+          `device ${dto.deviceId} is not an active device of this tenant — re-pairing required`,
+        );
+      }
+    });
     const p: SyncPrincipal = { ...principal, deviceId: dto.deviceId };
     const outcomes: SyncEventOutcome[] = [];
     for (const event of dto.events) {
