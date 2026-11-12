@@ -1,0 +1,24 @@
+[package]
+name = "idepot-desktop"
+version = "0.1.0"
+description = "iDepot POS desktop terminal (Tauri 2 shell)"
+edition = "2021"
+rust-version = "1.77"
+
+# Native crates are added when the corresponding bridge lands (Phase 6
+# hardware spikes): serialport (scanner/printer/drawer serial transports),
+# rusb (USB), escpos-formatting stays in the shared TypeScript HAL
+# (packages/hardware) — Rust only moves bytes.
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lib]
+name = "idepot_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
