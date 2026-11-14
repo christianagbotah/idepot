@@ -1,6 +1,6 @@
 # Phase 7a — Rules-Based Intelligence (tier 7a)
 
-Implements the tier-7a slice of [ai-opportunity-map.md](../architecture/ai-opportunity-map.md) §3: **dead stock (feature 4), stockout alerts rules-first (feature 3), anomaly rules (feature 11)** — plus the alert/run/feedback foundation every later tier (7b–7d) builds on. Duplicate detection (feature 15) is the next 7a increment, delivered separately.
+Implements the tier-7a slice of [ai-opportunity-map.md](../architecture/ai-opportunity-map.md) §3: **dead stock (feature 4), stockout alerts rules-first (feature 3), anomaly rules (feature 11), duplicate detection (feature 15)** — plus the alert/run/feedback foundation every later tier (7b–7d) builds on.
 
 ## Guardrails (master prompt rule 14)
 
@@ -26,7 +26,7 @@ Implements the tier-7a slice of [ai-opportunity-map.md](../architecture/ai-oppor
 
 Web: `/intelligence` (Insights group) — filters, scan button (managers), severity badges, evidence viewer, lifecycle + feedback actions, recent runs.
 
-## Rules (version 1.0.0)
+## Rules (version 1.1.0 — duplicate detection added; the eight 1.0.0 rules unchanged)
 
 All decisions use exact scaled-BigInt comparisons (never floats). Thresholds are defaults; each tenant overrides them through the effective-dated `tenant_setting` key **`intelligence.rules`** (`settings:manage`, corrections are new versions — same-day re-versioning is intentionally not possible).
 
@@ -59,7 +59,23 @@ Per active product/warehouse:
 | `anomaly:invoice-voided` | any voided invoice (no production path voids today — corrections go through reversals — so this is a defensive catch) | info |
 | `anomaly:invoice-reversal` | every invoice reversal correction, with its documented reason | info |
 
-`anomaly:stock-adjustment` deliberately **excludes count-derived adjustments** (`source_count_id IS NOT NULL` — opening stock, count approvals): those already carry human-approval evidence in the count workflow; the queue watches direct adjustments only. Receipt reprints are not yet instrumented (browser-side printing) and returns/refund frequency baselining is deferred to the next increment — both documented, neither silently missing.
+`anomaly:stock-adjustment` deliberately **excludes count-derived adjustments** (`source_count_id IS NOT NULL` — opening stock, count approvals): those already carry human-approval evidence in the count workflow; the queue watches direct adjustments only. Receipt reprints are not yet instrumented (browser-side printing) and returns/refund frequency baselining is deferred to 7b — both documented, neither silently missing.
+
+### Duplicate detection (feature 15)
+
+Scope per the opportunity map: **migration + daily creates**. The scan window bounds the NEWER side — a pair alerts only when at least one record was CREATED inside `windowDays`; the counterpart may be any age. Run the first post-migration scan with a window covering the import date, and daily scans catch new creates against the whole standing base. Matching is deterministic and explainable (tier 7a — no phonetic/LLM fuzzy matching yet):
+
+| Rule | Signals | Severity |
+| --- | --- | --- |
+| `duplicate:customer` | shared Ghana-normalized phone key (any of phone/alt-phone pairs) AND name similarity ≥ warn → **critical**; phone key alone → **warning** (a shared household/shop line is possible); name similarity ≥ high AND identical normalized address → **warning**; name similarity ≥ warn → **info** | as listed |
+| `duplicate:supplier` | identical signals to `duplicate:customer` | as listed |
+| `duplicate:product` | identical normalized name token sets → **warning** (stock and velocity silently split across two codes); token-set similarity ≥ warn → **info**. Exact barcode duplication is already impossible (unique per tenant) | as listed |
+
+- **Normalization:** names/addresses — NFKD, lowercase, marks stripped, punctuation collapsed, token SET comparison (word order irrelevant: "Mensah Kwame" == "Kwame Mensah"); phones — digits only, `+233…`/`233…`/trunk-`0` prefixes folded, exactly 9 significant digits matchable (`0244123456`, `+233 24 412 3456` and `233-24-412-3456` are one key).
+- **Similarity is exact:** token-set Jaccard decided by integer cross-multiplication at 4 significant digits — never a float. Defaults: warn ≥ **85%**, high ≥ **90%** (`duplicate.nameSimilarityWarn` / `nameSimilarityHigh` in `intelligence.rules`).
+- **Guests never participate** (`is_guest`): walk-in capture is legitimately repetitive.
+- **Pair identity:** the dedupe key is the canonical (sorted) id pair, so re-scans and both-sides-new pairings converge on ONE alert; `entity_id` points at the newer record (the probable duplicate) and evidence carries BOTH sides plus the matched signals.
+- **Merging is deliberately NOT here.** The opportunity map's "merge requires permission; audit trail" is a later-tier workflow (re-pointing documents is invasive); 7a DETECTS and surfaces — a human with `intelligence:manage` acknowledges/resolves/dismisses and acts through the existing parties/catalog admin APIs. No financial state is read-modified-written.
 
 ## Configuration example
 
@@ -69,7 +85,8 @@ POST /api/reports/settings
   "key": "intelligence.rules",
   "value": { "deadStock": { "noSaleDays": 45 },
              "stockoutRisk": { "leadTimeDays": 10 },
-             "anomaly": { "discountWarnRatio": 0.05 } },
+             "anomaly": { "discountWarnRatio": 0.05 },
+             "duplicate": { "nameSimilarityWarn": 0.8 } },
   "note": "tighten for the Accra branch pilot"
 }
 ```
@@ -83,3 +100,7 @@ Scans are explicit (`intelligence:manage`). There is deliberately no in-process 
 ## Defect found and fixed en route (0023)
 
 The Phase 7a integration suite exposed a latent Phase 5 defect: the `trg_kpi_target_overlap_guard` and `trg_tenant_setting_overlap_guard` BEFORE-triggers ended in `RETURN NULL`, which in PostgreSQL **silently skips the operation** — every `kpi_target` and `tenant_setting` INSERT/UPDATE since migration 0019 was a no-op (the settings API returned 500 on its post-insert read-back; no prior test exercised either write path). Migration `0023_phase7a_settings_trigger_fix.sql` replaces both functions with the identical guard logic and `RETURN NEW`. No data repair is needed: no rows were ever written.
+
+## Schema note (0024)
+
+Migration `0024_phase7a_duplicate_detection.sql` widens the `ai_alert.entity_type` CHECK to admit `customer` and `supplier` (pair alerts point at the newer record; `product` was already allowed). Additive only — no new tables, no history touched, existing rows always satisfy the wider constraint.

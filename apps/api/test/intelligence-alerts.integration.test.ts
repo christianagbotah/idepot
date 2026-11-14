@@ -1,11 +1,11 @@
 /**
  * Phase 7a rules-based intelligence — end-to-end proof on a real
  * PostgreSQL: seeded histories produce EXACT alerts (dead stock,
- * stockout risk, anomaly rules), re-scans dedupe instead of flooding,
- * the lifecycle/feedback loop works, RBAC + tenant isolation hold,
- * tenant-setting threshold overrides take effect, and a failing rule
- * is isolated (its own ai_model_run row marked failed — the other
- * rules still complete).
+ * stockout risk, anomaly rules, duplicate detection), re-scans dedupe
+ * instead of flooding, the lifecycle/feedback loop works, RBAC + tenant
+ * isolation hold, tenant-setting threshold overrides take effect, and a
+ * failing rule is isolated (its own ai_model_run row marked failed — the
+ * other rules still complete).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
@@ -201,6 +201,64 @@ describe('Phase 7a intelligence: rules, queue semantics, RBAC, config, isolation
       lines: [{ productId: products.DISC1!, quantityBase: '25' }],
     });
     expect(adjustment.status, JSON.stringify(adjustment.body)).toBe(201);
+
+    // ------------------------------------------------------------------
+    // duplicate-detection seed (feature 15): customer pairs across every
+    // severity band, a supplier pair, product pairs, a GUEST that must
+    // never participate, and an out-of-window old pair
+    // ------------------------------------------------------------------
+    const mkCustomer = async (body: Record<string, unknown>) => {
+      const res = await request(app.getHttpServer()).post('/api/customers').set(owner).send(body);
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      return res.body as { id: string; code: string };
+    };
+    // (DUPC-1, DUPC-2): shared phone key + identical names → critical
+    await mkCustomer({ code: 'DUPC-1', name: 'Ama Serwaa', phone: '0244123456', address: '12 Makola Rd, Accra' });
+    await mkCustomer({ code: 'DUPC-2', name: 'Ama  Serwaa.', phone: '+233 24 412 3456' });
+    // (DUPC-1, DUPC-3): identical names + identical address → warning;
+    // (DUPC-2, DUPC-3): identical names, no address on one side → info
+    await mkCustomer({ code: 'DUPC-3', name: 'ama serwaa', phone: '0209998877', address: '12 makola rd accra' });
+    // silent canary
+    await mkCustomer({ code: 'DUPC-4', name: 'Kofi Boateng', phone: '0271112233' });
+    // a GUEST sharing DUPC-1's phone — walk-in capture is legitimately
+    // repetitive and must never produce a duplicate alert
+    await mkCustomer({ code: 'DUPC-G', name: 'Walk-in Guest', phone: '0244123456', isGuest: true });
+
+    // both sides OLDER than the 30-day scan window → out of scope for a
+    // 30d scan (the migration-scope semantics: window bounds the newer side)
+    await fx.admin.query(
+      `INSERT INTO customer (tenant_id, code, name, phone, status, created_at)
+       VALUES ($1,'OLDDUP-1','Old Duplicate Co','0551234567','active', now() - interval '45 days'),
+              ($1,'OLDDUP-2','Old Duplicate Co','0551234567','active', now() - interval '45 days')`,
+      [fx.tenantA.tenantId],
+    );
+
+    const mkSupplier = async (body: Record<string, unknown>) => {
+      const res = await request(app.getHttpServer()).post('/api/suppliers').set(owner).send(body);
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      return res.body as { id: string; code: string };
+    };
+    await mkSupplier({ code: 'DUPS-1', name: 'Accra Beverages Ltd', phone: '0302123456' });
+    // shared phone (spelled differently) + identical name tokens → critical
+    await mkSupplier({ code: 'DUPS-2', name: 'accra beverages LTD', phone: '0302-123-456' });
+    // silent canary (only the token 'ltd' overlaps: 1/5 = 20%)
+    await mkSupplier({ code: 'DUPS-3', name: 'Kumasi Textiles Ltd', phone: '0329876543' });
+
+    const mkDupProduct = async (code: string, name: string, price: string) => {
+      const res = await request(app.getHttpServer()).post('/api/products').set(owner).send({
+        code, name, baseUnitId: unit, sellingPrice: price, purchasePrice: '2.00',
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      return res.body as { id: string; code: string };
+    };
+    // identical normalized names (hyphen/space + case fold to the same
+    // token set) → warning
+    await mkDupProduct('DUPP-1', 'Coca-Cola 300ml', '5.00');
+    await mkDupProduct('DUPP-2', 'coca cola 300ml', '5.00');
+    // near-identical (one name is the other plus one extra token:
+    // 6 shared / 7 total = 85.7%) → info
+    await mkDupProduct('DUPP-3', 'Fan Milk Chocolate Ice Cream 450ml Tub', '8.00');
+    await mkDupProduct('DUPP-4', 'Fan Milk Ice Cream 450ml Tub', '8.00');
   });
 
   afterAll(async () => {
@@ -224,7 +282,7 @@ describe('Phase 7a intelligence: rules, queue semantics, RBAC, config, isolation
   it('seeds produce the exact expected alert set on the first scan', async () => {
     const { status, body } = await scan(manager);
     expect(status, JSON.stringify(body)).toBe(201);
-    expect(body.runs).toHaveLength(8);
+    expect(body.runs).toHaveLength(11);
     for (const r of body.runs) {
       expect(r.status, `rule ${r.ruleId}: ${r.error}`).toBe('completed');
     }
@@ -250,8 +308,74 @@ describe('Phase 7a intelligence: rules, queue semantics, RBAC, config, isolation
     expect(byRule(rows, 'anomaly:invoice-voided')).toHaveLength(1);
     expect(byRule(rows, 'anomaly:invoice-reversal')).toHaveLength(1);
 
+    // duplicate detection: exact pair counts per rule and severity
+    expect(byRule(rows, 'duplicate:customer')).toHaveLength(3);
+    expect(byRule(rows, 'duplicate:customer').filter((a) => a.severity === 'critical')).toHaveLength(1);
+    expect(byRule(rows, 'duplicate:customer').filter((a) => a.severity === 'warning')).toHaveLength(1);
+    expect(byRule(rows, 'duplicate:customer').filter((a) => a.severity === 'info')).toHaveLength(1);
+    expect(byRule(rows, 'duplicate:supplier')).toHaveLength(1);
+    expect(byRule(rows, 'duplicate:supplier')[0]!.severity).toBe('critical');
+    expect(byRule(rows, 'duplicate:product')).toHaveLength(2);
+    expect(byRule(rows, 'duplicate:product').filter((a) => a.severity === 'warning')).toHaveLength(1);
+    expect(byRule(rows, 'duplicate:product').filter((a) => a.severity === 'info')).toHaveLength(1);
+
     // the steady product stays silent across every rule
     expect(rows.filter((a) => a.entity_label.includes('STEADY1'))).toHaveLength(0);
+  });
+
+  it('duplicate detection: pairs, severities, evidence; guests and out-of-window pairs stay silent', async () => {
+    // the critical customer pair links both codes in one alert
+    const cust = byRule(await alerts(manager, '?status=open&ruleId=duplicate:customer'), 'duplicate:customer');
+    const critical = cust.find((a) => a.severity === 'critical')!;
+    expect(critical.entity_label).toContain('DUPC-1');
+    expect(critical.entity_label).toContain('DUPC-2');
+
+    // evidence carries the exact Ghana-normalized phone key and similarity
+    const detail = await request(app.getHttpServer()).get(`/api/intelligence/alerts/${critical.id}`).set(manager);
+    expect(detail.status).toBe(200);
+    const alert = detail.body.alert as {
+      reason: string;
+      evidence: Record<string, unknown> & {
+        sharedPhoneKey: string | null;
+        nameSimilarity: { ratioPct: number; sharedTokens: number; totalTokens: number };
+        signals: string[];
+        duplicate: { code: string };
+        original: { code: string };
+      };
+    };
+    expect(alert.evidence.sharedPhoneKey).toBe('244123456');
+    expect(alert.evidence.nameSimilarity).toEqual({ ratioPct: 100, sharedTokens: 2, totalTokens: 2 });
+    expect(alert.evidence.signals).toContain('phone');
+    expect(alert.evidence.signals).toContain('name');
+    expect(alert.reason).toContain('fragment');
+
+    // the supplier pair (shared phone spelled differently + same name tokens)
+    const sup = byRule(await alerts(manager, '?ruleId=duplicate:supplier'), 'duplicate:supplier')[0]!;
+    expect(sup.entity_label).toContain('DUPS-1');
+    expect(sup.entity_label).toContain('DUPS-2');
+
+    // the product pairs: exact-name warning and near-identical info
+    const prods = byRule(await alerts(manager, '?ruleId=duplicate:product'), 'duplicate:product');
+    const exact = prods.find((a) => a.severity === 'warning')!;
+    expect(exact.entity_label).toContain('DUPP-1');
+    expect(exact.entity_label).toContain('DUPP-2');
+    const near = prods.find((a) => a.severity === 'info')!;
+    expect(near.entity_label).toContain('DUPP-3');
+    expect(near.entity_label).toContain('DUPP-4');
+
+    // guests never participate, and pairs older than the window are out of scope
+    const all = await alerts(manager, '?status=open');
+    expect(all.filter((a) => a.entity_label.includes('DUPC-G') || a.entity_label.includes('Walk-in'))).toHaveLength(0);
+    expect(all.filter((a) => a.entity_label.includes('OLDDUP'))).toHaveLength(0);
+    // silent canaries
+    expect(all.filter((a) => a.entity_label.includes('DUPC-4'))).toHaveLength(0);
+    expect(all.filter((a) => a.entity_label.includes('DUPS-3'))).toHaveLength(0);
+
+    // a re-scan of just the duplicate rules suppresses (refreshes) instead of flooding
+    const rescan = await scan(manager, { rules: ['duplicate:customer'] });
+    const dupRun = rescan.body.runs.find((r) => r.ruleId === 'duplicate:customer')!;
+    expect(dupRun.alertsCreated).toBe(0);
+    expect(dupRun.alertsSuppressed).toBe(3);
   });
 
   it('alert detail carries the explicit reason and machine-checkable evidence', async () => {
@@ -405,7 +529,7 @@ describe('Phase 7a intelligence: rules, queue semantics, RBAC, config, isolation
     const failedRun = (runsRes.body as RunRow[]).find((r) => r.rule_id === 'anomaly:shift-variance' && r.status === 'failed');
     expect(failedRun).toBeTruthy();
     expect(failedRun!.error).toBeTruthy();
-    expect(failedRun!.rule_version).toBe('1.0.0');
+    expect(failedRun!.rule_version).toBe('1.1.0');
 
     // restore the default configuration (empty override → domain defaults)
     await fx.admin.query(

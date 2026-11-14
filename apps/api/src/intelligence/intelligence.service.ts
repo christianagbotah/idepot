@@ -23,14 +23,20 @@ import {
   evaluateAfterHours,
   evaluateDeadStock,
   evaluateDiscountAnomaly,
+  evaluateDuplicateParties,
+  evaluateDuplicateProducts,
   evaluateReversalActivity,
   evaluateShiftVariance,
   evaluateStockoutRisk,
   evaluateVoidedInvoice,
   fingerprint,
+  normalizeNameTokens,
+  normalizePhoneGh,
   resolveIntelligenceConfig,
   type AlertDraft,
   type IntelligenceRulesConfig,
+  type PartyDuplicateRecord,
+  type ProductDuplicateRecord,
 } from '@idepot/domain';
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Nest DI needs the runtime class (emitDecoratorMetadata)
@@ -45,6 +51,9 @@ export const INTELLIGENCE_RULE_IDS = [
   'anomaly:stock-adjustment',
   'anomaly:invoice-voided',
   'anomaly:invoice-reversal',
+  'duplicate:customer',
+  'duplicate:supplier',
+  'duplicate:product',
 ] as const;
 export type IntelligenceRuleId = (typeof INTELLIGENCE_RULE_IDS)[number];
 
@@ -375,6 +384,150 @@ async function loadReversals(ctx: UowCtx, windowFrom: Date): Promise<AlertDraft[
   );
 }
 
+// ---------------------------------------------------------------------------
+// Duplicate detection loaders (feature 15, tier 7a)
+// ---------------------------------------------------------------------------
+// Scope per the opportunity map: "migration + daily creates". The scan
+// window bounds the NEWER side (records created inside it drive alerts);
+// the counterpart may be any age, so a post-migration scan with a window
+// covering the import date catches migration duplicates and every later
+// scan catches new creates against the whole standing base. Pairs are
+// keyed canonically (sorted ids) in the domain, and the loader de-dupes
+// drafts so a both-sides-new pair is evaluated once and counted once.
+
+async function loadPartyDuplicates(
+  ctx: UowCtx,
+  cfg: IntelligenceRulesConfig,
+  windowFrom: Date,
+  kind: 'customer' | 'supplier',
+): Promise<AlertDraft[]> {
+  const table = kind === 'customer' ? 'customer' : 'supplier';
+  // suppliers have no guest concept — the column is selected as a constant
+  // so one row shape serves both kinds
+  const guestCol = kind === 'customer' ? 'is_guest' : 'false AS is_guest';
+  const guestFilter = kind === 'customer' ? ' AND is_guest = false' : '';
+  const rows = await ctx.query<{
+    id: string;
+    code: string;
+    name: string;
+    phone: string | null;
+    alt_phone: string | null;
+    address: string | null;
+    is_guest: boolean;
+    created_at: Date;
+  }>(
+    `SELECT id, code, name, phone, alt_phone, address, ${guestCol}, created_at
+       FROM ${table}
+      WHERE tenant_id = $1 AND status = 'active'${guestFilter}`,
+    [ctx.tenantId],
+  );
+  const records: PartyDuplicateRecord[] = rows.rows.map((r) => ({
+    id: r.id,
+    code: r.code,
+    name: r.name,
+    phone: r.phone,
+    altPhone: r.alt_phone,
+    address: r.address,
+    isGuest: r.is_guest,
+    createdAt: new Date(r.created_at),
+  }));
+  // precompute the comparison keys once — the cheap reject (no shared
+  // token AND no shared phone) keeps the O(new × all) pass fast on
+  // migration-scale bases
+  const prepared = records.map((r) => ({
+    r,
+    tokens: new Set(normalizeNameTokens(r.name)),
+    phones: new Set(
+      [normalizePhoneGh(r.phone), normalizePhoneGh(r.altPhone)].filter((p): p is string => p != null),
+    ),
+  }));
+  const drafts: AlertDraft[] = [];
+  const seen = new Set<string>();
+  for (const cand of prepared) {
+    if (cand.r.createdAt < windowFrom) continue; // only NEW-side records drive alerts
+    for (const other of prepared) {
+      if (other.r.id === cand.r.id) continue;
+      let sharesToken = false;
+      for (const t of cand.tokens) {
+        if (other.tokens.has(t)) {
+          sharesToken = true;
+          break;
+        }
+      }
+      let sharesPhone = false;
+      for (const p of cand.phones) {
+        if (other.phones.has(p)) {
+          sharesPhone = true;
+          break;
+        }
+      }
+      if (!sharesToken && !sharesPhone) continue; // cannot reach any severity band
+      const d = evaluateDuplicateParties(cand.r, other.r, cfg, kind);
+      if (d && !seen.has(d.dedupeKey)) {
+        seen.add(d.dedupeKey);
+        drafts.push(d);
+      }
+    }
+  }
+  return drafts;
+}
+
+async function loadProductDuplicates(
+  ctx: UowCtx,
+  cfg: IntelligenceRulesConfig,
+  windowFrom: Date,
+): Promise<AlertDraft[]> {
+  const rows = await ctx.query<{
+    id: string;
+    code: string;
+    name: string;
+    brand_name: string | null;
+    category_name: string | null;
+    selling_price: string;
+    created_at: Date;
+  }>(
+    `SELECT p.id, p.code, p.name, b.name AS brand_name, c.name AS category_name,
+            p.selling_price::text, p.created_at
+       FROM product p
+       LEFT JOIN brand b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+       LEFT JOIN product_category c ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+      WHERE p.tenant_id = $1 AND p.status = 'active'`,
+    [ctx.tenantId],
+  );
+  const records: ProductDuplicateRecord[] = rows.rows.map((r) => ({
+    id: r.id,
+    code: r.code,
+    name: r.name,
+    brandName: r.brand_name,
+    categoryName: r.category_name,
+    sellingPrice: r.selling_price,
+    createdAt: new Date(r.created_at),
+  }));
+  const prepared = records.map((r) => ({ r, tokens: new Set(normalizeNameTokens(r.name)) }));
+  const drafts: AlertDraft[] = [];
+  const seen = new Set<string>();
+  for (const cand of prepared) {
+    if (cand.r.createdAt < windowFrom) continue; // only NEW-side records drive alerts
+    for (const other of prepared) {
+      if (other.r.id === cand.r.id) continue;
+      let sharesToken = false;
+      for (const t of cand.tokens) {
+        if (other.tokens.has(t)) {
+          sharesToken = true;
+          break;
+        }
+      }
+      if (!sharesToken) continue; // similarity needs shared tokens; barcodes are already unique
+      const d = evaluateDuplicateProducts(cand.r, other.r, cfg);
+      if (d && !seen.has(d.dedupeKey)) {
+        seen.add(d.dedupeKey);
+        drafts.push(d);
+      }
+    }
+  }
+  return drafts;
+}
+
 const RULE_LOADERS: Record<
   IntelligenceRuleId,
   (ctx: UowCtx, cfg: IntelligenceRulesConfig, windowFrom: Date) => Promise<AlertDraft[]>
@@ -387,6 +540,9 @@ const RULE_LOADERS: Record<
   'anomaly:stock-adjustment': loadAdjustmentAnomalies,
   'anomaly:invoice-voided': (ctx, _cfg, windowFrom) => loadVoidedInvoices(ctx, windowFrom),
   'anomaly:invoice-reversal': (ctx, _cfg, windowFrom) => loadReversals(ctx, windowFrom),
+  'duplicate:customer': (ctx, cfg, windowFrom) => loadPartyDuplicates(ctx, cfg, windowFrom, 'customer'),
+  'duplicate:supplier': (ctx, cfg, windowFrom) => loadPartyDuplicates(ctx, cfg, windowFrom, 'supplier'),
+  'duplicate:product': loadProductDuplicates,
 };
 
 @Injectable()

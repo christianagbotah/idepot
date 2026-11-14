@@ -11,11 +11,19 @@ import {
   evaluateAfterHours,
   evaluateDeadStock,
   evaluateDiscountAnomaly,
+  evaluateDuplicateParties,
+  evaluateDuplicateProducts,
   evaluateReversalActivity,
   evaluateShiftVariance,
   evaluateStockoutRisk,
   evaluateVoidedInvoice,
+  normalizeAddressKey,
+  normalizeNameTokens,
+  normalizePhoneGh,
   resolveIntelligenceConfig,
+  tokenSetOverlap,
+  type PartyDuplicateRecord,
+  type ProductDuplicateRecord,
 } from './intelligence.js';
 
 const NOW = new Date('2026-11-14T12:00:00.000Z');
@@ -65,6 +73,15 @@ describe('resolveIntelligenceConfig', () => {
   it('never lets a critical threshold fall below its warning threshold', () => {
     const cfg = resolveIntelligenceConfig({ anomaly: { shiftVarianceCritical: 10 } });
     expect(cfg.anomaly.shiftVarianceCritical).toBe(cfg.anomaly.shiftVarianceWarn);
+  });
+
+  it('duplicate section: overrides, clamps into [0,1] and keeps high ≥ warn', () => {
+    const cfg = resolveIntelligenceConfig({ duplicate: { nameSimilarityWarn: 0.7, nameSimilarityHigh: 1.5 } });
+    expect(cfg.duplicate.nameSimilarityWarn).toBe(0.7);
+    expect(cfg.duplicate.nameSimilarityHigh).toBe(1); // clamped, still ≥ warn
+    const inverted = resolveIntelligenceConfig({ duplicate: { nameSimilarityWarn: 0.9, nameSimilarityHigh: 0.5 } });
+    expect(inverted.duplicate.nameSimilarityHigh).toBe(inverted.duplicate.nameSimilarityWarn);
+    expect(resolveIntelligenceConfig(null).duplicate).toEqual({ nameSimilarityWarn: 0.85, nameSimilarityHigh: 0.9 });
   });
 });
 
@@ -290,5 +307,195 @@ describe('voided / reversal surfaces', () => {
     });
     expect(d!.ruleId).toBe('anomaly:invoice-reversal');
     expect(d!.reason).toContain('wrong customer captured at till');
+  });
+});
+
+describe('duplicate-detection normalizers (Ghana-exact, deterministic)', () => {
+  it('normalizePhoneGh folds every common Ghana spelling onto one key', () => {
+    expect(normalizePhoneGh('0244123456')).toBe('244123456');
+    expect(normalizePhoneGh('+233 24 412 3456')).toBe('244123456');
+    expect(normalizePhoneGh('233-24-412-3456')).toBe('244123456');
+    expect(normalizePhoneGh('(024) 412-3456')).toBe('244123456');
+  });
+
+  it('normalizePhoneGh refuses matchless garbage', () => {
+    expect(normalizePhoneGh('12345')).toBeNull();
+    expect(normalizePhoneGh('')).toBeNull();
+    expect(normalizePhoneGh(null)).toBeNull();
+    expect(normalizePhoneGh('00493012345678')).toBeNull(); // foreign length
+  });
+
+  it('normalizeNameTokens strips punctuation, case and diacritics; word order is irrelevant (set semantics)', () => {
+    expect(normalizeNameTokens('Coca-Cola 300ml')).toEqual(['coca', 'cola', '300ml']);
+    expect(normalizeNameTokens('Ama  Serwaa.')).toEqual(['ama', 'serwaa']);
+    expect(normalizeNameTokens('Béatrice & Co.')).toEqual(['beatrice', 'co']);
+    expect(normalizeNameTokens('fanMILK')).toEqual(['fanmilk']);
+    expect(normalizeNameTokens('   ')).toEqual([]);
+    expect(normalizeAddressKey('12 Makola Rd., Accra')).toBe('12 makola rd accra');
+    expect(normalizeAddressKey(null)).toBeNull();
+  });
+
+  it('tokenSetOverlap is exact integer counting', () => {
+    expect(tokenSetOverlap(['a', 'b', 'c'], ['a', 'b', 'c'])).toEqual({ inter: 3, union: 3 });
+    expect(tokenSetOverlap(['a', 'b'], ['b', 'c'])).toEqual({ inter: 1, union: 3 });
+    expect(tokenSetOverlap([], ['x'])).toEqual({ inter: 0, union: 1 });
+    // repeated tokens collapse to the set: {a} vs {a}
+    expect(tokenSetOverlap(['a', 'a'], ['a'])).toEqual({ inter: 1, union: 1 });
+  });
+});
+
+const party = (over: Partial<PartyDuplicateRecord>): PartyDuplicateRecord => ({
+  id: 'id-a',
+  code: 'CUS-A',
+  name: 'Ama Serwaa',
+  phone: '0244123456',
+  altPhone: null,
+  address: '12 Makola Rd, Accra',
+  isGuest: false,
+  createdAt: NOW,
+  ...over,
+});
+
+describe('evaluateDuplicateParties (feature 15, tier 7a)', () => {
+  it('critical: shared phone key AND similar names', () => {
+    const d = evaluateDuplicateParties(
+      party({ id: 'id-a', code: 'CUS-A', createdAt: NOW }),
+      party({ id: 'id-b', code: 'CUS-B', name: 'Ama  Serwaa.', phone: '+233 24 412 3456', createdAt: new Date(NOW.getTime() - 1000) }),
+      DEFAULT_INTELLIGENCE_CONFIG,
+      'customer',
+    );
+    expect(d!.ruleId).toBe('duplicate:customer');
+    expect(d!.severity).toBe('critical');
+    expect(d!.entityId).toBe('id-a'); // the NEWER record is the probable duplicate
+    expect(d!.evidence.signals).toContain('phone');
+    expect(d!.evidence.sharedPhoneKey).toBe('244123456');
+    expect((d!.evidence.nameSimilarity as { ratioPct: number }).ratioPct).toBe(100);
+  });
+
+  it('warning: shared phone key alone (a shared household line is possible)', () => {
+    const d = evaluateDuplicateParties(
+      party({ name: 'Ama Serwaa' }),
+      party({ id: 'id-b', code: 'CUS-B', name: 'Completely Different Person', phone: '0244123456', address: 'elsewhere' }),
+      DEFAULT_INTELLIGENCE_CONFIG,
+      'customer',
+    );
+    expect(d!.severity).toBe('warning');
+    expect(d!.evidence.addressMatch).toBe(false);
+  });
+
+  it('warning: highly similar names AND identical address, distinct phones', () => {
+    const d = evaluateDuplicateParties(
+      party({}),
+      party({ id: 'id-b', code: 'CUS-B', name: 'ama SERWAA', phone: '0209998877', address: '12 makola rd, ACCRA' }),
+      DEFAULT_INTELLIGENCE_CONFIG,
+      'customer',
+    );
+    expect(d!.severity).toBe('warning');
+    expect(d!.evidence.addressMatch).toBe(true);
+    expect(d!.evidence.signals).toEqual(['name', 'address']);
+  });
+
+  it('info: similar names only — common names deserve eyes, not alarms', () => {
+    const d = evaluateDuplicateParties(
+      party({}),
+      party({ id: 'id-b', code: 'CUS-B', name: 'Ama Serwaa', phone: '0209998877', address: null }),
+      DEFAULT_INTELLIGENCE_CONFIG,
+      'customer',
+    );
+    expect(d!.severity).toBe('info');
+  });
+
+  it('silent below the similarity band, even with a shared address', () => {
+    // {ama,serwaa} vs {ama,serwaa,owusu} = 2/3 = 0.667 < 0.85
+    expect(
+      evaluateDuplicateParties(
+        party({}),
+        party({ id: 'id-b', code: 'CUS-B', name: 'Ama Serwaa Owusu', phone: '0209998877', address: '12 makola rd accra' }),
+        DEFAULT_INTELLIGENCE_CONFIG,
+        'customer',
+      ),
+    ).toBeNull();
+  });
+
+  it('guest customers never participate (walk-in capture is legitimately repetitive)', () => {
+    expect(
+      evaluateDuplicateParties(
+        party({}),
+        party({ id: 'id-b', code: 'CUS-B', isGuest: true }),
+        DEFAULT_INTELLIGENCE_CONFIG,
+        'customer',
+      ),
+    ).toBeNull();
+  });
+
+  it('dedupe key is the canonical sorted pair — argument order and newness cannot double-report', () => {
+    const newer = party({ id: 'id-z', code: 'CUS-Z', createdAt: NOW });
+    const older = party({ id: 'id-a', code: 'CUS-A', createdAt: new Date(NOW.getTime() - 5_000) });
+    const one = evaluateDuplicateParties(newer, older, DEFAULT_INTELLIGENCE_CONFIG, 'supplier');
+    const two = evaluateDuplicateParties(older, newer, DEFAULT_INTELLIGENCE_CONFIG, 'supplier');
+    expect(one!.dedupeKey).toBe('duplicate:supplier:id-a:id-z');
+    expect(two!.dedupeKey).toBe(one!.dedupeKey);
+    expect(one!.entityId).toBe('id-z'); // newer
+    expect(one!.entityType).toBe('supplier');
+  });
+
+  it('alt-phone overlap counts as a phone signal', () => {
+    const d = evaluateDuplicateParties(
+      party({ phone: '0302111222', name: 'Accra Beverages Ltd' }),
+      party({ id: 'id-b', code: 'CUS-B', phone: '0550000000', altPhone: '0302-111-222', name: 'accra beverages LTD' }),
+      DEFAULT_INTELLIGENCE_CONFIG,
+      'supplier',
+    );
+    expect(d!.severity).toBe('critical'); // shared phone (via alt) + identical names
+    expect(d!.ruleId).toBe('duplicate:supplier');
+  });
+});
+
+const product = (over: Partial<ProductDuplicateRecord>): ProductDuplicateRecord => ({
+  id: 'id-a',
+  code: 'PRD-A',
+  name: 'Coca-Cola 300ml',
+  brandName: 'Coca-Cola',
+  categoryName: 'Soft Drinks',
+  sellingPrice: '5.0000',
+  createdAt: NOW,
+  ...over,
+});
+
+describe('evaluateDuplicateProducts (feature 15, tier 7a)', () => {
+  it('warning on identical normalized names (case/punctuation/word-order insensitive)', () => {
+    const d = evaluateDuplicateProducts(
+      product({}),
+      product({ id: 'id-b', code: 'PRD-B', name: 'coca cola 300ml', createdAt: new Date(NOW.getTime() - 1000) }),
+      DEFAULT_INTELLIGENCE_CONFIG,
+    );
+    expect(d!.ruleId).toBe('duplicate:product');
+    expect(d!.severity).toBe('warning');
+    expect(d!.evidence.exactNameMatch).toBe(true);
+    expect(d!.entityId).toBe('id-a'); // newer
+    expect(d!.dedupeKey).toBe('duplicate:product:id-a:id-b');
+  });
+
+  it('info in the near-identical band (subset names: 6 shared / 7 total = 85.7% ≥ 85%)', () => {
+    const d = evaluateDuplicateProducts(
+      product({ name: 'Fan Milk Chocolate Ice Cream 450ml Tub' }),
+      product({ id: 'id-b', code: 'PRD-B', name: 'Fan Milk Ice Cream 450ml Tub' }),
+      DEFAULT_INTELLIGENCE_CONFIG,
+    );
+    expect(d!.severity).toBe('info');
+    expect(d!.evidence.nameSimilarity).toEqual({ sharedTokens: 6, totalTokens: 7, ratioPct: 85.7 });
+  });
+
+  it('silent below the band (4/5 = 80%) and on empty names', () => {
+    expect(
+      evaluateDuplicateProducts(
+        product({ name: 'Fanta Orange 500ml Bottle' }),
+        product({ id: 'id-b', code: 'PRD-B', name: 'Fanta Orange 500ml Bottle Pack' }),
+        DEFAULT_INTELLIGENCE_CONFIG,
+      ),
+    ).toBeNull();
+    expect(
+      evaluateDuplicateProducts(product({ name: ' ' }), product({ id: 'id-b', code: 'PRD-B', name: ' ' }), DEFAULT_INTELLIGENCE_CONFIG),
+    ).toBeNull();
   });
 });

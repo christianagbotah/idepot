@@ -1,8 +1,9 @@
 /**
  * Phase 7a rules-based intelligence — pure evaluation library
  * (ai-opportunity-map.md tier 7a: dead stock, stockout risk
- * [rules first], anomaly rules). This module contains ZERO I/O:
- * SQL loads candidate rows, these pure functions decide alerts.
+ * [rules first], anomaly rules, duplicate detection). This module
+ * contains ZERO I/O: SQL loads candidate rows, these pure functions
+ * decide alerts.
  *
  * Guardrails (master prompt rule 14 + opportunity map §1):
  *  - every rule is ADVISORY: it returns an alert draft, never
@@ -22,7 +23,7 @@
  */
 import { parseDecimal, MONEY_SCALE, QTY_SCALE } from './decimal.js';
 
-export const INTELLIGENCE_RULE_VERSION = '1.0.0';
+export const INTELLIGENCE_RULE_VERSION = '1.1.0';
 
 export type AlertSeverity = 'info' | 'warning' | 'critical';
 
@@ -33,7 +34,9 @@ export type IntelligenceEntityType =
   | 'invoice_reversal'
   | 'shift'
   | 'stock_adjustment'
-  | 'cashier';
+  | 'cashier'
+  | 'customer'
+  | 'supplier';
 
 /** A rule's decision output — the API layer persists it as an ai_alert row. */
 export interface AlertDraft {
@@ -84,6 +87,12 @@ export interface IntelligenceRulesConfig {
     adjustmentQtyWarn: number;
     adjustmentQtyCritical: number;
   };
+  duplicate: {
+    /** name token-set similarity ≥ this → info review (parties and products) */
+    nameSimilarityWarn: number;
+    /** parties: similarity ≥ this AND equal address → warning */
+    nameSimilarityHigh: number;
+  };
 }
 
 export const DEFAULT_INTELLIGENCE_CONFIG: IntelligenceRulesConfig = {
@@ -99,6 +108,7 @@ export const DEFAULT_INTELLIGENCE_CONFIG: IntelligenceRulesConfig = {
     adjustmentQtyWarn: 20,
     adjustmentQtyCritical: 100,
   },
+  duplicate: { nameSimilarityWarn: 0.85, nameSimilarityHigh: 0.9 },
 };
 
 /** Merge a tenant's effective setting payload over the defaults (unknown
@@ -108,6 +118,7 @@ export function resolveIntelligenceConfig(raw: unknown): IntelligenceRulesConfig
     deadStock: { ...DEFAULT_INTELLIGENCE_CONFIG.deadStock },
     stockoutRisk: { ...DEFAULT_INTELLIGENCE_CONFIG.stockoutRisk },
     anomaly: { ...DEFAULT_INTELLIGENCE_CONFIG.anomaly },
+    duplicate: { ...DEFAULT_INTELLIGENCE_CONFIG.duplicate },
   };
   if (raw == null || typeof raw !== 'object') return out;
   const src = raw as Record<string, unknown>;
@@ -152,6 +163,15 @@ export function resolveIntelligenceConfig(raw: unknown): IntelligenceRulesConfig
     if (aw != null) out.anomaly.adjustmentQtyWarn = aw;
     if (ac != null) out.anomaly.adjustmentQtyCritical = ac;
   }
+  const dup = src.duplicate;
+  if (dup && typeof dup === 'object') {
+    const du = dup as Record<string, unknown>;
+    const nw = num(du.nameSimilarityWarn);
+    const nh = num(du.nameSimilarityHigh);
+    // similarities are fractions — clamp into [0,1]
+    if (nw != null) out.duplicate.nameSimilarityWarn = Math.min(1, nw);
+    if (nh != null) out.duplicate.nameSimilarityHigh = Math.min(1, nh);
+  }
   if (out.anomaly.discountCriticalRatio < out.anomaly.discountWarnRatio) {
     out.anomaly.discountCriticalRatio = out.anomaly.discountWarnRatio;
   }
@@ -160,6 +180,9 @@ export function resolveIntelligenceConfig(raw: unknown): IntelligenceRulesConfig
   }
   if (out.anomaly.adjustmentQtyCritical < out.anomaly.adjustmentQtyWarn) {
     out.anomaly.adjustmentQtyCritical = out.anomaly.adjustmentQtyWarn;
+  }
+  if (out.duplicate.nameSimilarityHigh < out.duplicate.nameSimilarityWarn) {
+    out.duplicate.nameSimilarityHigh = out.duplicate.nameSimilarityWarn;
   }
   return out;
 }
@@ -634,6 +657,245 @@ export function evaluateReversalActivity(input: ReversalActivityInput): AlertDra
 }
 
 // ---------------------------------------------------------------------------
+// Rules: duplicate detection (opportunity map feature 15, tier 7a)
+// ---------------------------------------------------------------------------
+// Scope per the opportunity map: "migration + daily creates" — the scan
+// loader pairs records CREATED inside the scan window (the newer side,
+// typically the migration import or a daily create) against every other
+// active record of any age. Matching is deterministic and explainable:
+// Ghana-normalized phone-key equality and exact token-set similarity
+// (Jaccard by integer cross-multiplication — never a float). Phonetic/
+// fuzzy matching, and the merge workflow itself (re-pointing documents,
+// audit trail), arrive with later tiers — 7a DETECTS and surfaces; a
+// human decides. Guests are excluded by design: walk-in capture is
+// legitimately repetitive.
+
+/** Normalize a name/address for comparison: NFKD, lowercase, marks
+ *  stripped (NFKD leaves combining accents that would split tokens),
+ *  every non-alphanumeric run collapsed to one space. Word order does
+ *  not matter ("Mensah Kwame" == "Kwame Mensah") because comparison is
+ *  over the token SET. */
+export function normalizeNameTokens(name: string): string[] {
+  const flat = name
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/\p{M}+/gu, '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+  return flat ? flat.split(/\s+/) : [];
+}
+
+/** Ghana phone normalization: digits only; drop the 233 country prefix
+ *  (12 digits) or the trunk 0 (10 digits); exactly 9 significant digits
+ *  is matchable, anything else is not (too short/long, or empty). */
+export function normalizePhoneGh(phone: string | null | undefined): string | null {
+  if (!phone) return null;
+  let digits = phone.replace(/\D+/g, '');
+  if (digits.length === 12 && digits.startsWith('233')) digits = digits.slice(3);
+  else if (digits.length === 10 && digits.startsWith('0')) digits = digits.slice(1);
+  return digits.length === 9 ? digits : null;
+}
+
+/** Address comparison key (same normalization as names, as a string). */
+export function normalizeAddressKey(address: string | null | undefined): string | null {
+  if (!address) return null;
+  const flat = address
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/\p{M}+/gu, '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+  return flat || null;
+}
+
+/** Exact token-set overlap: |A ∩ B| and |A ∪ B| (integers — the ratio is
+ *  only ever derived for display; decisions cross-multiply). */
+export function tokenSetOverlap(a: readonly string[], b: readonly string[]): { inter: number; union: number } {
+  const sa = new Set(a);
+  const sb = new Set(b);
+  let inter = 0;
+  for (const t of sa) if (sb.has(t)) inter++;
+  return { inter, union: sa.size + sb.size - inter };
+}
+
+/** inter/union ≥ ratio, decided by integer cross-multiplication at 4
+ *  significant digits (basis points) — the same exactness discipline as
+ *  the money/quantity rules. */
+function similarityAtLeast(inter: number, union: number, ratio: number): boolean {
+  if (union === 0) return false; // two empty names carry no evidence
+  return BigInt(inter) * 10_000n >= BigInt(union) * BigInt(Math.round(ratio * 10_000));
+}
+
+export interface PartyDuplicateRecord {
+  id: string;
+  code: string;
+  name: string;
+  phone: string | null;
+  altPhone: string | null;
+  address: string | null;
+  isGuest: boolean;
+  createdAt: Date;
+}
+
+/**
+ * Duplicate parties (customers/suppliers), tier 7a — deterministic
+ * signals only, every comparison exact:
+ *  - critical: shared normalized phone key AND name similarity ≥ warn;
+ *  - warning: shared phone key alone (a shared household/shop line is
+ *    possible), OR name similarity ≥ high AND identical normalized
+ *    address;
+ *  - info: name similarity ≥ warn — common names deserve human eyes,
+ *    not loud alerts.
+ * The dedupe key is the CANONICAL (sorted) id pair, so re-scans and
+ * both-sides-new pairings converge on one alert; entity_id points at
+ * the NEWER record (the probable duplicate).
+ */
+export function evaluateDuplicateParties(
+  a: PartyDuplicateRecord,
+  b: PartyDuplicateRecord,
+  cfg: IntelligenceRulesConfig,
+  kind: 'customer' | 'supplier',
+): AlertDraft | null {
+  // walk-in guests are legitimately repetitive — never a duplicate signal
+  if (kind === 'customer' && (a.isGuest || b.isGuest)) return null;
+
+  const tokensA = normalizeNameTokens(a.name);
+  const tokensB = normalizeNameTokens(b.name);
+  const { inter, union } = tokenSetOverlap(tokensA, tokensB);
+  const nameSimilar = similarityAtLeast(inter, union, cfg.duplicate.nameSimilarityWarn);
+  const nameHigh = similarityAtLeast(inter, union, cfg.duplicate.nameSimilarityHigh);
+
+  const phonesOf = (r: PartyDuplicateRecord): Set<string> => {
+    const s = new Set<string>();
+    for (const p of [normalizePhoneGh(r.phone), normalizePhoneGh(r.altPhone)]) {
+      if (p) s.add(p);
+    }
+    return s;
+  };
+  const pa = phonesOf(a);
+  const pb = phonesOf(b);
+  let sharedPhone: string | null = null;
+  for (const p of pa) {
+    if (pb.has(p)) {
+      sharedPhone = p;
+      break;
+    }
+  }
+
+  const addrA = normalizeAddressKey(a.address);
+  const addrB = normalizeAddressKey(b.address);
+  const addressMatch = addrA != null && addrA === addrB;
+
+  let severity: AlertSeverity;
+  const signals: string[] = [];
+  if (sharedPhone && nameSimilar) {
+    severity = 'critical';
+  } else if (sharedPhone || (nameHigh && addressMatch)) {
+    severity = 'warning';
+  } else if (nameSimilar) {
+    severity = 'info';
+  } else {
+    return null;
+  }
+  if (sharedPhone) signals.push('phone');
+  if (nameSimilar) signals.push('name');
+  if (addressMatch) signals.push('address');
+
+  // canonical pair key + newer record as the entity
+  const [id1, id2] = [a.id, b.id].sort();
+  const newer = a.createdAt >= b.createdAt ? a : b;
+  const older = newer === a ? b : a;
+  const kindWord = kind === 'customer' ? 'Customer' : 'Supplier';
+  const simPct = union === 0 ? '0' : ((inter / union) * 100).toFixed(1);
+
+  return {
+    ruleId: `duplicate:${kind}`,
+    severity,
+    dedupeKey: `duplicate:${kind}:${id1}:${id2}`,
+    entityType: kind,
+    entityId: newer.id,
+    entityLabel: `${newer.code} — ${newer.name} ↔ ${older.code} — ${older.name}`,
+    title: `Possible duplicate ${kind}: ${newer.code} and ${older.code}`,
+    reason:
+      `${kindWord} ${newer.code} (${newer.name}) looks like a duplicate of ${older.code} (${older.name}): ` +
+      `signals ${signals.join('+')} — ` +
+      (sharedPhone ? `shared phone key ${sharedPhone}; ` : '') +
+      `name similarity ${simPct}% (${inter}/${union} shared tokens)${addressMatch ? '; identical address' : ''}. ` +
+      `Duplicate party records fragment balances, credit and statements — review and deactivate or merge the duplicate. ` +
+      `(Automated merging is deliberately NOT part of the advisory tier.)`,
+    evidence: {
+      kind,
+      duplicate: { id: newer.id, code: newer.code, name: newer.name, phone: newer.phone, altPhone: newer.altPhone, address: newer.address },
+      original: { id: older.id, code: older.code, name: older.name, phone: older.phone, altPhone: older.altPhone, address: older.address },
+      signals,
+      sharedPhoneKey: sharedPhone,
+      nameSimilarity: { sharedTokens: inter, totalTokens: union, ratioPct: Number(simPct) },
+      addressMatch,
+      nameSimilarityWarnThreshold: cfg.duplicate.nameSimilarityWarn,
+      nameSimilarityHighThreshold: cfg.duplicate.nameSimilarityHigh,
+    },
+  };
+}
+
+export interface ProductDuplicateRecord {
+  id: string;
+  code: string;
+  name: string;
+  brandName: string | null;
+  categoryName: string | null;
+  sellingPrice: string;
+  createdAt: Date;
+}
+
+/**
+ * Duplicate products, tier 7a: identical normalized token sets → warning
+ * (stock and velocity silently split across two catalog codes); token-set
+ * similarity ≥ warn → info. No critical band — catalog duplication is a
+ * hygiene issue, not a money-integrity one. Exact barcodes are already
+ * impossible (unique per tenant), so names carry the signal.
+ */
+export function evaluateDuplicateProducts(
+  a: ProductDuplicateRecord,
+  b: ProductDuplicateRecord,
+  cfg: IntelligenceRulesConfig,
+): AlertDraft | null {
+  const { inter, union } = tokenSetOverlap(normalizeNameTokens(a.name), normalizeNameTokens(b.name));
+  if (union === 0) return null;
+  const exact = inter === union;
+  const similar = similarityAtLeast(inter, union, cfg.duplicate.nameSimilarityWarn);
+  if (!exact && !similar) return null;
+
+  const severity: AlertSeverity = exact ? 'warning' : 'info';
+  const [id1, id2] = [a.id, b.id].sort();
+  const newer = a.createdAt >= b.createdAt ? a : b;
+  const older = newer === a ? b : a;
+  const simPct = ((inter / union) * 100).toFixed(1);
+
+  return {
+    ruleId: 'duplicate:product',
+    severity,
+    dedupeKey: `duplicate:product:${id1}:${id2}`,
+    entityType: 'product',
+    entityId: newer.id,
+    entityLabel: `${newer.code} — ${newer.name} ↔ ${older.code} — ${older.name}`,
+    title: `Possible duplicate product: ${newer.code} and ${older.code}`,
+    reason:
+      `Product ${newer.code} (${newer.name}) looks like a duplicate of ${older.code} (${older.name}): ` +
+      `${exact ? 'identical' : 'similar'} name (${simPct}% — ${inter}/${union} shared tokens)` +
+      `${newer.sellingPrice === older.sellingPrice ? `, same selling price ${newer.sellingPrice}` : ''}. ` +
+      `Duplicate catalog entries split stock, velocity and cost history across two codes — review and consolidate. ` +
+      `(Automated merging is deliberately NOT part of the advisory tier.)`,
+    evidence: {
+      duplicate: { id: newer.id, code: newer.code, name: newer.name, sellingPrice: newer.sellingPrice, brand: newer.brandName, category: newer.categoryName },
+      original: { id: older.id, code: older.code, name: older.name, sellingPrice: older.sellingPrice, brand: older.brandName, category: older.categoryName },
+      exactNameMatch: exact,
+      nameSimilarity: { sharedTokens: inter, totalTokens: union, ratioPct: Number(simPct) },
+      nameSimilarityWarnThreshold: cfg.duplicate.nameSimilarityWarn,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Rule catalog (self-describing; surfaced by GET /intelligence/rules)
 // ---------------------------------------------------------------------------
 
@@ -695,6 +957,29 @@ export const INTELLIGENCE_RULE_CATALOG: readonly RuleCatalogEntry[] = [
     ruleId: 'anomaly:invoice-reversal',
     description: 'Every invoice reversal correction, surfaced for review with its documented reason.',
     defaults: 'no thresholds',
+    tier: '7a',
+  },
+  {
+    ruleId: 'duplicate:customer',
+    description:
+      'Two active non-guest customer records sharing a normalized Ghana phone key (critical with similar names), ' +
+      'or highly similar names with an identical address. Detection only — merging stays a human decision.',
+    defaults: `name similarity warn ≥ ${(DEFAULT_INTELLIGENCE_CONFIG.duplicate.nameSimilarityWarn * 100).toFixed(0)}%, high ≥ ${(DEFAULT_INTELLIGENCE_CONFIG.duplicate.nameSimilarityHigh * 100).toFixed(0)}%`,
+    tier: '7a',
+  },
+  {
+    ruleId: 'duplicate:supplier',
+    description:
+      'Two active supplier records matching on the same signals as duplicate:customer. Detection only — merging stays a human decision.',
+    defaults: `name similarity warn ≥ ${(DEFAULT_INTELLIGENCE_CONFIG.duplicate.nameSimilarityWarn * 100).toFixed(0)}%, high ≥ ${(DEFAULT_INTELLIGENCE_CONFIG.duplicate.nameSimilarityHigh * 100).toFixed(0)}%`,
+    tier: '7a',
+  },
+  {
+    ruleId: 'duplicate:product',
+    description:
+      'Two active products with identical (warning) or near-identical (info) normalized names — stock and velocity ' +
+      'silently split across two catalog codes. Exact barcode duplication is already impossible at the DB level.',
+    defaults: `name similarity warn ≥ ${(DEFAULT_INTELLIGENCE_CONFIG.duplicate.nameSimilarityWarn * 100).toFixed(0)}%`,
     tier: '7a',
   },
 ] as const;
