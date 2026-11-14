@@ -66,6 +66,26 @@ describe('RBAC decision function', () => {
     expect(hasPermission(['admin'], 'sales:reverse_invoice')).toBe(true);
   });
 
+  it('Phase 7a: the intelligence alert queue is invisible to cashiers, read-only for auditors/accountants, managed by managers', () => {
+    // an anomaly/fraud queue visible to the monitored population defeats
+    // its purpose — cashiers hold NO intelligence permission at all
+    expect(hasPermission(['cashier'], 'intelligence:read')).toBe(false);
+    expect(hasPermission(['cashier'], 'intelligence:manage')).toBe(false);
+    expect(ROLE_PERMISSIONS.cashier).not.toContain('intelligence:read');
+    expect(ROLE_PERMISSIONS.cashier).not.toContain('intelligence:manage');
+    // auditors and accountants ARE the human feedback loop: read + feedback,
+    // never scans or lifecycle transitions
+    expect(hasPermission(['auditor'], 'intelligence:read')).toBe(true);
+    expect(hasPermission(['auditor'], 'intelligence:manage')).toBe(false);
+    expect(hasPermission(['accountant'], 'intelligence:read')).toBe(true);
+    expect(hasPermission(['accountant'], 'intelligence:manage')).toBe(false);
+    // procurement sees stockout/dead-stock alerts relevant to buying
+    expect(hasPermission(['procurement'], 'intelligence:read')).toBe(true);
+    // managers run scans and work the queue
+    expect(hasPermission(['manager'], 'intelligence:read')).toBe(true);
+    expect(hasPermission(['manager'], 'intelligence:manage')).toBe(true);
+  });
+
   it('fails closed for unknown roles', () => {
     expect(hasPermission(['superuser'], 'warehouse:read')).toBe(false);
     expect(hasPermission([], 'warehouse:read')).toBe(false);
