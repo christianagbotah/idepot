@@ -121,6 +121,19 @@ const MATRIX: MatrixCase[] = [
   { role: 'owner', method: 'post', path: 'admin/users', body: {}, expect: 400 },
   { role: 'admin', method: 'post', path: 'admin/users', body: {}, expect: 400 },
   { role: 'manager', method: 'post', path: 'admin/users', body: {}, expect: 403 },
+  // intelligence:read / intelligence:manage (Phase 7a — advisory alert
+  // queue; invalid rule id distinguishes 400 gate-passed from 403 denied)
+  { role: 'owner', method: 'get', path: 'intelligence/alerts', expect: 200 },
+  { role: 'manager', method: 'get', path: 'intelligence/alerts', expect: 200 },
+  { role: 'auditor', method: 'get', path: 'intelligence/rules', expect: 200 },
+  { role: 'accountant', method: 'get', path: 'intelligence/runs', expect: 200 },
+  { role: 'procurement', method: 'get', path: 'intelligence/alerts', expect: 200 },
+  { role: 'cashier', method: 'get', path: 'intelligence/alerts', expect: 403 },
+  { role: 'manager', method: 'post', path: 'intelligence/scan', body: { rules: ['bogus'] }, expect: 400 },
+  { role: 'owner', method: 'post', path: 'intelligence/scan', body: { rules: ['bogus'] }, expect: 400 },
+  { role: 'cashier', method: 'post', path: 'intelligence/scan', body: { rules: ['bogus'] }, expect: 403 },
+  { role: 'auditor', method: 'post', path: 'intelligence/scan', body: { rules: ['bogus'] }, expect: 403 },
+  { role: 'accountant', method: 'post', path: 'intelligence/scan', body: { rules: ['bogus'] }, expect: 403 },
 ];
 
 describe('RBAC authorization matrix', () => {

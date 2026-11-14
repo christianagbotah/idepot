@@ -69,6 +69,9 @@ export const PERMISSIONS = [
   'settings:manage',  // tenant settings administration (versioned config)
   'loyalty:manage',   // optional loyalty foundation administration (inactive by default)
   'users:manage',     // tenant user/staff administration: create, edit roles, disable (owner/admin only)
+  // Phase 7 — rules-based intelligence (advisory alert queue, never auto-acts)
+  'intelligence:read',   // view alerts/runs/rules + submit alert feedback (the human loop)
+  'intelligence:manage', // trigger scans; acknowledge/resolve/dismiss alerts
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -132,6 +135,9 @@ const MANAGER_PERMISSIONS: readonly Permission[] = [
   'reports:read',
   'kpi:manage',
   'settings:manage',
+  // Phase 7 — managers run scans and work the alert queue
+  'intelligence:read',
+  'intelligence:manage',
 ];
 
 const CASHIER_PERMISSIONS: readonly Permission[] = [
@@ -185,6 +191,9 @@ const AUDITOR_PERMISSIONS: readonly Permission[] = [
   // Phase 5 — read-only returns evidence + operational reports
   'returns:read',
   'reports:read',
+  // Phase 7 — read-only intelligence evidence; auditors ARE the human
+  // feedback loop but never run scans or close alerts
+  'intelligence:read',
 ];
 
 /** Accountant (Phase 4): books, journals, banking, close — not POS. */
@@ -221,6 +230,9 @@ const ACCOUNTANT_PERMISSIONS: readonly Permission[] = [
   'returns:refund',
   'reports:read',
   'kpi:manage',
+  // Phase 7 — anomalies (shift variance, deep discounts) are accounting
+  // evidence: read + feedback, never management
+  'intelligence:read',
 ];
 
 /** Procurement officer (Phase 4): POs, receipts, supplier records view. */
@@ -235,6 +247,8 @@ const PROCUREMENT_PERMISSIONS: readonly Permission[] = [
   'receiving:read',
   'receiving:write',
   'ap:read',
+  // Phase 7 — stockout/dead-stock alerts are procurement-relevant
+  'intelligence:read',
 ];
 
 export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {

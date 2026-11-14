@@ -78,6 +78,9 @@ import { LoyaltyController } from './admin/loyalty.controller.js';
 import { AdminService } from './admin/admin.service.js';
 import { UsersAdminController } from './admin/users.controller.js';
 import { UsersService } from './admin/users.service.js';
+// Phase 7a — rules-based intelligence (alert-only, never auto-acts)
+import { IntelligenceController } from './intelligence/intelligence.controller.js';
+import { IntelligenceService } from './intelligence/intelligence.service.js';
 
 @Module({
   imports: [DbModule],
@@ -122,6 +125,8 @@ import { UsersService } from './admin/users.service.js';
     ReportsController,
     LoyaltyController,
     UsersAdminController,
+    // Phase 7a — rules-based intelligence
+    IntelligenceController,
   ],
   providers: [
     AuthService,
@@ -184,6 +189,8 @@ import { UsersService } from './admin/users.service.js';
     KpiService,
     AdminService,
     UsersService,
+    // Phase 7a — rules-based intelligence
+    IntelligenceService,
     // global guard chain: authentication -> authorization
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RbacGuard },

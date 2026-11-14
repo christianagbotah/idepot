@@ -61,6 +61,7 @@ const NAV: Array<{ group: string; links: NavLink[]; roles?: string[] }> = [
     links: [
       { href: '/reports', label: 'Reports' },
       { href: '/kpi', label: 'KPI Dashboard' },
+      { href: '/intelligence', label: 'Intelligence Alerts' },
     ],
   },
   {
