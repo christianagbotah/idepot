@@ -265,9 +265,17 @@ export class ReconciliationService {
     );
   }
 
-  /** COGS ↔ inventory: Σ sale-issue cost_value on the stock ledger as of the
-   *  report date (reversal movements subtracted) must equal the COGS posted
-   *  through the GL up to the same date. */
+  /** COGS ↔ inventory: the cost that has flowed into COGS as of the report
+   *  date must agree on both sides:
+   *    GL:      Σ COGS debits (sales) − Σ COGS credits (credit notes,
+   *             dated by the credit note's business date) − reversals
+   *    ledger:  Σ sale-issue cost_value (invoice issues) − Σ return-order
+   *             restock receipts at ORIGINAL cost (dated by the return
+   *             order's business date — the same date the credit-note
+   *             journal carries) − invoice-reversal reversal movements.
+   *  A restocking return posts BOTH the Dr Stock / Cr COGS reversal journal
+   *  AND a customer_return receipt movement at cost-at-sale, so both sides
+   *  subtract it symmetrically; scrap/no-restock returns post neither. */
   private async cogsInventoryCheck(ctx: UowContext, asOf: string): Promise<ReconciliationCheckDto> {
     const cogsControl = await this.controlBalance(ctx, 'cogs', asOf, '1970-01-01');
     const ledger = await ctx.query<{ total: string }>(
@@ -278,18 +286,24 @@ export class ReconciliationService {
          - COALESCE(SUM(cost_value) FILTER (
            WHERE movement_type = 'reversal' AND source_document_type = 'invoice_reversal'
              AND occurred_at::date <= $2::date), 0)
+         - COALESCE(SUM(sm.cost_value) FILTER (
+           WHERE sm.movement_type = 'receipt' AND sm.source_document_type = 'return_order'
+             AND COALESCE(ro.business_date, sm.occurred_at::date) <= $2::date), 0)
        )::text AS total
-       FROM stock_movement
-       WHERE tenant_id = $1`,
+       FROM stock_movement sm
+       LEFT JOIN return_order ro
+         ON sm.source_document_type = 'return_order'
+        AND ro.id = sm.source_document_id AND ro.tenant_id = sm.tenant_id
+       WHERE sm.tenant_id = $1`,
       [ctx.tenantId, asOf],
     );
     const subledger = parseMoney(ledger.rows[0]!.total);
     return this.check(
       'cogs_vs_stock_ledger',
-      'Σ sale-issue cost_value on the stock ledger (as-of dated, reversals subtracted)',
+      'Σ sale-issue cost_value on the stock ledger (as-of dated; invoice reversals and customer-return restocks at original cost subtracted)',
       cogsControl,
       subledger,
-      'both sides cut at the same as-of date; reversed sales subtract their (verbatim-cost) reversal movement and the compensating reversal journal symmetrically',
+      'both sides cut at the same as-of date; reversed sales subtract their (verbatim-cost) reversal movement and the compensating reversal journal symmetrically; restocking returns subtract the customer_return receipt on the ledger and the credit-note COGS reversal in the GL — both dated by the return order\u2019s business date',
     );
   }
 

@@ -1,0 +1,837 @@
+{
+  "run": {
+    "seed": 42,
+    "terminals": 50,
+    "salesPerTerminal": 4,
+    "at": "2026-11-12T22:21:01.098Z"
+  },
+  "invariants": {
+    "invoicesApplied": 200,
+    "eventsExpected": 200,
+    "invoicesMatchEvents": true,
+    "stockIssued": "-200.000000",
+    "stockIssuedMatches": true,
+    "cashOnHand": "2000.0000",
+    "expectedCash": "2000.0000",
+    "cashMatches": true,
+    "syncRegistryRows": 200,
+    "revokedTerminal": {
+      "code": "CHAOS-POS-00",
+      "stillQueued": 0,
+      "refusedPushes": 0,
+      "revokedAt": "2026-11-12T22:20:57.695Z"
+    }
+  },
+  "metrics": {
+    "pushLatencyMs": {
+      "p50": 758,
+      "p95": 969,
+      "p99": 1105,
+      "max": 1120
+    },
+    "conflictsByCode": {},
+    "duplicatesSuppressed": 50
+  },
+  "terminals": [
+    {
+      "terminal": "CHAOS-POS-00",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        720.797399,
+        788.755666,
+        636.6204809999999,
+        753.5062090000001
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-01",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        195.45150999999987,
+        851.999554,
+        721.4632860000002,
+        763.576544
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-02",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        454.86381200000005,
+        744.5983919999999,
+        748.1399839999999,
+        746.848191
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-03",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        729.4673670000002,
+        705.1995069999998,
+        801.8021779999999,
+        889.6279049999994
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-04",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        940.9944569999998,
+        678.951208,
+        979.095229,
+        754.5373490000002
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-05",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        633.375262,
+        868.958517,
+        685.5003149999998,
+        771.0551539999997
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-06",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        655.3562320000001,
+        878.7995349999997,
+        643.9964710000004,
+        773.74586
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-07",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        548.0078320000002,
+        850.7025030000004,
+        776.9849989999998,
+        718.1185409999998
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-08",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        874.8776909999997,
+        646.0701819999999,
+        692.8579369999998,
+        888.4464660000003
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-09",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        285.8656940000001,
+        811.145548,
+        765.4123340000001,
+        731.0042119999998
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-10",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        463.61988500000007,
+        862.732747,
+        639.363445,
+        798.9505250000002
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-11",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        681.2340530000001,
+        741.9796330000004,
+        699.6544090000002,
+        917.7899520000001
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-12",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        387.7726560000001,
+        780.244862,
+        669.806345,
+        832.3146409999999
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-13",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        353.49476000000004,
+        913.3756250000001,
+        695.5448089999995,
+        913.6882000000005
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-14",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        528.6489139999999,
+        773.390828,
+        766.5378949999995,
+        969.7236819999998
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-15",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        928.5843580000001,
+        834.5905229999998,
+        744.2874660000002,
+        688.810399
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-16",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        507.93289200000027,
+        774.9745090000001,
+        776.2599770000006,
+        725.694168
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-17",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        303.16093,
+        850.8258599999999,
+        693.6498200000001,
+        807.6356429999996
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-18",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        846.3818420000002,
+        948.2060219999998,
+        726.0550069999999,
+        708.3136489999997
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-19",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        830.232943,
+        716.9035289999997,
+        660.8417429999995,
+        708.7913949999993
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-20",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        436.8238230000002,
+        799.9117809999998,
+        652.0859460000001,
+        749.1419419999993
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-21",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        242.1751919999997,
+        938.6946459999999,
+        815.790939,
+        803.0730160000003
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-22",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        709.185618,
+        760.9241160000001,
+        757.1674030000004,
+        846.3289939999995
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-23",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        907.847522,
+        700.9855390000002,
+        755.1551150000005,
+        682.3061369999996
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-24",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        768.748036,
+        673.3862550000003,
+        802.7805029999995,
+        777.323257
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-25",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        317.0013939999999,
+        938.6143769999999,
+        780.0857679999999,
+        814.5078410000006
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-26",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        800.1235729999999,
+        769.391267,
+        787.8064019999997,
+        757.9396429999997
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-27",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        969.0761580000003,
+        662.1249000000003,
+        834.7526619999994,
+        793.2157529999995
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-28",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        364.74002900000005,
+        825.584938,
+        735.6370080000002,
+        800.9691329999996
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-29",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        1033.9851320000002,
+        676.9077560000001,
+        720.6837390000001,
+        735.7133370000001
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-30",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        218.78163600000016,
+        911.5394059999999,
+        811.3554850000005,
+        871.3535279999996
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-31",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        526.284772,
+        826.1162610000001,
+        766.456373,
+        727.4100169999992
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-32",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        830.4214099999999,
+        745.8636729999998,
+        703.5979620000003,
+        799.8000200000006
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-33",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        744.046163,
+        713.8340029999999,
+        945.685669,
+        735.236175
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-34",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        478.38144599999987,
+        807.680695,
+        831.4111580000003,
+        763.4253589999998
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-35",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        434.39925600000015,
+        798.5629720000002,
+        793.9044710000003,
+        714.0473119999997
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-36",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        667.7613780000001,
+        741.6781529999998,
+        726.3707370000002,
+        793.1920039999995
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-37",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        650.5118910000001,
+        675.5298029999999,
+        639.2738760000002,
+        855.4757179999997
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-38",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        957.4123410000002,
+        742.6645979999998,
+        745.2279900000003,
+        798.5707689999999
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-39",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        631.0629690000001,
+        737.2071230000001,
+        654.452295,
+        708.3605950000001
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-40",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        996.2729979999999,
+        754.1236359999998,
+        777.2883240000001,
+        793.5958369999998
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-41",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        840.3121960000003,
+        830.2072319999997,
+        755.1203209999999,
+        883.9954859999998
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-42",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        1045.9856129999998,
+        807.2301369999996,
+        715.4075119999998,
+        745.6920419999997
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-43",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        760.1210169999999,
+        840.445044,
+        744.3774899999999,
+        818.1079070000005
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-44",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        1020.3107770000001,
+        698.228478,
+        734.2688239999998,
+        688.7916800000003
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-45",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        862.332645,
+        796.0292319999999,
+        994.7965409999997,
+        685.395681
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-46",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        400.0444830000001,
+        954.777443,
+        736.3356700000004,
+        896.34566
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-47",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        1105.4391099999998,
+        735.0106769999998,
+        704.9120200000007,
+        797.2381379999997
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-48",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        915.4236249999999,
+        725.318577,
+        766.0988220000004,
+        799.5744000000004
+      ]
+    },
+    {
+      "terminal": "CHAOS-POS-49",
+      "captured": 4,
+      "pushed": 4,
+      "rejected": 0,
+      "rejectionReasons": [],
+      "duplicatesSuppressed": 1,
+      "refused": 0,
+      "conflicts": [],
+      "latenciesMs": [
+        265.423718,
+        1119.6840499999998,
+        700.4133670000001,
+        945.904297
+      ]
+    }
+  ]
+}

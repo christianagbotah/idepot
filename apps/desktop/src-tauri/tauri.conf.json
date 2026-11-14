@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "iDepot POS",
+  "version": "0.1.0",
+  "identifier": "lightworld.idepot.pos",
+  "build": {
+    "frontendDist": "../dist-ui",
+    "devUrl": "http://localhost:3000",
+    "beforeDevCommand": "echo 'dev points at the local web app (apps/web)'",
+    "beforeBuildCommand": "echo 'the web bundle is produced by apps/web (standalone) and copied to dist-ui by the packaging step'"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "iDepot POS",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1024,
+        "minHeight": 700,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' https://*.lightworldtech.com http://127.0.0.1:* http://localhost:*; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis", "dmg"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.icns", "icons/icon.ico"]
+  },
+  "plugins": {
+    "sql": {
+      "preload": {
+        "db": "idepot-offline.db"
+      }
+    },
+    "updater": {
+      "active": true,
+      "dialog": true,
+      "pubkey": "REPLACE_AT_SIGNING_TIME",
+      "endpoints": [
+        "https://updates.idepot.lightworldtech.com/desktop/{{target}}/{{arch}}/{{current_version}}"
+      ]
+    }
+  }
+}

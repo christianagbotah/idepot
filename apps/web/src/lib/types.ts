@@ -276,3 +276,55 @@ export interface ReceiptPayloadDto {
   balanceOwedThisInvoice: string;
   note: string | null;
 }
+
+export interface QuotationLineDto {
+  id: string; productId: string; unitId: string | null;
+  quantity: string; quantityBase: string; unitPrice: string; lineNet: string;
+}
+
+export interface QuotationDto {
+  id: string; code: string; warehouseId: string; customerId: string | null;
+  customerName: string | null;
+  status: 'draft' | 'issued' | 'accepted' | 'rejected' | 'expired' | 'converted' | 'cancelled';
+  subtotal: string; total: string; validUntil: string | null;
+  convertedOrderId: string | null; note: string | null;
+  issuedAt: string | null; acceptedAt: string | null; statusReason: string | null;
+  lines: QuotationLineDto[]; createdBy: string | null; createdAt: string;
+}
+
+/* ----------------------- Phase 6 parity: price lists ---------------------- */
+
+export interface PriceListDto {
+  id: string; code: string; name: string; kind: 'standard' | 'customer';
+  customerId: string | null; isActive: boolean;
+}
+export interface PriceListItemViewDto {
+  id: string; priceListId: string; productId: string; unitId: string;
+  price: string; effectiveFrom: string; effectiveTo: string | null;
+  productCode: string | null; productName: string | null; unitCode: string | null;
+}
+export interface ResolvedPriceDto {
+  price: string; source: 'customer_list' | 'standard_list' | 'product_default';
+  priceListId: string | null; priceListItemId: string | null; effectiveFrom: string | null;
+}
+
+/* --------------------- Phase 6 parity: global search ---------------------- */
+
+export interface SearchResultDto {
+  entity:
+    | 'product' | 'customer' | 'supplier' | 'invoice' | 'quotation'
+    | 'sales_order' | 'waybill' | 'credit_note' | 'purchase_order'
+    | 'goods_receipt' | 'price_list';
+  id: string;
+  code: string | null;
+  title: string;
+  subtitle: string | null;
+  href: string;
+  status: string | null;
+  when: string | null;
+}
+export interface SearchResultsDto {
+  q: string;
+  total: number;
+  groups: Array<{ entity: SearchResultDto['entity']; items: SearchResultDto[] }>;
+}

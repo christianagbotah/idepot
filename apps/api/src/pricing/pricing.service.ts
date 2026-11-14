@@ -6,6 +6,7 @@ import type {
   ListDto,
   PriceListDto,
   PriceListItemDto,
+  PriceListItemViewDto,
   ResolvePriceQuery,
   ResolvedPriceDto,
 } from '@idepot/contracts';
@@ -117,6 +118,14 @@ export class PricingService {
 
   listPriceLists(principal: { tenantId: string }): Promise<ListDto<PriceListDto>> {
     return this.uow.run({ tenantId: principal.tenantId }, async () => this.repo.listPriceLists());
+  }
+
+  /** Phase 6 management UX: the items of one list (with catalog labels). */
+  listItems(
+    principal: { tenantId: string },
+    priceListId: string,
+  ): Promise<ListDto<PriceListItemViewDto>> {
+    return this.uow.run({ tenantId: principal.tenantId }, async () => this.repo.listItems(priceListId));
   }
 
   resolve(principal: { tenantId: string }, query: ResolvePriceQuery): Promise<ResolvedPriceDto> {

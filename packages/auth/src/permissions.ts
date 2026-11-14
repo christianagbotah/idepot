@@ -69,6 +69,9 @@ export const PERMISSIONS = [
   'settings:manage',  // tenant settings administration (versioned config)
   'loyalty:manage',   // optional loyalty foundation administration (inactive by default)
   'users:manage',     // tenant user/staff administration: create, edit roles, disable (owner/admin only)
+  // Phase 6 — device administration (pairing, hardware profiles, licensing)
+  'devices:read',     // view devices, pairing state, licenses (owner/admin/manager/auditor)
+  'devices:manage',   // pair, rename, configure hardware, revoke/reactivate, license devices
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -132,6 +135,8 @@ const MANAGER_PERMISSIONS: readonly Permission[] = [
   'reports:read',
   'kpi:manage',
   'settings:manage',
+  // Phase 6 — device fleet visibility (not administration)
+  'devices:read',
 ];
 
 const CASHIER_PERMISSIONS: readonly Permission[] = [
@@ -185,6 +190,8 @@ const AUDITOR_PERMISSIONS: readonly Permission[] = [
   // Phase 5 — read-only returns evidence + operational reports
   'returns:read',
   'reports:read',
+  // Phase 6 — read-only device fleet evidence
+  'devices:read',
 ];
 
 /** Accountant (Phase 4): books, journals, banking, close — not POS. */

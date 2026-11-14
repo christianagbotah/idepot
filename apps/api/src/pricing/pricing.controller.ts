@@ -32,6 +32,12 @@ export class PricingController {
     return this.pricing.listPriceLists(req.principal!);
   }
 
+  @Get('price-lists/:id/items')
+  @RequirePermissions('pricing:read')
+  listItems(@Req() req: Request, @Param('id') id: string) {
+    return this.pricing.listItems(req.principal!, id);
+  }
+
   @Post('price-lists/:id/items')
   @RequirePermissions('pricing:write')
   addItem(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {

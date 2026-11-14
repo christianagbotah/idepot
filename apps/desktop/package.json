@@ -1,0 +1,23 @@
+{
+  "name": "@idepot/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "iDepot desktop POS terminal (Windows/macOS) \u2014 Tauri 2 native shell around the iDepot web app with local SQLite offline queue, hardware bridges and update channel",
+  "type": "module",
+  "main": "src/main.ts",
+  "scripts": {
+    "note": "typecheck/build run inside the platform-gated CI job (deps installed there) \u2014 see README"
+  },
+  "dependencies": {
+    "@idepot/contracts": "*",
+    "@idepot/hardware": "*",
+    "@idepot/offline": "*",
+    "@idepot/print-templates": "*",
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-sql": "^2.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "typescript": "^5.9.0"
+  }
+}

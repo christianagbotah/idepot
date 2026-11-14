@@ -75,7 +75,7 @@ pos/add_item.php,pos,active,Quick item create,/catalog,POST /products,vertical-s
 pos/add_sales_order_negative_bal.php,pos,active,Negative-balance (deposit) order,/deposits,POST /deposits,sales-flows.e2e,implemented,Explicit customer_deposit documents; no negative invoice rows
 pos/calendar.php,pos,school-only,Noticeboard remnant inside POS,—,—,—,dropped-school,School-era content (view-classification §9)
 pos/closing_stock_summary.php,pos,active,Closing stock summary,/reports (daily-stock tab),GET /reports/daily-stock,—,implemented,Ledger-derived closing (legacy defect: closing only when sale+transfer both exist)
-pos/create_proforma_invoice.php,pos,active,Create proforma (quotation),— (web UI pending),"POST /quotations, POST /quotations/:id/issue|accept|convert",review-hardening,partial,API + lifecycle + tests done; quotation web page + A4 print pending
+pos/create_proforma_invoice.php,pos,active,Create proforma (quotation),/quotations,"POST /quotations, POST /quotations/:id/issue|accept|convert",review-hardening + search-pricing-parity,implemented,"RESOLVED Phase 6 (751f58f): /quotations page (create, status+reason list, lifecycle mirroring domain state machine, print deep link)"
 pos/css.php,pos,active,Theme shell/fragment,web app shell (layout),—,—,implemented-changed,Replaced by the Next.js app shell
 pos/edit_creditor_opening_balance.php,pos,active,Creditor opening balance,— (back-office API),POST /party-opening-balances (supplier),purchasing-flows.e2e,implemented,
 pos/edit_customer.php,pos,active,Quick customer edit,/customers,PATCH /customers/:id (party CRUD),sales-flows.e2e,implemented,
@@ -186,12 +186,12 @@ sales/add_item.php,sales,active,Create item,/catalog,POST /products,vertical-sli
 sales/add_item_category.php,sales,active,Create category,/categories,POST /categories,vertical-slice.e2e,implemented,
 sales/add_item_main_category.php,sales,active,Create main category,/categories,POST /categories (parent),vertical-slice.e2e,implemented,
 sales/add_item_script.php,sales,dead,Script debris,—,—,—,dropped-dead,
-sales/add_item_to_price_list.php,sales,active,Add item to price list,—,POST /price-lists/:id/items,—,partial,See pricing.php
+sales/add_item_to_price_list.php,sales,active,Add item to price list,/price-lists (row editor),POST /price-lists/:id/items,search-pricing-parity,implemented,RESOLVED Phase 6 (751f58f): effective-dated rows with catalog labels; close-row immutability; overlap 409 surfaced
 sales/add_sales_order.php,sales,active-broken,Create sales order,/sales-orders,POST /sales-orders,sales-flows.e2e,implemented-changed,Legacy broken endpoint fixed
 sales/add_sales_order_negative_bal.php,sales,active,Deposit (negative-bal) order,/deposits,POST /deposits,sales-flows.e2e,implemented,
 sales/all_items_report.php,sales,active,All items report,/reports (stock-valuation),GET /reports/stock-valuation,—,implemented,
 sales/cash_goods.php,sales,active,Cash+goods sale,/pos (split tenders),POST /sales/commit (mixed tenders),sales-flows.e2e,implemented,
-sales/create_proforma_invoice.php,sales,active,Create proforma/quotation,— (web UI pending),POST /quotations (+ lifecycle),review-hardening,partial,API + tests done; web page pending
+sales/create_proforma_invoice.php,sales,active,Create proforma/quotation,/quotations,POST /quotations (+ lifecycle),review-hardening + search-pricing-parity,implemented,RESOLVED Phase 6 (751f58f): web page + lifecycle actions + print deep link
 sales/css.php,sales,active,Theme shell/fragment,web app shell (layout),—,—,implemented-changed,Replaced by the Next.js app shell
 sales/customer_statement-old.php,sales,dead,Backup,—,—,—,dropped-dead,
 sales/customer_statement.php,sales,active,Customer statement,/reports (customer-statement),GET /reports/customer-statement,—,implemented,One running balance: invoices/payments/returns/credit notes/store credit
@@ -227,8 +227,8 @@ sales/get_orders_list.php,sales,active,Orders list feed,/sales-orders,GET /sales
 sales/get_orders_list_bydate.php,sales,active,Orders by date,/sales-orders,GET /sales-orders?from&to,sales-flows.e2e,implemented,
 sales/get_payables_order_so_codes.php,sales,active,Payables SO code lookup,—,allocation references,sales-flows.e2e,implemented-changed,
 sales/get_payment_with_goods_order.php,sales,active,PWG order lookup,—,credit applications carry order references,sales-flows.e2e,implemented-changed,
-sales/get_price_item_list.php,sales,active,Price item feed,—,GET /price-lists,—,partial,See pricing.php
-sales/get_price_list.php,sales,active,Price list feed,—,GET /price-lists,—,partial,See pricing.php
+sales/get_price_item_list.php,sales,active,Price item feed,/price-lists (item rows),GET /price-lists/:id/items,search-pricing-parity,implemented,"RESOLVED Phase 6 (751f58f): catalog labels, newest window first, ordering pinned by tests"
+sales/get_price_list.php,sales,active,Price list feed,/price-lists,GET /price-lists,search-pricing-parity,implemented,RESOLVED Phase 6 (751f58f)
 sales/get_receipt_list.php,sales,active,Receipt list feed,/payments,GET /payments,sales-flows.e2e,implemented,
 sales/get_unpicked_order.php,sales,active,Unpicked orders,/sales-orders (fulfillment),"GET /fulfillments, POST /fulfillments/:id/dispatch|deliver",sales-flows.e2e,implemented,Fulfillment documents track the physical handover
 sales/includes_bottom.php,sales,active,Theme shell/fragment,web app shell (layout),—,—,implemented-changed,Replaced by the Next.js app shell
@@ -243,9 +243,9 @@ sales/payment_with_goods_loan.php,sales,dead,Loan variant,—,—,—,dropped-de
 sales/payments.php,sales,active,Payments,/payments,POST /payments (typed tenders + explicit allocations),sales-flows.e2e,implemented,
 sales/payments_select.php,sales,active,Payment invoice selection,/payments,allocation rows in POST /payments,sales-flows.e2e,implemented,
 sales/preview_order.php,sales,active-broken,Order preview,/sales-orders (review),GET /sales-orders/:id,sales-flows.e2e,implemented-changed,Legacy update path missing; fixed
-sales/pricing.php,sales,active,Price list management,— (web UI pending),"POST /price-lists, POST /price-lists/:id/items, GET /pricing/resolve",—,partial,API implemented (effective-dated lists + resolve + price authority); management page pending
+sales/pricing.php,sales,active,Price list management,/price-lists,"POST /price-lists, POST /price-lists/:id/items, GET /pricing/resolve",search-pricing-parity,implemented,RESOLVED Phase 6 (751f58f): management page + GET /price-lists/:id/items; close-row immutability workflow; overlap 409 surfaced; resolve-precedence preview
 sales/printer_selection.php,sales,active,Printer selection,browser print dialog,—,—,implemented-changed,Web print via browser; ESC/POS adapters are Phase 6 hardware work
-sales/proforma_invoice_print.php,sales,active,Proforma A4 print,—,—,—,pending,GAP: quotation print layout pending (template gallery)
+sales/proforma_invoice_print.php,sales,active,Proforma A4 print,/print/quotation/[id],GET /quotations/:id (evidence only),print-templates,implemented,RESOLVED Phase 6 (313ba07): A4 proforma from API evidence; canonical 2dp/half-even rendering (packages/print-templates)
 sales/receipt-pos-bkup.php,sales,dead,Backup,—,—,—,dropped-dead,
 sales/receipt.php,sales,active,Receipt print (A4),/print/receipt/[id],GET /sales/invoices/:id/receipt,sales-flows.e2e,implemented,
 sales/receipt_modal.php,sales,active,Receipt modal,/print/receipt/[id],GET /sales/invoices/:id/receipt,sales-flows.e2e,implemented,
@@ -259,7 +259,7 @@ sales/view_items_category.php,sales,active,Category list,/categories,GET /catego
 sales/view_items_main_category.php,sales,active,Main category list,/categories,GET /categories,vertical-slice.e2e,implemented,
 sales/view_payments.php,sales,active,Payments list,/payments,GET /payments,sales-flows.e2e,implemented,
 sales/view_receipts.php,sales,active,Receipts list,/payments + /print/receipt/[id],GET /payments,sales-flows.e2e,implemented,
-search_result.php,root,active,Global search,per-page search only,"GET /products?query, GET /customers (per-entity)",—,partial,GAP: no cross-entity global search; per-page filters exist
+search_result.php,root,active,Global search,/search (topbar box),GET /search?q=,search-pricing-parity,implemented,"RESOLVED Phase 6 (751f58f): cross-entity (products/customers/suppliers/price lists + document codes) with permission-filtered groups, RLS isolation, wildcard escaping, deep links"
 sms_settings.php,root,active,SMS settings,—,—,—,pending,GAP: settings versioning exists but rejects credential-shaped keys by design; SMS send integration not implemented (demand unvalidated)
 suppliers_list.php,root,active,Root duplicate,—,—,—,duplicate,See purchases/suppliers_list.php
 system_settings.php,root,active,System settings,/admin/settings,GET/POST /reports/settings (versioned tenant settings),returns-flows (settings guard tests),implemented,Versioned effective-dated settings; credential-shaped keys rejected

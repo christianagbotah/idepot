@@ -6,6 +6,7 @@ import type {
   ListDto,
   PriceListDto,
   PriceListItemDto,
+  PriceListItemViewDto,
   ResolvePriceQuery,
   ResolvedPriceDto,
 } from '@idepot/contracts';
@@ -70,6 +71,39 @@ export class PricingRepository {
     return {
       items: res.rows.map((r) => this.priceListToDto(r as Record<string, unknown>)),
       total: res.rows[0] ? Number((res.rows[0] as Record<string, unknown>).total) : 0,
+    };
+  }
+
+  /** Items of one list with the catalog labels the management UX displays.
+   *  Newest effective window first — the row a manager needs to close/replace
+   *  is the current price, history follows below it. */
+  async listItems(priceListId: string): Promise<ListDto<PriceListItemViewDto>> {
+    const ctx = UnitOfWork.require();
+    await this.assertRef('price_list', priceListId, 'price list');
+    const res = await ctx.query(
+      `SELECT pli.id, pli.price_list_id, pli.product_id, pli.unit_id, pli.price,
+              pli.effective_from::text AS effective_from,
+              pli.effective_to::text AS effective_to,
+              p.code AS product_code, p.name AS product_name,
+              u.code AS unit_code,
+              count(*) OVER ()::int AS total
+       FROM price_list_item pli
+       JOIN product p ON p.id = pli.product_id
+       LEFT JOIN unit u ON u.id = pli.unit_id
+       WHERE pli.price_list_id = $1
+       ORDER BY pli.effective_from DESC, pli.id
+       LIMIT 500`,
+      [priceListId],
+    );
+    const rows = res.rows as Array<Record<string, unknown>>;
+    return {
+      items: rows.map((r) => ({
+        ...this.priceListItemToDto(r),
+        productCode: r.product_code == null ? null : String(r.product_code),
+        productName: r.product_name == null ? null : String(r.product_name),
+        unitCode: r.unit_code == null ? null : String(r.unit_code),
+      })),
+      total: rows[0] ? Number(rows[0].total) : 0,
     };
   }
 

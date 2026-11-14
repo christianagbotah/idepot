@@ -1,0 +1,24 @@
+{
+  "name": "@idepot/print-templates",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Canonical print templates for receipts, invoices, quotations, waybills, credit notes, statements and labels \u2014 data from API evidence only, never recomputed",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "test": "echo 'tested at root via vitest'"
+  },
+  "dependencies": {
+    "@idepot/contracts": "*",
+    "@idepot/hardware": "*"
+  }
+}

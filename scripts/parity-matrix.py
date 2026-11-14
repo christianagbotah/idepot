@@ -89,9 +89,9 @@ add("pos/get_main_page.php", "active", "implemented", "/pos", "GET /products (se
 add("pos/add_invoice.php", "active", "implemented-changed", "/pos",
     "POST /sales/commit (server computes totals)", "sales-flows.e2e",
     "Create POS invoice", "Server-authoritative totals; C-2 header math; DB CHECK")
-add("pos/create_proforma_invoice.php", "active", "partial", "— (web UI pending)",
-    "POST /quotations, POST /quotations/:id/issue|accept|convert", "review-hardening",
-    "Create proforma (quotation)", "API + lifecycle + tests done; quotation web page + A4 print pending")
+add("pos/create_proforma_invoice.php", "active", "implemented", "/quotations",
+    "POST /quotations, POST /quotations/:id/issue|accept|convert", "review-hardening + search-pricing-parity",
+    "Create proforma (quotation)", "RESOLVED Phase 6 (751f58f): /quotations page (create, status+reason list, lifecycle mirroring domain state machine, print deep link)")
 add("pos/add_sales_order_negative_bal.php", "active", "implemented", "/deposits",
     "POST /deposits", "sales-flows.e2e", "Negative-balance (deposit) order", "Explicit customer_deposit documents; no negative invoice rows")
 add("pos/edit_sales_order_negative_bal.php", "active", "implemented-changed", "/deposits",
@@ -338,9 +338,9 @@ add("modern-dashboard.php", "dead", "dropped-dead", "—", "—", "—", "Modern
 add("pay_payable.php", "dead", "dropped-dead", "—", "—", "—", "Root mockup duplicate", "")
 add("payments.php", "dead", "dropped-dead", "—", "—", "—", "Static-ish page posting w/o param", "")
 add("purchase_order_list.php", "active", "duplicate", "—", "—", "—", "Root duplicate of purchases/purchase_order_list", "See purchases row")
-add("search_result.php", "active", "partial", "per-page search only",
-    "GET /products?query, GET /customers (per-entity)", "—", "Global search",
-    "GAP: no cross-entity global search; per-page filters exist")
+add("search_result.php", "active", "implemented", "/search (topbar box)",
+    "GET /search?q=", "search-pricing-parity", "Global search",
+    "RESOLVED Phase 6 (751f58f): cross-entity (products/customers/suppliers/price lists + document codes) with permission-filtered groups, RLS isolation, wildcard escaping, deep links")
 add("sms_settings.php", "active", "pending", "—", "—", "—",
     "SMS settings", "GAP: settings versioning exists but rejects credential-shaped keys by design; SMS send integration not implemented (demand unvalidated)")
 add("suppliers_list.php", "active", "duplicate", "—", "—", "—", "Root duplicate", "See purchases/suppliers_list.php")
@@ -393,11 +393,12 @@ add("sales/get_orders_list_bydate.php", "active", "implemented", "/sales-orders"
 add("sales/get_unpicked_order.php", "active", "implemented", "/sales-orders (fulfillment)",
     "GET /fulfillments, POST /fulfillments/:id/dispatch|deliver", "sales-flows.e2e",
     "Unpicked orders", "Fulfillment documents track the physical handover")
-add("sales/create_proforma_invoice.php", "active", "partial", "— (web UI pending)",
-    "POST /quotations (+ lifecycle)", "review-hardening", "Create proforma/quotation",
-    "API + tests done; web page pending")
-add("sales/proforma_invoice_print.php", "active", "pending", "—",
-    "—", "—", "Proforma A4 print", "GAP: quotation print layout pending (template gallery)")
+add("sales/create_proforma_invoice.php", "active", "implemented", "/quotations",
+    "POST /quotations (+ lifecycle)", "review-hardening + search-pricing-parity", "Create proforma/quotation",
+    "RESOLVED Phase 6 (751f58f): web page + lifecycle actions + print deep link")
+add("sales/proforma_invoice_print.php", "active", "implemented", "/print/quotation/[id]",
+    "GET /quotations/:id (evidence only)", "print-templates", "Proforma A4 print",
+    "RESOLVED Phase 6 (313ba07): A4 proforma from API evidence; canonical 2dp/half-even rendering (packages/print-templates)")
 add("sales/payments.php", "active", "implemented", "/payments",
     "POST /payments (typed tenders + explicit allocations)", "sales-flows.e2e", "Payments", "")
 add("sales/payments_select.php", "active", "implemented", "/payments",
@@ -481,15 +482,17 @@ add("sales/edit_items_bulk.php", "active-broken", "dropped-dead", "—", "—", 
 add("sales/add_item_script.php", "dead", "dropped-dead", "—", "—", "—", "Script debris", "")
 add("sales/modern-add-item.php", "dead", "dropped-dead", "—", "—", "—", "Modern skin", "")
 add("sales/modern-edit-item.php", "dead", "dropped-dead", "—", "—", "—", "Modern skin", "")
-add("sales/pricing.php", "active", "partial", "— (web UI pending)",
-    "POST /price-lists, POST /price-lists/:id/items, GET /pricing/resolve", "—",
-    "Price list management", "API implemented (effective-dated lists + resolve + price authority); management page pending")
-add("sales/get_price_list.php", "active", "partial", "—",
-    "GET /price-lists", "—", "Price list feed", "See pricing.php")
-add("sales/get_price_item_list.php", "active", "partial", "—",
-    "GET /price-lists", "—", "Price item feed", "See pricing.php")
-add("sales/add_item_to_price_list.php", "active", "partial", "—",
-    "POST /price-lists/:id/items", "—", "Add item to price list", "See pricing.php")
+add("sales/pricing.php", "active", "implemented", "/price-lists",
+    "POST /price-lists, POST /price-lists/:id/items, GET /pricing/resolve", "search-pricing-parity",
+    "Price list management", "RESOLVED Phase 6 (751f58f): management page + GET /price-lists/:id/items; close-row immutability workflow; overlap 409 surfaced; resolve-precedence preview")
+add("sales/get_price_list.php", "active", "implemented", "/price-lists",
+    "GET /price-lists", "search-pricing-parity", "Price list feed", "RESOLVED Phase 6 (751f58f)")
+add("sales/get_price_item_list.php", "active", "implemented", "/price-lists (item rows)",
+    "GET /price-lists/:id/items", "search-pricing-parity", "Price item feed",
+    "RESOLVED Phase 6 (751f58f): catalog labels, newest window first, ordering pinned by tests")
+add("sales/add_item_to_price_list.php", "active", "implemented", "/price-lists (row editor)",
+    "POST /price-lists/:id/items", "search-pricing-parity", "Add item to price list",
+    "RESOLVED Phase 6 (751f58f): effective-dated rows with catalog labels; close-row immutability; overlap 409 surfaced")
 add("sales/item_history.php", "active", "implemented", "/inventory/movements",
     "GET /inventory/movements?productId", "stock-operations.e2e", "Item history", "")
 add("sales/get_item_history.php", "active", "implemented", "/inventory/movements",

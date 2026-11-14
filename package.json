@@ -42,7 +42,8 @@
   },
   "overrides": {
     "multer": "^2.5.0",
-    "postcss": "^8.5.32"
+    "postcss": "^8.5.32",
+    "image-size": "0.6.2"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
