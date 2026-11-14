@@ -454,6 +454,21 @@ a {
 .receipt-note { margin-top: var(--idp-space-2); font-style: italic; }
 .receipt-foot { text-align: center; margin-top: var(--idp-space-3); }
 
+/* intelligence alert queue (Phase 7a) */
+.sev-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.sev-critical { background: #fbe4e4; color: #a30d0d; }
+.sev-warning { background: #fdf0dc; color: #8a5a00; }
+.sev-info { background: #e3ecfb; color: #1d4ed8; }
+.btn-danger { background: #a30d0d; border-color: #7c0a0a; color: #fff; }
+.btn-danger:hover:not(:disabled) { background: #7c0a0a; }
+
 @media print {
   .no-print, .app-topbar, .app-nav { display: none !important; }
   .print-wrap { max-width: none; }
